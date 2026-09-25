@@ -1055,3 +1055,13 @@ Conversation encrypted
 Ask anything to Lumo
 
 Lumo can make mistakes. Please double-check responses.
+
+dap@guix ~/src [env]$ for d in qubes-*; do (cd $d && echo -=- $d && git rev-parse HEAD); done
+-=- qubes-core-agent-linux
+4738333496c6b689207d8274d0f3425e796b6197
+-=- qubes-core-vchan-xen
+277b7cee7de0c526264992aaeba68060ef879d5c
+-=- qubes-gui-agent-linux
+d2ac2ce18e632c765d058574a7990b751d849632
+-=- qubes-linux-utils
+25063069abf57d229e01025bb60dbdf3747c60ae

@@ -172,3 +172,10 @@ the xen_privcmd.unrestricted=1 fix resulting in a successful connection
 (move it from "blocker" to "fixed"), and the new next-step —
 qubes.VMShell service script into real /etc/qubes-rpc/ (Path A test
 script vs. Path B packaging).
+git clone https://github.com/QubesOS/qubes-core-qubesdb
+v4.3.3
+aeb3c8d8486673636964bc3beb4819d981dd3920
++ git describe --tags
+v4.3.3
++ git rev-parse HEAD
+aeb3c8d8486673636964bc3beb4819d981dd3920

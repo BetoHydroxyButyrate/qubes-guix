@@ -16,7 +16,8 @@
              (gnu services networking)
 	     (gnu services shepherd)
 	     (gnu services linux)
-             (qubes packages qrexec))  ; <-- our package channel
+             (qubes packages qrexec)  ; <-- our package channel
+             (qubes packages qubesdb))  ; <-- our package channel
 
 ;; (use-service-modules cups desktop networking ssh xorg)
 
@@ -40,6 +41,18 @@ handshake; required for VM survival and qvm-run.")
              #:log-file "/var/log/qrexec-agent.log"))
    (stop #~(make-kill-destructor))))
 
+(define qubesdb-daemon-shepherd
+  (shepherd-service
+   (documentation "QubesDB guest daemon — receives the VM's configuration
+database from dom0; serves local readers via unix socket.")
+   (provision '(qubesdb-daemon))
+   (requirement '(user-processes))
+   (respawn? #t)
+   (start #~(make-forkexec-constructor
+             (list #$(file-append qubes-core-qubesdb "/bin/qubesdb-daemon") "0")
+             #:log-file "/var/log/qubesdb-daemon.log"))
+   (stop #~(make-kill-destructor))))
+  
 (operating-system
   (locale "en_AU.utf8")
   (timezone "Australia/Brisbane")
@@ -99,12 +112,15 @@ handshake; required for VM survival and qvm-run.")
                  (service tor-service-type)
                  (set-xorg-configuration
                   (xorg-configuration (keyboard-layout keyboard-layout)))
-		 ;; qrexec
 		 (service kernel-module-loader-service-type
          		 (list "xen-evtchn" "xen-gntdev" "xen-gntalloc" "xen_privcmd" "xenfs"))
 		 (simple-service 'qubes-runtime-dirs activation-service-type #~(mkdir-p "/var/run/qubes"))
+		 ;; qrexec
 		 (simple-service 'qrexec-agent shepherd-root-service-type
                         (list qrexec-agent-shepherd))
+		 ;; qubesdb
+		 (simple-service 'qubesdb-daemon shepherd-root-service-type
+                        (list qubesdb-daemon-shepherd))
 		 ;; new services here...
 		)
 

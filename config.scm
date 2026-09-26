@@ -1,0 +1,134 @@
+;; This is an operating system configuration generated
+;; by the graphical installer.
+;;
+;; Once installation is complete, you can learn and modify
+;; this file to tweak the system configuration, and pass it
+;; to the 'guix system reconfigure' command to effect your
+;; changes.
+
+
+;; Guix System in a Qubes OS standalone HVM
+(use-modules (gnu)
+             (gnu services)
+             (gnu services ssh)
+             (gnu services xorg)
+             (gnu services desktop)
+             (gnu services networking)
+	     (gnu services shepherd)
+	     (gnu services linux)
+             (qubes packages qrexec))  ; <-- our package channel
+
+;; (use-service-modules cups desktop networking ssh xorg)
+
+(define %sudoers-specification
+  (plain-file "sudoers" "\
+root	ALL=(ALL) ALL
+%wheel	ALL=(ALL) ALL
+dap	ALL=(ALL) NOPASSWD: ALL
+"))
+
+(define qrexec-agent-shepherd
+  (shepherd-service
+   (documentation "Qubes qrexec guest agent — answers dom0's vchan
+handshake; required for VM survival and qvm-run.")
+   (provision '(qrexec-agent))
+   (requirement '(user-processes))
+   (respawn? #t)
+   (start #~(make-forkexec-constructor
+             (list #$(file-append qubes-core-qrexec
+                                  "/usr/lib/qubes/qrexec-agent"))
+             #:log-file "/var/log/qrexec-agent.log"))
+   (stop #~(make-kill-destructor))))
+
+(operating-system
+  (locale "en_AU.utf8")
+  (timezone "Australia/Brisbane")
+  (keyboard-layout (keyboard-layout "au"))
+  (host-name "guix")
+  (sudoers-file %sudoers-specification)
+  (kernel-arguments '("xen_privcmd.unrestricted=1" "quiet"))
+
+  ;; The list of user accounts ('root' is implicit).
+  (users (cons* (user-account
+                  (name "dap")
+                  (comment "Damon Permezel")
+                  (group "users")
+                  (home-directory "/home/dap")
+                  (supplementary-groups '("wheel" "netdev" "audio" "video")))
+                %base-user-accounts))
+
+  ;; Packages installed system-wide.  Users can also install packages
+  ;; under their own account: use 'guix search KEYWORD' to search
+  ;; for packages and 'guix install PACKAGE' to install a package.
+  (packages (append (list (specification->package "emacs")
+                          (specification->package "emacs-exwm")
+                          (specification->package
+                           "emacs-desktop-environment")
+                          (specification->package "sway")
+                          (specification->package "wmenu")
+                          (specification->package "foot")) %base-packages))
+
+  ;; Below is the list of system services.  To search for available
+  ;; services, run 'guix system search KEYWORD' in a terminal.
+  (services
+   (append (list (service xfce-desktop-service-type)
+		 (simple-service 'nonguix-substitutes guix-service-type
+				 (guix-extension
+				  (substitute-urls (list "https://substitutes.nonguix.org"))
+				  (authorized-keys (list
+						    (plain-file "non-guix.pub"
+								"(public-key (ecc (curve Ed25519) (q #C1FD53E5D4CE971933EC50C9F307AE2171A2D3B52C804642A7A35F84F3A4EA98#)))")
+						    ))))
+
+		 ;; static networking
+		 (service static-networking-service-type
+		  (list (static-networking
+		 	(addresses (list
+		 			(network-address
+		 			 (device "eth0")
+		 			 (value "10.137.0.50/8"))))
+		 	(routes (list
+		 		  (network-route
+		 		   (destination "default")
+		 		   (gateway "10.138.24.90"))))
+		 	(name-servers '("10.139.1.1" "10.139.1.2")))))
+                 ;; To configure OpenSSH, pass an 'openssh-configuration'
+                 ;; record as a second argument to 'service' below.
+		 ;; (service dhcpcd-service-type)
+                 (service openssh-service-type)
+                 (service tor-service-type)
+                 (set-xorg-configuration
+                  (xorg-configuration (keyboard-layout keyboard-layout)))
+		 ;; qrexec
+		 (service kernel-module-loader-service-type
+         		 (list "xen-evtchn" "xen-gntdev" "xen-gntalloc" "xen_privcmd" "xenfs"))
+		 (simple-service 'qubes-runtime-dirs activation-service-type #~(mkdir-p "/var/run/qubes"))
+		 (simple-service 'qrexec-agent shepherd-root-service-type
+                        (list qrexec-agent-shepherd))
+		 ;; new services here...
+		)
+
+           ;; This is the default list of services we
+           ;; are appending to.
+           ;; %desktop-services))
+	   ( modify-services %desktop-services
+	     (delete network-manager-service-type)
+	     (delete wpa-supplicant-service-type))))
+  (bootloader (bootloader-configuration
+                (bootloader grub-bootloader)
+                (targets (list "/dev/xvda"))
+                (keyboard-layout keyboard-layout)))
+  (swap-devices (list (swap-space
+                        (target (uuid
+                                 "43788bba-f17d-48e4-90f6-44b0b34005bc")))))
+
+  ;; The list of file systems that get "mounted".  The unique
+  ;; file system identifiers there ("UUIDs") can be obtained
+  ;; by running 'blkid' in a terminal.
+  (file-systems (cons* (file-system
+                         (mount-point "/")
+                         (device (uuid
+                                  "58b897af-3d07-4a2f-9bae-7aba9f3792cd"
+                                  'ext4))
+                         (type "ext4")) %base-file-systems))
+)  

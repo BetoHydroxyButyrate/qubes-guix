@@ -9,6 +9,7 @@
   #:use-module (gnu packages haskell-xyz)  
   #:use-module (gnu packages virtualization)
   #:use-module (gnu packages pkg-config)
+  #:use-module (gnu packages linux)
   #:use-module (gnu packages haskell-apps)
   #:use-module (qubes packages vchan))
 
@@ -49,7 +50,7 @@
                (invoke "make" "-C" "libqrexec" "CC=gcc"
                        (string-append "LIBDIR=" out "/lib")
                        (string-append "INCLUDEDIR=" out "/include"))
-               (invoke "make" "-C" "agent" "CC=gcc" "os=Gentoo"))))
+               (invoke "make" "-C" "agent" "CC=gcc" "os=Gentoo" "HAVE_PAM_APPL=1"))))
          (replace 'install
            (lambda* (#:key outputs #:allow-other-keys)
              (let ((out (assoc-ref outputs "out")))
@@ -60,7 +61,7 @@
                        (string-append "DESTDIR=" out)
                        "os=Gentoo")))))))
     (native-inputs (list pkg-config pandoc))
-    (inputs (list xen qubes-core-vchan-xen))
+    (inputs (list xen qubes-core-vchan-xen linux-pam))
     (synopsis "Guest-side qrexec agent for Qubes OS")
     (description "The qrexec guest agent and supporting library, built for
 Guix System.")

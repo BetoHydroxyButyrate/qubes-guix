@@ -198,6 +198,37 @@ Two independent faults, both now fixed:
   Store result validated green.
 - setup.py install via (invoke python "setup.py" "install" "--prefix" out).
 
+## STEP 4 DONE (2026-09-27): python-qubesagent GREEN
+- In core-agent.scm; same source. setup.py CustomInstall removed
+  (writes <root>/usr/bin — sandbox-hostile, ignored by wheel builds);
+  launchers qubes-vmexec/qubes-firewall written pre-'wrap. Tests:
+  qubesagent.test_vmexec only. core-agent rewrites /usr/bin/qubes-vmexec.
+- dom0 only routes --no-shell to qubes.VMExec when the qube has feature
+  vmexec (qvm_run.py:259); otherwise it silently falls back to VMShell
+  + shlex.quote. Set by hand: `qvm-features guix vmexec 1` (upstream
+  sets it at boot via qvm-features-request in misc/ — not packaged).
+- patch-source-shebangs warnings for network/*.nft (nft) and
+  package-managers (python2) are harmless: those files aren't installed.
+
+## NEXT BLOCKER: qrexec services ALL RUN AS ROOT (agent built w/o PAM)
+- qrexec-agent.c non-PAM #else (~l.350): services (prog set) →
+  exec_qubes_rpc2() with NO user switch (runs as root); raw commands →
+  execl("/bin/su") which doesn't exist on Guix. Evidence: plain
+  `qvm-run --no-shell guix id` → uid=0. Inbound qvm-copy-to-vm likely
+  unpacked into /root/QubesIncoming.
+- FIX (qrexec pkg): inputs += linux-pam; pass "HAVE_PAM_APPL=1" to the
+  agent make (build AND install). It's a plain = wildcard probe on
+  /usr/include/security/pam_appl.h — command-line override is correct
+  here (not a += accumulator).
+- FIX (config.scm): simple-service 'qrexec-pam pam-root-service-type
+  (list (pam-service (name "qrexec")
+     (auth (pam_rootok.so sufficient)) (account pam_unix required)
+     (session pam_unix required)))). Agent calls pam_start("qrexec"),
+  pam_authenticate, pam_setcred, pam_open_session as root.
+- Check dom0 `qvm-prefs guix default_user` names a real guix account.
+- Test: qvm-run -p --no-shell guix id → uid=1000; -u root → uid=0.
+- Later (GUI): consider pam_elogind in session for XDG_RUNTIME_DIR.
+
 ## CORE-AGENT RUNTIME LESSONS (2026-09-27)
 - Outbound qrexec from a USER process (qvm-copy → qrexec-client-vm)
   makes the client the vchan SERVER → needs /dev/xen/{evtchn,gntdev,
@@ -256,12 +287,12 @@ Two independent faults, both now fixed:
    Delete hand-made VMShell. Test: qvm-run --pass-io, then plain
    qvm-run (WaitForSession — note: NO WaitForSession script exists in
    R4.3; agent intercepts it internally, qrexec-agent.c:590).
-4. python-qubesagent sub-project (setup.py entry points incl.
+4. DONE 2026-09-27. python-qubesagent sub-project (setup.py entry points incl.
    qubes-vmexec; needs qubesdb python module → propagated).
 5. THEN gui-agent country: qubes-drv Xorg driver, clipboard, the payoff.
 
 ## STATUS SENTIMENT
 Five repos, five green builds, qrexec + qubesdb live, first native qvm-run in a Guix System
 ever. qubesdb syncs from dom0 and file copy works both ways:
-the management plane is open. Next: python-qubesagent (step 4).
+the management plane is open. Next: rebuild qrexec-agent WITH PAM (see NEXT BLOCKER).
 The port is winning.

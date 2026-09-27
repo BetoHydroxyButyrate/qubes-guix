@@ -40,7 +40,7 @@ exists).
 ## Bug Taxonomy (patterns that WILL recur)
 
 ### Guix derivation gotchas
-- `remove` is SRFI-1: import (srfi srfi-1) or use modify-services/delete.
+- `remove`, `append-map` etc. are SRFI-1: NOT in build-side default modules. Use core Guile ((apply append (map ...))) or add #:modules with (srfi srfi-1).
 - Backtick/comma in pasted config → `(unquote ...)` string-append errors.
   grep -n '[`,@]' config.scm to find them.
 - `missing field initializers (home-page)` is FATAL for package
@@ -113,8 +113,12 @@ exists).
   4. qubes-core-agent — NOT YET PACKAGED, see below
   5. qubes-core-qubesdb 4.3.3 (commit aeb3c8d8486673636964bc3beb4819d981dd3920,
      store drv 0awcfl11hm18ir6hd56dfg8rac1qr9vi)
-- Hand-made /etc/qubes-rpc/qubes.VMShell exists (works); delete when the
-  package ships scripts declaratively.
+- Hand-made /etc/qubes-rpc/qubes.VMShell DELETED; /etc/qubes-rpc and
+  /etc/qubes now come from the qubes-core-agent package (etc-service).
+- 2026-09-27: qubes-core-agent GREEN (package #4). Verified: qvm-run
+  --pass-io (VMShell from store), inbound qvm-copy-to-vm guix (setuid
+  qfile-unpacker via /run/privileged/bin), outbound qvm-copy from guix
+  via profile PATH (rc=0, file in target QubesIncoming/guix/).
 
 ## RESOLVED (2026-09-27): `qubesdb-read /name` → guix
 Two independent faults, both now fixed:
@@ -165,8 +169,9 @@ Two independent faults, both now fixed:
 ## qubes-core-agent-linux RECON (mm_47383334, pinned — commit it)
 - qubes-rpc/Makefile: BUILDABLE with existing patterns. Notes:
   * All dirs are ?= vars (BINDIR LIBDIR SYSCONFDIR) — flat prefix works.
-  * DEVEL_BUILD=1 provides $ORIGIN rpaths for lib/qubes binaries —
-    UPSTREAM'S OWN non-FHS solution. USE IT.
+  * DEVEL_BUILD=1: NOT USED (corrected). Its $ORIGIN/../../$LIB rpath
+    only helps when libs share the prefix; ours live in other store
+    items and ld-wrapper already adds their RUNPATH.
   * /dev/tcp/127.0.0.1 symlinks (ConnectTCP, UpdatesProxy) = BASH-ISM,
     intentional, not a bug. qvm-connect-tcp machinery.
   * vm-log links -lqubesdb → NOW AVAILABLE from pkg #5.
@@ -193,6 +198,23 @@ Two independent faults, both now fixed:
   Store result validated green.
 - setup.py install via (invoke python "setup.py" "install" "--prefix" out).
 
+## CORE-AGENT RUNTIME LESSONS (2026-09-27)
+- Outbound qrexec from a USER process (qvm-copy → qrexec-client-vm)
+  makes the client the vchan SERVER → needs /dev/xen/{evtchn,gntdev,
+  gntalloc,privcmd,xenbus,hypercall} 0660 group qubes (upstream
+  linux-utils udev-qubes-misc.rules). Symptom without it:
+  qrexec-agent-data.c:370 "Data vchan connection failed" (immediate
+  libvchan_server_init NULL, not the 120s timeout). Root-run paths
+  (qvm-run into guix) work regardless — don't let them mask this.
+- file-append refs (etc overlay, setuid) put a package in the store but
+  NOT on PATH — must also be in (packages ...).
+- Never glob /gnu/store/*/bin/X: multiple builds expand; the 2nd path
+  becomes an argument (qvm-copy "copied itself").
+- dom0 ask-dialog steals focus between Enter press/release → autorepeat
+  newlines into the terminal. `sleep 1; qvm-copy ...` avoids it.
+- Killing the VM-side client does NOT withdraw dom0's pending ask
+  prompt; answer/cancel it in dom0.
+
 ## CONFIG.SCM CURRENT STATE
 - use-modules includes (qubes packages qubesdb) (+ qrexec, vchan).
 - packages: qubes-core-qubesdb added to system packages list (variable
@@ -201,6 +223,14 @@ Two independent faults, both now fixed:
 - kernel-module-loader: xen-privcmd xenfs xen-evtchn xen-gntdev xen-gntalloc.
 - activation: mkdir-p /var/run/qubes.
 - activation: also mkdir-p /var/log/qubes (vm-log etc. will want it).
+- use-modules adds (qubes packages core-agent); packages list includes
+  qubes-core-qubesdb AND qubes-core-agent.
+- etc-service-type: "qubes-rpc" → $core-agent/etc/qubes-rpc,
+  "qubes" → $core-agent/etc/qubes (rpc-config, suspend/post-* dirs).
+- setuid-programs: $core-agent/lib/qubes/qfile-unpacker.
+- udev-rules-service 'qubes-xen-devices (90-qubes-xen.rules, six xen
+  nodes 0660 group qubes) #:groups '("qubes"); user in "qubes"
+  supplementary group.
 - shepherd: qrexec-agent (user-processes req, respawn, log to
   /var/log/qrexec-agent.log); qubesdb-daemon WORKING: foreground
   (patched), args ("0") only, respawn #t, parallel to qrexec-agent.
@@ -211,11 +241,18 @@ Two independent faults, both now fixed:
 1. DONE: qubesdb-read /name works. Confirm it survives a cold
    qvm-shutdown/qvm-start with the shepherd service (single instance:
    pgrep -c qubesdb-daemon == 1).
-2. Ship qubes-core-agent umbrella package (patterns ready; Makefile
-   audited; DEVEL_BUILD=1; explicit CC=gcc; no CFLAGS/LDFLAGS overrides;
-   substitution pass /usr/lib/qubes→$out, /bin/bash→profile bash,
-   python3 shebangs→profile).
-3. etc-service-type overlay of $out/etc/qubes-rpc/* onto /etc.
+2. qubes-core-agent package DRAFTED: qubes/packages/core-agent.scm
+   (commit 4738333496c6b689207d8274d0f3425e796b6197, qubes-rpc/ only).
+   Compile + install verified outside Guix (gcc 13, -Werror clean).
+   Fixups: /usr/lib/qubes/qrexec-client-vm→qrexec pkg usr/bin;
+   qfile-unpacker→/run/privileged/bin (setuid-programs, store strips
+   4755); /usr/lib/qubes/→$out/lib/qubes/; exec /bin/bash→bash input;
+   qvm-copy's $scriptdir/qubes/ (relative to PROFILE symlink)→store;
+   patch-shebang over etc/qubes-rpc + lib/qubes (stock phase skips
+   them). substitute* only on regular non-ELF files (symlinks:
+   VMExecGUI, Log, /dev/tcp ConnectTCP/UpdatesProxy).
+   -> DONE, GREEN 2026-09-27 (see STATE AT HANDOFF).
+3. DONE: etc-service-type overlay of $out/etc/qubes-rpc/* onto /etc.
    Delete hand-made VMShell. Test: qvm-run --pass-io, then plain
    qvm-run (WaitForSession — note: NO WaitForSession script exists in
    R4.3; agent intercepts it internally, qrexec-agent.c:590).
@@ -225,5 +262,6 @@ Two independent faults, both now fixed:
 
 ## STATUS SENTIMENT
 Five repos, five green builds, qrexec + qubesdb live, first native qvm-run in a Guix System
-ever. qubesdb now syncs from dom0: the management plane is open.
+ever. qubesdb syncs from dom0 and file copy works both ways:
+the management plane is open. Next: python-qubesagent (step 4).
 The port is winning.

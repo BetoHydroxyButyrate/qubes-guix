@@ -15,15 +15,6 @@ to stale forum claims of 4.10).
 - Intra-VLAN access requires BOTH: `qvm-firewall <src> add accept ...`
   on the source qube AND an `nft` rule in `custom-forward` chain on the
   VLAN firewall clone (persist via /rw/config/qubes-firewall-user-script).
-- Clipboard today: SSH from same-VLAN qubes (banking), xclip-based
-  to-guix/from-guix helpers.
-- dom0 cannot paste into guest consoles — retyping is the cost of work
-  until gui-agent exists.
-- Serial/PV console exists at /dev/hvc0 (console/tty visible in xenstore).
-- WATCHDOG: qrexec check kills VM after ~60s. `timeout` pref has a HARD
-  floor of 60 — 0/-1 error, 3600/1000000 still killed at 60s. There is
-  NO escape hatch; the agent must answer.
-- domid changes each boot (observed 35 → 38 → 42).
 
 ## Package Status (channel: ~/src/qubes, module (qubes packages *))
 Channel layout: <root>/qubes/packages/*.scm — module name MUST mirror
@@ -109,73 +100,130 @@ exists).
 - xc_evtchn_status / privcmd EPERM at agent startup: benign probe
   failures, agent proceeds.
 
-## CURRENT BLOCKER (as of 2026-09-25)
-- VM SURVIVES the 60s watchdog across reboots ✓ (agent runs, is
-  respawnable via shepherd, /var/run/qubes socket binds).
-- BUT dom0→guest connection fails: `qvm-run --pass-io --no-gui guix
-  'echo hi'` → dom0 log: "qrexec-client.c:408:main: qrexec connection
-  timeout". Plain qvm-run also 125s (blocked until ~login, then
-  qrexec timeout).
-- Control test: same qvm-run against existing AppVM prints hello —
-  dom0 machinery healthy.
-- qrexec-daemon@guix.service unit does not exist in dom0; nor for
-  working AppVMs (unit naming/layout differs on R4.3 — find via
-  ps aux | grep [q]rexec).
-- Suspicion list for next session (ranked):
-  1. dom0's per-VM qrexec-daemon not spawning/connecting for this VM
-     despite qrexec=1 feature — verify process exists, check its args
-     and dom0 journal. NOTE: on the last boot, data/vchan appeared
-     EMPTY even with agent running — versus domid 38 boot where keys
-     were published. Investigate whether publication is conditional
-     (e.g., agent publishes only if some precondition at startup,
-     or the client is expected to trigger rendezvous).
-  2. Direction of connection: doc says "qrexec-client starts a vchan
-     server, which qrexec-agent then connects to" for per-connection
-     channels — but main channel is agent-as-server (VCHAN_BASE_PORT
-     via libvchan_server_init(0, ...)). Determine which side initiates
-     in R4.3 and what triggers it.
-  3. Xen 4.21 guest libs vs dom0 expectations (protocol or version
-     negotiation). If so: build guest against Xen 4.17 libs
-     (qubes-arch issue mentions R4.3 built against 4.17: libvchan.so.4.17).
-  4. Compare xenstore anatomy of a WORKING VM (dump /local/domain/<its
-     domid>/data/vchan + qubes-* keys while a qvm-run session is open
-     in it) against our tree at the same moment.
+## STATE AT HANDOFF
+- qrexec FULLY WORKING: `qvm-run --pass-io guix 'echo hi'` round-trips.
+  THE fix: kernel-arguments '("xen_privcmd.unrestricted=1" "quiet").
+  Modern kernels restrict privcmd hypercalls for guests by default; all
+  the "benign" EPERMs (xc_evtchn_status, privcmd ioctl 0x50:0x5) were
+  actually this. Without the arg: qrexec-client.c:408 connection timeout.
+- 5 packages green in ~/src/qubes channel:
+  1. qubes-core-vchan-xen 4.2.8
+  2. qubes-linux-utils mm_25063069
+  3. qubes-core-qrexec mm_fa044832 (store: 99w5rw...dnyxi9 parent)
+  4. qubes-core-agent — NOT YET PACKAGED, see below
+  5. qubes-core-qubesdb 4.3.3 (commit aeb3c8d8486673636964bc3beb4819d981dd3920,
+     store drv 0awcfl11hm18ir6hd56dfg8rac1qr9vi)
+- Hand-made /etc/qubes-rpc/qubes.VMShell exists (works); delete when the
+  package ships scripts declaratively.
 
-## Decisive diagnostics for next session
-- dom0: ps aux | grep [q]rexec; journalctl -f | grep -i qrexec while
-  triggering qvm-run.
-- guest: sudo tail -f /var/log/qrexec-agent.log during qvm-run — does
-  the agent's read(4) ever wake? (Silence = dom0 never reached us.)
-- guest xenstore recheck every boot: xenstore-ls -p
-  /local/domain/$(xenstore-read domid)/data (full tree, incl. qubes-*).
-- strace the agent with poll: sudo guix shell strace -- strace -f -e
-  trace=poll,read,write <agent path>.
+## RESOLVED (2026-09-27): `qubesdb-read /name` → guix
+Two independent faults, both now fixed:
+1. VM daemon FORKED under shepherd. Non-systemd path in db-daemon.c
+   (~l.883) forks; parent exits 0 on "ready" → shepherd saw exit →
+   respawn → duplicate daemons unlinking each other's sockets and
+   sharing one vchan ring. Child also logged to
+   /var/log/qubes/qubesdb.dom0.log (not shepherd's log).
+   FIX (in package): make SYSTEMD=0, plus substitute* in
+   daemon/db-daemon.c:
+     "    if (1) {"  → "    if (getenv(\"QUBESDB_FORK\")) {"
+     "if (write(ready_pipe[1]" → "if (ready_pipe[1] && write(ready_pipe[1]"
+   Shepherd: make-forkexec-constructor (list .../qubesdb-daemon "0"),
+   respawn #t. Exactly ONE arg "0" — a 2nd arg (vm name) puts it in
+   dom0-mode with domid 0 → vchan NULL, no sync, empty DB, but sockets
+   still answer (signature: poll set slot fds[2] == -1).
+2. DOM0's qubesdb.guix DB was EMPTY. qubesd populates ONLY at
+   qvm-start (create_qdb_entries); a dom0 daemon restarted mid-session
+   starts empty and nothing refills it. FIX: qvm-shutdown --wait guix
+   && qvm-start guix.
 
-## Roadmap (post-unblock)
-1. Resolve dom0 connection (above).
-2. qvm-run --pass-io works → plain qvm-run fails on missing
-   qubes.WaitForSession → package qubes-core-agent-linux minimal
-   (service scripts into REAL /etc/qubes-rpc via etc-service or
-   similar — note our qrexec package put etc/qubes-rpc in the STORE
-   output, not the rootfs; the fork-server searches the real path).
-3. qubes-rpc policies in dom0 already exist from default install?
-   (qvm-rpc list). Then: qvm-copy-to-vm, clipboard RPC groundwork.
-4. qubes-gui-agent-linux: qubes-drv Xorg driver + agent shepherd
-   service. Black-screen safety: hvc0 console (console=hvc0 kernel
-   arg) + xl console guix from dom0 + SSH lifeline.
-5. Ultimately: Proton-grade channel hygiene — commit early, commit
-   often, git history is the reproducibility proof for the dom0-trusted
-   binaries.
+### qubesdb rules learned
+- Dom0 daemon EXITS PERMANENTLY if a VM client closes the vchan before
+  sending its MULTIREAD (remote_connected==0 → "domain is probably
+  dead" break). Log signature: "vchan closed" with no "reconnecting".
+  After one completed sync, VM-side restarts are safe ("reconnecting").
+- NEVER restart dom0 qubesdb-daemon by hand — restart the VM instead.
+- VM can QDB_CMD_RM dom0 entries over vchan (qubesdb-rm / in the VM
+  wipes dom0's copy). Don't experiment with rm on real paths.
+- "terminating" in dom0 qubesdb.<vm>.log = SIGTERM (qubesd pidfile
+  kill at VM start), not a crash.
+- Diagnostics: VM `qubesdb-ls /` (empty list = empty DB, not a hang);
+  dom0 `qubesdb-multiread -d guix /`; `ps -o lstart= -p <dom0 pid>`
+  vs qubesd "Starting Qubes DB" time.
+- Startup sync loop spins (handle_vchan_data returns 2, no wait) —
+  100% CPU daemon with bound socket = dom0 not answering.
 
-### FIXME
-the xen_privcmd.unrestricted=1 fix resulting in a successful connection
-(move it from "blocker" to "fixed"), and the new next-step —
-qubes.VMShell service script into real /etc/qubes-rpc/ (Path A test
-script vs. Path B packaging).
-git clone https://github.com/QubesOS/qubes-core-qubesdb
-v4.3.3
-aeb3c8d8486673636964bc3beb4819d981dd3920
-+ git describe --tags
-v4.3.3
-+ git rev-parse HEAD
-aeb3c8d8486673636964bc3beb4819d981dd3920
+## DECISIONS MADE
+- Ship ALL qubes-rpc scripts in one umbrella package regardless of
+  whether each works at runtime ("ship-first-verify-later"); failure
+  mode is clean per-service 127, working services unaffected.
+- qubes-vmexec is a PYTHON setuptools entry point (qubesagent.vmexec),
+  NOT C. The whole Python half of core-agent (qubesagent + qubesdb
+  imports) is one cohesive future sub-project, now unblocked by pkg #5.
+- qubesdb packaged as ONE derivation (C + python ext together) because
+  setup.py hardcodes ../include and ../client paths.
+
+## qubes-core-agent-linux RECON (mm_47383334, pinned — commit it)
+- qubes-rpc/Makefile: BUILDABLE with existing patterns. Notes:
+  * All dirs are ?= vars (BINDIR LIBDIR SYSCONFDIR) — flat prefix works.
+  * DEVEL_BUILD=1 provides $ORIGIN rpaths for lib/qubes binaries —
+    UPSTREAM'S OWN non-FHS solution. USE IT.
+  * /dev/tcp/127.0.0.1 symlinks (ConnectTCP, UpdatesProxy) = BASH-ISM,
+    intentional, not a bug. qvm-connect-tcp machinery.
+  * vm-log links -lqubesdb → NOW AVAILABLE from pkg #5.
+  * Build ALL except vm-log possible before #5; now nothing blocks.
+  * SUID qfile-unpacker (4755): check whether store retains setuid;
+    fallback = setuid-program-service-type in config.scm. TEST LATER.
+- Skipped dirs: windows/ selinux/ fuzz/ distro-packaging dirs.
+- Known runtime gaps (log them, don't block): ShowInTerminal needs
+  xterm+socat (profile); StartApp/VMExec need qubesagent python +
+  entry points (setup.py line 12).
+
+## NEW BUILD PATTERNS LEARNED THIS SESSION (Python dialect)
+- python not on PATH in gnu-build-system sandbox: resolve via
+  (search-input-file inputs "/bin/python3") — NOT /bin/python (no
+  bare name in Guix), and assoc-ref gives the PREFIX (dir), which
+  exec 127s when invoked directly.
+- setup.py: ModuleNotFoundError setuptools → add python-setuptools
+  to native-inputs AND manually set GUIX_PYTHONPATH (gnu-build-system
+  does NOT do it for you; python-build-system would).
+- CRITICAL: LDFLAGS env var passed to setup.py build_ext REPLACES the
+  extension's default link flags (distutils does not append!) → lost
+  libgcc_s path → RUNPATH validation failure. Fix: patchelf
+  --add-rpath (ADD not SET) post-install phase, leaving LDFLAGS alone.
+  Store result validated green.
+- setup.py install via (invoke python "setup.py" "install" "--prefix" out).
+
+## CONFIG.SCM CURRENT STATE
+- use-modules includes (qubes packages qubesdb) (+ qrexec, vchan).
+- packages: qubes-core-qubesdb added to system packages list (variable
+  direct, no specification->package — not in official channels).
+- kernel-arguments: xen_privcmd.unrestricted=1 QUIET.
+- kernel-module-loader: xen-privcmd xenfs xen-evtchn xen-gntdev xen-gntalloc.
+- activation: mkdir-p /var/run/qubes.
+- activation: also mkdir-p /var/log/qubes (vm-log etc. will want it).
+- shepherd: qrexec-agent (user-processes req, respawn, log to
+  /var/log/qrexec-agent.log); qubesdb-daemon WORKING: foreground
+  (patched), args ("0") only, respawn #t, parallel to qrexec-agent.
+  Future core-agent services that read qubesdb must require
+  'qubesdb-daemon.
+
+## NEXT SESSION SEQUENCE
+1. DONE: qubesdb-read /name works. Confirm it survives a cold
+   qvm-shutdown/qvm-start with the shepherd service (single instance:
+   pgrep -c qubesdb-daemon == 1).
+2. Ship qubes-core-agent umbrella package (patterns ready; Makefile
+   audited; DEVEL_BUILD=1; explicit CC=gcc; no CFLAGS/LDFLAGS overrides;
+   substitution pass /usr/lib/qubes→$out, /bin/bash→profile bash,
+   python3 shebangs→profile).
+3. etc-service-type overlay of $out/etc/qubes-rpc/* onto /etc.
+   Delete hand-made VMShell. Test: qvm-run --pass-io, then plain
+   qvm-run (WaitForSession — note: NO WaitForSession script exists in
+   R4.3; agent intercepts it internally, qrexec-agent.c:590).
+4. python-qubesagent sub-project (setup.py entry points incl.
+   qubes-vmexec; needs qubesdb python module → propagated).
+5. THEN gui-agent country: qubes-drv Xorg driver, clipboard, the payoff.
+
+## STATUS SENTIMENT
+Five repos, five green builds, qrexec + qubesdb live, first native qvm-run in a Guix System
+ever. qubesdb now syncs from dom0: the management plane is open.
+The port is winning.

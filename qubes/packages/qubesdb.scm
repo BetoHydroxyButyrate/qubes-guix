@@ -28,6 +28,15 @@
        #:phases
        (modify-phases %standard-phases
          (delete 'configure)
+	 (add-after 'unpack 'run-in-foreground
+		    (lambda _
+		      (substitute* "daemon/db-daemon.c"
+				   ;; the non-systemd branch unconditionally forks; make it opt-in
+				   (("    if \\(1\\) \\{")
+				    "    if (getenv(\"QUBESDB_FORK\")) {")
+				   ;; ready_pipe stays {0,0} when not forking; don't write "ready" to fd 0
+				   (("if \\(write\\(ready_pipe\\[1\\]")
+				    "if (ready_pipe[1] && write(ready_pipe[1]"))))
 	 (add-before 'build 'set-pythonpath
 		     (lambda* (#:key inputs outputs #:allow-other-keys)
 			      (let ((out (assoc-ref outputs "out")))

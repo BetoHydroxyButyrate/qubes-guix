@@ -16,6 +16,7 @@
              (gnu services networking)
 	     (gnu services shepherd)
 	     (gnu services linux)
+	     (gnu packages linux)
              (qubes packages qrexec)  ; <-- our package channel
              (qubes packages qubesdb))  ; <-- our package channel
 
@@ -49,8 +50,9 @@ database from dom0; serves local readers via unix socket.")
    (requirement '(user-processes))
    (respawn? #t)
    (start #~(make-forkexec-constructor
-             (list #$(file-append qubes-core-qubesdb "/bin/qubesdb-daemon") "0")
-             #:log-file "/var/log/qubesdb-daemon.log"))
+             (list #$(file-append qubes-core-qubesdb "/bin/qubesdb-daemon")
+                   "0")
+             #:log-file "/var/log/qubes/qubesdb.dom0.log"))
    (stop #~(make-kill-destructor))))
   
 (operating-system
@@ -79,7 +81,11 @@ database from dom0; serves local readers via unix socket.")
                            "emacs-desktop-environment")
                           (specification->package "sway")
                           (specification->package "wmenu")
-                          (specification->package "foot")) %base-packages))
+                          (specification->package "foot")
+			  qubes-core-qubesdb
+			  qubes-core-qrexec
+			  )
+		    %base-packages))
 
   ;; Below is the list of system services.  To search for available
   ;; services, run 'guix system search KEYWORD' in a terminal.

@@ -52,6 +52,7 @@ exists).
   stale bytecode (rm -rf ~/.cache/guile), then channels.scm route.
 - First git-fetch: zero placeholder hash → error prints real hash →
   paste into (base32 ...).
+- Replaced configure phase + autoreconf: invoke configure via (getenv "CONFIG_SHELL") and setenv CONFIG_SHELL/SHELL to bash — no /bin/sh in sandbox (ENOENT on shebang).
 - (invoke "make" ... var) not (apply invoke ... mixed dots) — improper
   list errors. Count parens; replace whole file rather than patching.
 
@@ -78,6 +79,13 @@ exists).
   pandoc (manpages — or scrub the .1.gz target).
 
 ### Runtime (kernel / xenstore)
+- GUIX: /run and /var/run are DIFFERENT directories (no symlink). Upstream
+  uses both spellings interchangeably. Our convention: /var/run/qubes
+  (qubesdb, qrexec sockets, fork-server, WaitForSession, xorg conf). Any
+  upstream "/run/qubes..." path must be checked (qrexec's /run/qubes-rpc and
+  /run/qubes/rpc-config search entries are harmless-missing).
+- qubes-gui-runuser "augment_pam_env_with_systemd_env: Failed to initialize
+  D-Bus" is a warnx, non-fatal (no systemd user manager on Guix).
 - Xen guest modules NOT auto-loaded on this kernel config. REQUIRED:
   xen-privcmd (THE critical one — libxenctrl's xencall needs it, else
   "Could not obtain handle on privileged command interface" and every
@@ -242,6 +250,76 @@ Two independent faults, both now fixed:
 - Test: qvm-run -p --no-shell guix id → uid=1000; -u root → uid=0.
 - Later (GUI): consider pam_elogind in session for XDG_RUNTIME_DIR.
 
+## STEP 5 GREEN (2026-09-29 09:37): SEAMLESS WINDOWS WORK
+- `qvm-run guix alacritty` from dom0 opens a seamless window. First
+  Guix System qube with a native Qubes GUI agent.
+- Remaining for step 5: auto-start? #t (+ respawn? #t) once stable;
+  clipboard (Ctrl-Shift-C/V) test; qubes-session XDG autostart
+  (qubes-session-autostart needs pyxdg + qubesagent.xdg); qubes.StartApp +
+  qubes.GetAppmenus (app menu sync, needs pyxdg/gi); window icons
+  (icon-sender, python-xcffib); keyboard layout (qubes-keymap.sh);
+  audio (pulse/ or pipewire/ module) — all deferred.
+
+## STEP 5 HISTORY (2026-09-28): qubes-gui-agent (qubes/packages/gui.scm)
+- Sources: gui-agent-linux v4.3.21 (a7528d157abea4fef71dacf64bb1981e24ef1a1d),
+  gui-common v4.3.1 (66b879e36d6cd2a01271fc8d4c2c0f3be85d0029, headers only,
+  copy-build-system). Audio (pulse/, pipewire/) deferred.
+- Compile-verified outside Guix (Ubuntu, Xorg 21.1.11, -Werror clean):
+  qubes-gui, qubes-gui-runuser, libxf86-qubes-common.so, dummyqbs_drv.so
+  (links libxengnttab), qubes_drv.so.
+- Patches: vmside.c execl /usr/bin/qubes-run-xorg -> $out; runuser
+  env_buf[256] -> [4096] (same bug class as qrexec). Drivers: autoreconf +
+  configure LDFLAGS=-Wl,-rpath,$out/lib (they link xf86-qubes-common from the
+  build tree). Template gets a Files/ModulePath with $out + xorg-server
+  modules. Generated xorg conf -> /run/qubes/xorg-qubes.conf.
+- Guix glue: bin/qubes-gui-agent-start (= pre.sh + exec qubes-gui, stdin
+  </dev/tty7 because runuser derives PAM_TTY/XDG_VTNR from it);
+  bin/qubes-session (xsetroot + qrexec-fork-server; no systemd --user, no
+  XDG autostart yet). qsvc() = test -e /run/qubes-service/$1.
+- Runtime chain: shepherd -> qubes-gui-agent-start (root) -> qubes-gui ->
+  (on dom0 screen-size msg) qubes-run-xorg -> qubes-gui-runuser dap (PAM
+  service "qubes-gui-agent") -> sh -l -> xinit qubes-session -- Xorg :0 vt07.
+- /run/qubes must be 2770 root:qubes (upstream tmpfiles) so the user's
+  fork-server can create qrexec-server.$USER.sock.
+- 2026-09-28 DECISION: agent X on :1, coexisting with the local XFCE
+  desktop (display manager on :0/vt7, emulated VGA). Removing the display
+  manager during reconfigure made the qube unreachable (screen gone AND
+  qrexec unresponsive) — keep XFCE as the recovery console for now.
+  Mechanism: Xorg ":1 -sharevts -novtswitch" (no VT_ACTIVATE/KD_GRAPHICS,
+  drivers need no console), start script stdin </dev/null (runuser skips
+  PAM_TTY/VT_ACTIVATE when stdin isn't a tty), bochs-drm NOT unbound.
+  Upstream model (gui-agent XOR lightdm) remains the eventual target.
+- 2026-09-28 LOCKOUT CAUSE (likely): upstream qubes-run-xorg exports
+  XDG_SEAT=seat0 before qubes-gui-runuser opens its PAM session ->
+  pam_elogind registers a 2nd graphical session on seat0 and activates it
+  -> local XFCE session (seat0, vt8) goes inactive, loses DRM/input fds.
+  FIX: strip XDG_SEAT (seatless session); xorg template ServerFlags
+  AutoAddDevices/AutoAddGPU/AutoBindGPU false (don't grab QEMU input or
+  bochs card0). Service now (auto-start? #f) until proven: reconfigure
+  installs it, `herd start qubes-gui-agent` tests it.
+- Logs from failed generations (/var/log/qubes-gui-agent.log,
+  ~/.xsession-errors) persist across rollback — check timestamps/build.
+- 2026-09-29 FIRST LIGHT: agent Xorg :1 came fully up (seatless elogind
+  session, dummyqbs 3440x1440, qubes input, qubes-gui "Ok, somebody
+  connected") then was shut down 20ms later by xinit. CAUSE:
+  qrexec-fork-server daemonizes (parent exits 0 after bind); our session
+  did `fork-server & wait` -> returned at once -> xinit tore down X. FIX:
+  run fork-server in foreground-then-daemon, then `exec sleep infinity`
+  (upstream qubes-session ends with `sleep inf`).
+- xinit "XFree86_VT property unexpectedly has 0 items" is harmless with
+  -sharevts (only WINDOWPATH unset; xinit.c:505 returns and continues).
+- Xorg "(EE) systemd-logind: failed to take device /dev/dri/card0" is the
+  good outcome: our seatless session can't grab the local desktop's GPU.
+- SOLVED "lockout": NOT a VM problem. dom0 shows an HVM's stubdomain
+  emulated VGA only until the VM's gui agent connects over vchan, then
+  closes that window (seamless mode). The agent then died (fork-server
+  bug) -> nothing displayed. Verified during the "lockout": tty0 active =
+  tty8, seat0 ActiveSession = c3 (XFCE), state active — XFCE untouched.
+  RECOVERY (dom0, no reboot): `qvm-start-daemon --force-stubdomain guix`.
+  qrexec keeps working throughout (separate from GUI).
+- GOTCHA: substitute* lines include the trailing "\n" — `$` never matches;
+  anchor on "\n" instead.
+
 ## CORE-AGENT RUNTIME LESSONS (2026-09-27)
 - Outbound qrexec from a USER process (qvm-copy → qrexec-client-vm)
   makes the client the vchan SERVER → needs /dev/xen/{evtchn,gntdev,
@@ -316,6 +394,6 @@ Two independent faults, both now fixed:
 ## STATUS SENTIMENT
 Five repos, five green builds, qrexec + qubesdb live, first native qvm-run in a Guix System
 ever. qubesdb syncs from dom0 and file copy works both ways:
-the management plane is open. PAM user switching live. Next: re-verify qvm-copy-to-vm lands in
+the management plane is open. 2026-09-29: seamless GUI live. PAM user switching live. Next: re-verify qvm-copy-to-vm lands in
 ~dap/QubesIncoming (was /root pre-PAM), then gui-agent (step 5).
 The port is winning.

@@ -210,7 +210,9 @@ Two independent faults, both now fixed:
 - patch-source-shebangs warnings for network/*.nft (nft) and
   package-managers (python2) are harmless: those files aren't installed.
 
-## IN PROGRESS: qrexec services ALL RUN AS ROOT (agent built w/o PAM)
+## RESOLVED 2026-09-28: qrexec user switching via PAM
+- VERIFIED: qvm-run -p --no-shell guix id -> uid=1000(dap), groups incl.
+  qubes; -u root -> uid=0. (History below.)
 - 2026-09-28: PAM agent built; every user switch exited 125 silently.
   CAUSE: do_exec() char env_buf[64]; "SHELL=<store path to bash>" is ~70
   chars -> snprintf overflow -> goto error (no log) after
@@ -314,5 +316,6 @@ Two independent faults, both now fixed:
 ## STATUS SENTIMENT
 Five repos, five green builds, qrexec + qubesdb live, first native qvm-run in a Guix System
 ever. qubesdb syncs from dom0 and file copy works both ways:
-the management plane is open. Next: rebuild qrexec-agent WITH PAM (see NEXT BLOCKER).
+the management plane is open. PAM user switching live. Next: re-verify qvm-copy-to-vm lands in
+~dap/QubesIncoming (was /root pre-PAM), then gui-agent (step 5).
 The port is winning.

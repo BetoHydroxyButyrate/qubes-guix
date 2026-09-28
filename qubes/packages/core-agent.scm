@@ -98,7 +98,18 @@
                   (("\\$scriptdir/qubes/") qubeslib))
                 ;; The stock patch-shebangs phase only covers bin/sbin/libexec;
                 ;; the service scripts live in etc/qubes-rpc and lib/qubes.
-                (for-each patch-shebang scripts)))))))
+                (for-each patch-shebang scripts))))
+          ;; qubes.WaitForSession is owned by qrexec (as upstream), but
+          ;; /etc/qubes-rpc is this package's directory. Link it in rather
+          ;; than union the two dirs: the agent readlink()s services ONE
+          ;; level to spot /dev/tcp targets, so a union (symlink->symlink)
+          ;; would break qubes.ConnectTCP and qubes.UpdatesProxy.
+          (add-after 'fix-script-paths 'link-wait-for-session
+            (lambda* (#:key inputs #:allow-other-keys)
+              (symlink (search-input-file
+                        inputs "/etc/qubes-rpc/qubes.WaitForSession")
+                       (string-append #$output
+                                      "/etc/qubes-rpc/qubes.WaitForSession")))))))
     (inputs
      (list bash                         ; full bash: VMShell is interactive
            python                       ; shebangs of qrun-in-vm, xdg-icon,

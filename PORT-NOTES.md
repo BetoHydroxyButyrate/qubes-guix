@@ -210,7 +210,18 @@ Two independent faults, both now fixed:
 - patch-source-shebangs warnings for network/*.nft (nft) and
   package-managers (python2) are harmless: those files aren't installed.
 
-## NEXT BLOCKER: qrexec services ALL RUN AS ROOT (agent built w/o PAM)
+## IN PROGRESS: qrexec services ALL RUN AS ROOT (agent built w/o PAM)
+- 2026-09-28: PAM agent built; every user switch exited 125 silently.
+  CAUSE: do_exec() char env_buf[64]; "SHELL=<store path to bash>" is ~70
+  chars -> snprintf overflow -> goto error (no log) after
+  pam_open_session succeeded. FIX: substitute env_buf[64] -> [4096]
+  (qrexec.scm 'enlarge-env-buf). GUIX-ISM TO WATCH FOR: fixed-size
+  buffers sized for FHS paths. Worth an upstream report.
+- PAM stack observed working: /etc/pam.d/qrexec (pam_rootok auth,
+  pam_unix account/session) + pam_elogind auto-added to session by
+  Guix's elogind service (registers a logind session, /run/user/1000).
+- qrexec.scm now passes HAVE_PAM_APPL=1 to build AND install, linux-pam
+  input (Damon added build side 2026-09-28).
 - qrexec-agent.c non-PAM #else (~l.350): services (prog set) →
   exec_qubes_rpc2() with NO user switch (runs as root); raw commands →
   execl("/bin/su") which doesn't exist on Guix. Evidence: plain
@@ -285,8 +296,17 @@ Two independent faults, both now fixed:
    -> DONE, GREEN 2026-09-27 (see STATE AT HANDOFF).
 3. DONE: etc-service-type overlay of $out/etc/qubes-rpc/* onto /etc.
    Delete hand-made VMShell. Test: qvm-run --pass-io, then plain
-   qvm-run (WaitForSession — note: NO WaitForSession script exists in
-   R4.3; agent intercepts it internally, qrexec-agent.c:590).
+   qvm-run. CORRECTION: qubes.WaitForSession DOES exist — in the qrexec
+   repo (qubes-rpc-base/, installed only by top-level install-base). The
+   agent forks+execs it for wait-for-session=1 services. If missing: logs
+   "Service not found", exits 1, and the agent runs the queued requests
+   ANYWAY (SIGCHLD handler ignores status) — so absence is only noise.
+   Upstream script needs systemctl --user and, with gui enabled, waits
+   with no timeout for qrexec-server.$user.sock (= forever without a gui
+   agent). Guix version written in qrexec.scm (no-op until
+   /run/current-system/profile/bin/qubes-gui exists — placeholder path),
+   symlinked into core-agent's etc/qubes-rpc (NOT directory-union: agent
+   readlink()s services one level for /dev/tcp detection, exec.c:401).
 4. DONE 2026-09-27. python-qubesagent sub-project (setup.py entry points incl.
    qubes-vmexec; needs qubesdb python module → propagated).
 5. THEN gui-agent country: qubes-drv Xorg driver, clipboard, the payoff.

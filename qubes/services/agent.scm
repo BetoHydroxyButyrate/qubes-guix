@@ -15,7 +15,7 @@
   #:use-module (gnu services linux)         ; kernel-module-loader-service-type
   #:use-module (gnu services shepherd)
   #:use-module (gnu system pam)
-  #:use-module (gnu system setuid)
+  #:use-module (gnu system privilege)       ; privileged-program
   #:use-module (gnu system shadow)          ; user-group
   #:use-module (guix gexp)
   #:use-module (guix records)
@@ -125,21 +125,48 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
 (define (qubes-setuid-programs config)
   ;; qfile-unpacker mounts/chroots into ~/QubesIncoming; the store strips
   ;; 4755, so qubes.Filecopy calls /run/privileged/bin/qfile-unpacker.
-  (list (setuid-program
+  (list (privileged-program
          (program (file-append (qubes-guest-core-agent config)
-                               "/lib/qubes/qfile-unpacker")))))
+                               "/lib/qubes/qfile-unpacker"))
+         (setuid? #t))))
 
 (define (qubes-activation config)
-  ;; Upstream tmpfiles: /run/qubes 2770 root:qubes, so the user's
-  ;; qrexec-fork-server can create qrexec-server.$USER.sock.
-  ;; NB: on Guix /run and /var/run are different directories; Qubes paths
-  ;; here are all /var/run.
   #~(begin
       (use-modules (guix build utils))
+      (define (force-symlink target link)
+        (false-if-exception (delete-file link))
+        (symlink target link))
+
+      ;; Upstream tmpfiles: /var/run/qubes 2770 root:qubes, so the user's
+      ;; qrexec-fork-server can create qrexec-server.$USER.sock.
+      ;; NB: on Guix /run and /var/run are different directories.
       (mkdir-p "/var/run/qubes")
       (mkdir-p "/var/log/qubes")
       (chown "/var/run/qubes" 0 (group:gid (getgrnam "qubes")))
-      (chmod "/var/run/qubes" #o2770)))
+      (chmod "/var/run/qubes" #o2770)
+
+      ;; qvm-shutdown / qvm-restart of an HVM: dom0 writes xenstore
+      ;; control/shutdown; the kernel's Xen driver then runs the usermode
+      ;; helpers /sbin/poweroff (kernel.poweroff_cmd) and /sbin/reboot
+      ;; (hard-wired). Guix has no /sbin, so they failed silently.
+      (mkdir-p "/sbin")
+      (force-symlink "/run/current-system/profile/sbin/halt" "/sbin/poweroff")
+      (force-symlink "/run/current-system/profile/sbin/reboot" "/sbin/reboot")
+
+      ;; Extra qrexec services from packages other than core-agent (which
+      ;; owns /etc/qubes-rpc). The agent searches /run/qubes-rpc first
+      ;; (QREXEC_SERVICE_PATH); plain symlinks keep the one-level readlink
+      ;; /dev/tcp detection working.
+      (mkdir-p "/run/qubes-rpc")
+      (for-each (lambda (dir)
+                  (for-each (lambda (f)
+                              (force-symlink
+                               f (string-append "/run/qubes-rpc/" (basename f))))
+                            (find-files dir)))
+                '#$(if (qubes-guest-gui? config)
+                       (list (file-append (qubes-guest-gui-agent config)
+                                          "/etc/qubes-rpc"))
+                       '()))))
 
 (define (qubes-packages config)
   (append (list (qubes-guest-qrexec config)
@@ -158,7 +185,7 @@ qrexec services, file copy, and (optionally) the seamless GUI agent.")
     (list (service-extension shepherd-root-service-type qubes-shepherd-services)
           (service-extension pam-root-service-type qubes-pam-services)
           (service-extension etc-service-type qubes-etc-files)
-          (service-extension setuid-program-service-type qubes-setuid-programs)
+          (service-extension privileged-program-service-type qubes-setuid-programs)
           (service-extension activation-service-type qubes-activation)
           (service-extension profile-service-type qubes-packages)
           (service-extension kernel-module-loader-service-type

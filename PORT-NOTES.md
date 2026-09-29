@@ -260,6 +260,24 @@ Two independent faults, both now fixed:
   (icon-sender, python-xcffib); keyboard layout (qubes-keymap.sh);
   audio (pulse/ or pipewire/ module) — all deferred.
 
+## SHUTDOWN + SetMonitorLayout (2026-09-29)
+- qvm-shutdown of the HVM did nothing, no logs: dom0 writes xenstore
+  control/shutdown -> kernel Xen driver -> orderly_poweroff() runs usermode
+  helper /sbin/poweroff (kernel.poweroff_cmd; reboot hard-wired to
+  /sbin/reboot). Guix has no /sbin -> silent failure. FIX (agent service
+  activation): /sbin/poweroff -> profile sbin/halt, /sbin/reboot -> reboot.
+  VERIFIED: qvm-shutdown works.
+- setuid-program-service-type is deprecated in current Guix: use
+  privileged-program-service-type + (privileged-program ... (setuid? #t))
+  from (gnu system privilege). Same /run/privileged/bin path.
+- qubes.SetMonitorLayout exit 127: upstream symlink to
+  /usr/bin/qubes-set-monitor-layout (gui-agent pkg) never shipped. FIX:
+  gui.scm installs bin/qubes-set-monitor-layout (DISPLAY :0->:1, store
+  xrandr/cvt) + etc/qubes-rpc/qubes.SetMonitorLayout; the service links
+  gui-agent's etc/qubes-rpc/* into /run/qubes-rpc (searched before
+  /etc/qubes-rpc; literal /run on Guix). Pattern for any future non-core
+  qrexec services.
+
 ## CONFIG REFACTOR (2026-09-29): (qubes services agent)
 - All Qubes integration moved into qubes/services/agent.scm:
   qubes-guest-service-type (+ qubes-guest-configuration: qrexec, qubesdb,

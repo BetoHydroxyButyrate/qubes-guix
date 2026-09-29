@@ -123,7 +123,14 @@
                 (install-file "xf86-input-mfndev/src/.libs/qubes_drv.so" drivers)
                 (install-file "appvm-scripts/usrbin/qubes-run-xorg" bin)
                 (install-file "appvm-scripts/usr/lib/qubes/qubes-xorg-wrapper" qlib)
-                (install-file "appvm-scripts/etc/X11/xorg-qubes.conf.template" x11))))
+                (install-file "appvm-scripts/etc/X11/xorg-qubes.conf.template" x11)
+                (install-file "appvm-scripts/usrbin/qubes-set-monitor-layout" bin)
+                ;; qrexec service (upstream: symlink into /etc/qubes-rpc).
+                ;; The guest service links this dir into /run/qubes-rpc.
+                (mkdir-p (string-append #$output "/etc/qubes-rpc"))
+                (symlink (string-append bin "/qubes-set-monitor-layout")
+                         (string-append #$output
+                                        "/etc/qubes-rpc/qubes.SetMonitorLayout")))))
           (add-after 'install 'adapt-scripts
             (lambda* (#:key inputs #:allow-other-keys)
               (let* ((bin      (string-append #$output "/bin"))
@@ -168,6 +175,17 @@
                   (("XDG_SEAT=seat0 ") "")
                   ((" :0 -nolisten tcp vt07 ")
                    " :1 -nolisten tcp -sharevts -novtswitch "))
+                ;; dom0 sends the monitor layout; apply it to OUR X (:1)
+                ;; with store-path xrandr/cvt (the qrexec session PATH may
+                ;; not have them).
+                (let ((xrandr (search-input-file inputs "/bin/xrandr"))
+                      (cvt    (search-input-file inputs "/bin/cvt")))
+                  (substitute* (string-append bin "/qubes-set-monitor-layout")
+                    (("export DISPLAY=:0") "export DISPLAY=:1")
+                    ;; command positions only: not $xrandr_cmd / xrandr_cmd=
+                    (("(^|[^_$[:alnum:]])xrandr " all pre)
+                     (string-append pre xrandr " "))
+                    (("`cvt ") (string-append "`" cvt " "))))
                 (substitute* (string-append #$output "/lib/qubes/qubes-xorg-wrapper")
                   (("XORG=\"/usr/bin/X\"") (string-append "XORG=\"" xorg "\"")))
                 ;; Our drivers live outside xorg-server's module dir; a Files
@@ -256,7 +274,8 @@ exec " sleep " infinity
            xen
            xinit
            xorgproto
-           xorg-server
+           xorg-server                  ; also provides cvt
+           xrandr
            xsetroot
            qubes-core-vchan-xen
            qubes-core-qubesdb

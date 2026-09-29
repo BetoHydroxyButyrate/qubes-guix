@@ -22,9 +22,10 @@
   #:use-module (gnu packages linux)           ; linux-pam
   #:use-module (gnu packages pulseaudio)
   #:use-module (gnu packages pkg-config)
+  #:use-module (gnu packages python)          ; icon-sender
   #:use-module (gnu packages virtualization)  ; xen (xengnttab)
   #:use-module (gnu packages xdisorg)         ; libdrm, pixman
-  #:use-module (gnu packages xorg)
+  #:use-module (gnu packages xorg)            ; also python-xcffib
   #:use-module (qubes packages vchan)
   #:use-module (qubes packages qubesdb)
   #:use-module (qubes packages qrexec))
@@ -249,6 +250,25 @@
                                                "/usr/bin/qrexec-fork-server"))
                      (xsetroot (search-input-file inputs "/bin/xsetroot"))
                      (sleep (search-input-file inputs "/bin/sleep")))
+                ;; Window icons: icon-sender watches _NET_WM_ICON on every
+                ;; window and streams the icons to dom0 over
+                ;; qubes.WindowIconUpdater (dom0 tints them with the qube's
+                ;; label colour). Upstream starts it via XDG autostart; we
+                ;; start it from qubes-session. Needs only python-xcffib.
+                (let ((sender (string-append #$output "/lib/qubes/icon-sender")))
+                  (install-file "window-icon-updater/icon-sender"
+                                (dirname sender))
+                  (substitute* sender
+                    (("^#!/usr/bin/python3")
+                     (string-append "#!" (search-input-file inputs "/bin/python3")))
+                    (("'qrexec-client-vm'")
+                     (string-append "'" (search-input-file
+                                         inputs "/usr/bin/qrexec-client-vm") "'")))
+                  (chmod sender #o755)
+                  (wrap-program sender
+                    #:sh (search-input-file inputs "/bin/bash")
+                    `("GUIX_PYTHONPATH" prefix
+                      (,(getenv "GUIX_PYTHONPATH")))))
                 (define (write-script name body)
                   (let ((file (string-append bin "/" name)))
                     (call-with-output-file file
@@ -310,6 +330,8 @@ exec " pa " --start -n --file=" #$output "/etc/pulse/qubes-default.pa \\
 " xsetroot " -solid white || true
 " #$output "/lib/qubes/qubes-keymap.sh &
 " #$output "/bin/qubes-start-pulseaudio &
+" (search-input-file inputs "/bin/mkdir") " -p \"$HOME/.cache\"
+" #$output "/lib/qubes/icon-sender 2>\"$HOME/.cache/icon-sender.log\" &
 " fork "
 exec " sleep " infinity
 "))))))))
@@ -341,7 +363,9 @@ exec " sleep " infinity
            qubes-core-vchan-xen
            qubes-core-qubesdb
            qubes-core-qrexec
-           qubes-gui-common))
+           qubes-gui-common
+           python                       ; icon-sender
+           python-xcffib))
     (home-page "https://github.com/QubesOS/qubes-gui-agent-linux")
     (synopsis "Qubes OS GUI agent (seamless windows) for Guix System")
     (description

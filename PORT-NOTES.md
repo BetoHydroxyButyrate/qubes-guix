@@ -556,3 +556,4 @@ ever. qubesdb syncs from dom0 and file copy works both ways:
 the management plane is open. 2026-09-29: seamless GUI live. PAM user switching live. Next: re-verify qvm-copy-to-vm lands in
 ~dap/QubesIncoming (was /root pre-PAM), then gui-agent (step 5).
 The port is winning.
+## WINDOW ICONS (2026-09-29): WORKING (icon-sender)

@@ -48,6 +48,13 @@
                (("install -d .*/systemd/system/.*") "true")
                (("install -m 0644 .*\\.service.*") "true"))
              #t))
+	 (add-after 'unpack 'nonfatal-swapinfo
+		    (lambda _
+		      ;; Upstream 4575219 exits if memory/swapinfo can't be written; R4.3
+		      ;; dom0 doesn't make it writable, so the writer died after every update.
+		      (substitute* "qmemman/meminfo-writer.c"
+				   (("\"memory/swapinfo\", used->swap, strlen\\(used->swap\\)\\)\\)")
+				    "\"memory/swapinfo\", used->swap, strlen(used->swap)) && 0)"))))
          ;; ... build/install phases unchanged
          (replace 'build
            (lambda* (#:key make-flags #:allow-other-keys)

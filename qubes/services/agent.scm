@@ -23,6 +23,8 @@
   #:use-module (gnu packages bash)           ; bash-minimal
   #:use-module (guix gexp)
   #:use-module (guix records)
+  #:use-module (gnu packages compression)    ; gzip (zcat /proc/config.gz)
+  #:use-module (qubes packages linux-utils)  ; meminfo-writer
   #:use-module (qubes packages qrexec)
   #:use-module (qubes packages qubesdb)
   #:use-module (qubes packages core-agent)
@@ -57,6 +59,12 @@
 
 ;; Unprivileged vchan servers (qvm-copy, the GUI agent) need these; the
 ;; default user is in "qubes" (upstream linux-utils udev-qubes-misc.rules).
+;; Balloon-added memory arrives offline; online it so dom0's qmemman can
+;; grow the qube past its initial RAM (upstream misc/50-qubes-mem-hotplug).
+(define %qubes-mem-hotplug-udev-rule
+  (udev-rule "50-qubes-mem-hotplug.rules"
+             "SUBSYSTEM==\"memory\", ACTION==\"add\", ATTR{state}==\"offline\", ATTR{state}=\"online\"\n"))
+
 (define %qubes-xen-udev-rule
   (udev-rule "90-qubes-xen.rules"
              (string-append
@@ -160,6 +168,112 @@ DNS).")
               (zero? (system* #$(file-append bash-minimal "/bin/sh")
                               #$(qubes-network-script config)))))))
 
+(define (qubesdb-read-path config)
+  (file-append (qubes-guest-qubesdb config) "/bin/qubesdb-read"))
+
+(define (qubes-features-script config)
+  ;; Port of core-agent post-install.d/10-qubes-core-agent-features.sh and
+  ;; qvm-features-request: write /features-request/* into qubesdb, then ask
+  ;; dom0 to apply them (accepted for standalone and template qubes). Run on
+  ;; every boot so changes (e.g. gui? toggled) propagate.
+  (let ((qwrite (file-append (qubes-guest-qubesdb config) "/bin/qubesdb-write"))
+        (client (file-append (qubes-guest-qrexec config)
+                             "/usr/bin/qrexec-client-vm"))
+        (zcat   (file-append gzip "/bin/zcat"))
+        (grep*  (file-append grep "/bin/grep")))
+    (mixed-text-file "qubes-features-request" "
+set -u
+req() { " qwrite " \"/features-request/$1\" \"$2\"; }
+req qubes-agent-version 4.4
+req os Linux
+req os-distribution guix
+req qrexec 1
+req vmexec 1
+req gui " (if (qubes-guest-gui? config) "1" "0") "
+req qubes-firewall 0
+req supported-service.meminfo-writer 1
+hp=
+if [ -r /proc/config.gz ] && " zcat " /proc/config.gz | " grep* " -q '^CONFIG_XEN_BALLOON_MEMORY_HOTPLUG=y'; then
+    hp=1
+fi
+req supported-feature.memory-hotplug \"$hp\"
+exec " client " dom0 qubes.FeaturesRequest </dev/null >/dev/null
+")))
+
+(define %meminfo-supervisor
+  ;; meminfo-writer (pidfile mode) daemonizes and waits for SIGUSR1, which
+  ;; qrexec-agent sends ONCE per boot on its first request. At boot that is
+  ;; too early: dom0 hasn't yet made memory/swapinfo writable, the first
+  ;; report fails ("error writing swapinfo to xenstore ?", exit 1), and a
+  ;; respawned instance would wait for a wake that never comes. So: keep
+  ;; the pidfile the agent expects, wake it ourselves after a delay, and
+  ;; restart it if it dies. Extra SIGUSR1s are harmless (handler stays).
+  (mixed-text-file "qubes-meminfo-supervisor" "
+set -u
+M=" (file-append qubes-linux-utils "/bin/meminfo-writer") "
+PIDF=/var/run/meminfo-writer.pid
+child=
+trap '[ -n \"$child\" ] && kill \"$child\" 2>/dev/null; exit 0' TERM INT
+while :; do
+    rm -f $PIDF
+    if $M 30000 100000 $PIDF && child=$(cat $PIDF 2>/dev/null) && [ -n \"$child\" ]; then
+        sleep 10 & wait $!
+        kill -USR1 \"$child\" 2>/dev/null
+        while kill -0 \"$child\" 2>/dev/null; do sleep 5 & wait $!; done
+        echo \"meminfo-writer $child exited; restarting in 10s\"
+    fi
+    child=
+    sleep 10 & wait $!
+done
+"))
+
+(define (qubes-extra-shepherd-services config)
+  (list
+   (shepherd-service
+    (documentation "Advertise this qube's capabilities to dom0
+(qvm-features: qrexec, vmexec, gui, os, memory hotplug...).")
+    (provision '(qubes-features-request))
+    (requirement '(qrexec-agent qubesdb-daemon))
+    (one-shot? #t)
+    (start #~(lambda _
+               (zero? (system* #$(file-append bash-minimal "/bin/sh")
+                               #$(qubes-features-script config))))))
+   (shepherd-service
+    (documentation "Report memory usage to xenstore for dom0's memory
+balancer (qmemman).")
+    (provision '(qubes-meminfo-writer))
+    (requirement '(qubesdb-daemon))
+    ;; Upstream VM mode: with a pidfile it daemonizes, then WAITS for
+    ;; SIGUSR1, which qrexec-agent sends on its first request after boot
+    ;; (wake_meminfo_writer, qrexec-agent.c; pidfile path is compiled into
+    ;; the agent as /var/run/meminfo-writer.pid). Without the pidfile it
+    ;; forks after the first report and exits 0 -> shepherd respawn loop.
+    ;; Only when dom0 enabled qubes-service meminfo-writer, i.e. the qube is
+    ;; included in memory balancing (upstream: qsvc meminfo-writer). Otherwise
+    ;; dom0 doesn't make memory/meminfo writable and it dies with exit 1
+    ;; ("error writing meminfo to xenstore ?", syslog only).
+    (start #~(lambda args
+               (false-if-exception (delete-file "/var/run/meminfo-writer.pid"))
+               (if (zero? (system* #$(file-append bash-minimal "/bin/sh") "-c"
+                                   (string-append
+                                    #$(file-append coreutils "/bin/timeout")
+                                    " 30 " #$(qubesdb-read-path config)
+                                    " -w /name >/dev/null && [ \"$("
+                                    #$(qubesdb-read-path config)
+                                    " /qubes-service/meminfo-writer 2>/dev/null)\" = 1 ]")))
+                   (apply (make-forkexec-constructor
+                           (list #$(file-append bash-minimal "/bin/sh")
+                                 #$%meminfo-supervisor)
+                           #:environment-variables
+                           '("PATH=/run/current-system/profile/bin")
+                           #:log-file "/var/log/qubes/meminfo-writer.log")
+                          args)
+                   (begin
+                     (format #t "meminfo-writer: memory balancing disabled in dom0~%")
+                     #t))))
+    (stop #~(make-kill-destructor))
+    (respawn? #t))))
+
 (define (qubes-shepherd-services config)
   (let ((qrexec  (qubes-guest-qrexec config))
         (qubesdb (qubes-guest-qubesdb config))
@@ -204,7 +318,8 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
          '())
      (if (qubes-guest-network? config)
          (list (qubes-network-shepherd-service config))
-         '()))))
+         '())
+     (qubes-extra-shepherd-services config))))
 
 (define (qubes-etc-files config)
   (let ((core (qubes-guest-core-agent config)))
@@ -231,6 +346,11 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
       ;; NB: on Guix /run and /var/run are different directories.
       (mkdir-p "/var/run/qubes")
       (mkdir-p "/var/log/qubes")
+      ;; /var/run is NOT a tmpfs on Guix: a pidfile from the previous boot
+      ;; survives, and qrexec-agent SIGUSR1s whatever PID it names on its
+      ;; first request (default action: terminate) — at boot that PID is
+      ;; often this boot's meminfo-writer before it wrote its own pidfile.
+      (false-if-exception (delete-file "/var/run/meminfo-writer.pid"))
       (chown "/var/run/qubes" 0 (group:gid (getgrnam "qubes")))
       (chmod "/var/run/qubes" #o2770)
 
@@ -282,7 +402,8 @@ qrexec services, file copy, and (optionally) the seamless GUI agent.")
           (service-extension kernel-module-loader-service-type
                              (const %xen-modules))
           (service-extension udev-service-type
-                             (const (list %qubes-xen-udev-rule)))
+                             (const (list %qubes-xen-udev-rule
+                                          %qubes-mem-hotplug-udev-rule)))
           (service-extension account-service-type
                              (const (list (user-group
                                            (name "qubes")

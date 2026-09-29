@@ -260,7 +260,51 @@ Two independent faults, both now fixed:
   (icon-sender, python-xcffib); keyboard layout (qubes-keymap.sh);
   audio (pulse/ or pipewire/ module) — all deferred.
 
-## NETWORK FROM QUBESDB (2026-09-29, drafted)
+## FEATURES + MEMORY (2026-09-29, drafted)
+- One-shot 'qubes-features-request (after qrexec-agent, qubesdb): writes
+  /features-request/{qubes-agent-version,os,os-distribution=guix,qrexec,
+  vmexec,gui,qubes-firewall=0,supported-service.meminfo-writer,
+  supported-feature.memory-hotplug} to qubesdb then qrexec-client-vm dom0
+  qubes.FeaturesRequest (standalone/template only). Runs every boot.
+  Replaces manual `qvm-features guix vmexec 1`.
+- VERIFIED: qvm-features shows qrexec, vmexec, gui, os, os-distribution=guix,
+  qubes-agent-version, supported-service.meminfo-writer, memory-hotplug.
+- 'qubes-meminfo-writer: upstream VM mode = pidfile
+  /var/run/meminfo-writer.pid; it daemonizes and WAITS for SIGUSR1 from
+  qrexec-agent's first request (wake_meminfo_writer; pidfile path compiled
+  into the agent). Without pidfile it forks+exits 0 -> respawn loop.
+  Silent exit 1 (syslog "error writing meminfo to xenstore ?") when the
+  qube is NOT in memory balancing: dom0 doesn't make memory/meminfo
+  writable. So start only if qubesdb /qubes-service/meminfo-writer = 1
+  (upstream qsvc gate); else service 'starts' with value #t, no process.
+  Enable: Qube settings -> Advanced -> Include in memory balancing.
+  VERIFIED after boot: herd start OK, dom0 memory/meminfo updates.
+- BOOT RACE: /var/run is ON DISK on Guix (not tmpfs). Stale
+  /var/run/meminfo-writer.pid from the last boot -> qrexec-agent's first
+  request SIGUSR1s that PID (default action: terminate) = often this
+  boot's meminfo-writer parent before it rewrote the pidfile -> "PID file
+  did not show up". FIX: delete it in activation and in the start lambda.
+  GENERAL: never trust leftover /var/run state across Guix reboots.
+- SWAPINFO (the real cause, not a boot race): our linux-utils pin
+  includes upstream 4575219 "Report swapinfo" (2026-06-25, after 4.3.19).
+  It writes memory/swapinfo after memory/meminfo and exits 1 if that
+  fails. R4.3 dom0 doesn't make memory/swapinfo writable, so EVERY run
+  writes meminfo once and then dies (which is why manual runs looked like
+  they worked). FIX in linux-utils.scm: substitute* so that a swapinfo
+  write failure is ignored ("strlen(used->swap)))" ->
+  "strlen(used->swap)) && 0)"). The write is still attempted, so it keeps
+  working once dom0 supports it. UPSTREAM BUG: new agent + R4.3 dom0 =
+  no memory balancing. (Also, prev_used_swap is never updated.)
+- The agent's SIGUSR1 comes only once, on the first qrexec request, so a
+  plain respawn would wait forever. Hence qubes-meminfo-supervisor (sh loop run through
+  make-forkexec-constructor). It starts the writer in pidfile mode, waits
+  10s, sends SIGUSR1 itself, polls with kill -0, restarts it 10s after it
+  dies, and kills the child on TERM. Log: /var/log/qubes/meminfo-writer.log.
+- udev 50-qubes-mem-hotplug.rules (online hot-added memory).
+- memory-hotplug advertised only if /proc/config.gz has
+  CONFIG_XEN_BALLOON_MEMORY_HOTPLUG=y.
+
+## NETWORK FROM QUBESDB (2026-09-29): WORKING
 - qubes-guest-service-type now provides 'networking via one-shot
   'qubes-network (fields network? #t, network-interface "eth0"): port of
   core-agent network/setup-ip non-NM path — /net-config/<MAC>/* with

@@ -260,6 +260,18 @@ Two independent faults, both now fixed:
   (icon-sender, python-xcffib); keyboard layout (qubes-keymap.sh);
   audio (pulse/ or pipewire/ module) — all deferred.
 
+## CONFIG REFACTOR (2026-09-29): (qubes services agent)
+- All Qubes integration moved into qubes/services/agent.scm:
+  qubes-guest-service-type (+ qubes-guest-configuration: qrexec, qubesdb,
+  core-agent, gui-agent packages; gui? #t) extending shepherd-root, pam-root,
+  etc, setuid-program, activation, profile, kernel-module-loader, udev,
+  account (system group "qubes"). %qubes-kernel-arguments exported
+  (kernel args can't come from a service).
+- config.scm keeps only: (use-modules (qubes services agent)),
+  kernel-arguments append, "qubes" in the user's supplementary-groups,
+  (service qubes-guest-service-type).
+- Also removed the duplicate plain `mkdir-p /var/run/qubes` activation.
+
 ## STATUS 2026-09-29 12:21: GUI AGENT IN PRODUCTION
 - qubes-gui-agent service now auto-start? #t, respawn? #t; survives
   reboot. Seamless windows, app menu launch (StartApp), GUI backup/restore

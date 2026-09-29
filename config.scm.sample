@@ -14,13 +14,10 @@
              (gnu services xorg)
              (gnu services desktop)
              (gnu services networking)
-	     (gnu services shepherd)
-	     (gnu services linux)
-	     (gnu packages linux)
-             (qubes packages qrexec)  ; <-- our package channel
-             (qubes packages qubesdb))  ; <-- our package channel
-
-;; (use-service-modules cups desktop networking ssh xorg)
+	     (gnu packages fonts)
+	     (gnu packages terminals)
+	     (gnu packages xorg)
+             (qubes services agent))  ; <-- all Qubes integration
 
 (define %sudoers-specification
   (plain-file "sudoers" "\
@@ -29,47 +26,21 @@ root	ALL=(ALL) ALL
 dap	ALL=(ALL) NOPASSWD: ALL
 "))
 
-(define qrexec-agent-shepherd
-  (shepherd-service
-   (documentation "Qubes qrexec guest agent — answers dom0's vchan
-handshake; required for VM survival and qvm-run.")
-   (provision '(qrexec-agent))
-   (requirement '(user-processes))
-   (respawn? #t)
-   (start #~(make-forkexec-constructor
-             (list #$(file-append qubes-core-qrexec
-                                  "/usr/lib/qubes/qrexec-agent"))
-             #:log-file "/var/log/qrexec-agent.log"))
-   (stop #~(make-kill-destructor))))
 
-(define qubesdb-daemon-shepherd
-  (shepherd-service
-   (documentation "QubesDB guest daemon — receives the VM's configuration
-database from dom0; serves local readers via unix socket.")
-   (provision '(qubesdb-daemon))
-   (requirement '(user-processes))
-   (respawn? #t)
-   (start #~(make-forkexec-constructor
-             (list #$(file-append qubes-core-qubesdb "/bin/qubesdb-daemon")
-                   "0")
-             #:log-file "/var/log/qubes/qubesdb.dom0.log"))
-   (stop #~(make-kill-destructor))))
-  
 (operating-system
   (locale "en_AU.utf8")
   (timezone "Australia/Brisbane")
   (keyboard-layout (keyboard-layout "au"))
   (host-name "guix")
   (sudoers-file %sudoers-specification)
-  (kernel-arguments '("xen_privcmd.unrestricted=1" "quiet"))
-
+  (kernel-arguments (append %qubes-kernel-arguments '("quiet")))
   ;; The list of user accounts ('root' is implicit).
   (users (cons* (user-account
                   (name "dap")
                   (comment "Damon Permezel")
                   (group "users")
                   (home-directory "/home/dap")
-                  (supplementary-groups '("wheel" "netdev" "audio" "video")))
+		  (supplementary-groups '("wheel" "netdev" "audio" "video" "qubes")))
                 %base-user-accounts))
 
   ;; Packages installed system-wide.  Users can also install packages
@@ -82,9 +53,17 @@ database from dom0; serves local readers via unix socket.")
                           (specification->package "sway")
                           (specification->package "wmenu")
                           (specification->package "foot")
-			  qubes-core-qubesdb
-			  qubes-core-qrexec
+			  ;; japanese
+			  ;; Install the Japanese output of Source Han Sans
+			  (list font-adobe-source-han-sans "jp")
+			  ;; Other recommended Japanese fonts
+			  font-ipa-ex
+			  font-takao
+			  ;; (qubes packages come from qubes-guest-service-type)
+			  alacritty
+			  xterm
 			  )
+;; (use-service-modules cups desktop networking ssh xorg)
 		    %base-packages))
 
   ;; Below is the list of system services.  To search for available
@@ -118,15 +97,9 @@ database from dom0; serves local readers via unix socket.")
                  (service tor-service-type)
                  (set-xorg-configuration
                   (xorg-configuration (keyboard-layout keyboard-layout)))
-		 (service kernel-module-loader-service-type
-         		 (list "xen-evtchn" "xen-gntdev" "xen-gntalloc" "xen_privcmd" "xenfs"))
-		 (simple-service 'qubes-runtime-dirs activation-service-type #~(mkdir-p "/var/run/qubes"))
-		 ;; qrexec
-		 (simple-service 'qrexec-agent shepherd-root-service-type
-                        (list qrexec-agent-shepherd))
-		 ;; qubesdb
-		 (simple-service 'qubesdb-daemon shepherd-root-service-type
-                        (list qubesdb-daemon-shepherd))
+		 ;; Qubes guest integration: qrexec, qubesdb, qubes-rpc, PAM,
+		 ;; udev, setuid qfile-unpacker, kernel modules, GUI agent.
+		 (service qubes-guest-service-type)
 		 ;; new services here...
 		)
 

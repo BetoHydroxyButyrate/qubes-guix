@@ -260,6 +260,49 @@ Two independent faults, both now fixed:
   (icon-sender, python-xcffib); keyboard layout (qubes-keymap.sh);
   audio (pulse/ or pipewire/ module) — all deferred.
 
+## STATUS 2026-09-29 12:21: GUI AGENT IN PRODUCTION
+- qubes-gui-agent service now auto-start? #t, respawn? #t; survives
+  reboot. Seamless windows, app menu launch (StartApp), GUI backup/restore
+  (SelectFile via zenity wrapper) all working.
+- Still deferred: XDG autostart in qubes-session, window icons
+  (icon-sender), keyboard layout sync, audio (pulse/pipewire module),
+  qvm-features-request (so dom0 learns vmexec/etc. automatically),
+  PCI detach test, upstream reports (env_buf[64] in qrexec-agent,
+  env_buf[256] in qubes-gui-runuser, wait_for_space no-timeout).
+
+## GUI FOLLOW-UPS (2026-09-29)
+- qubes.GetAppmenus WORKS (menu entries appear in dom0).
+- App menu entries run qubes.StartApp (python: qubesagent.xdg + pyxdg +
+  PyGObject Gio/GLib + qubesdb). FIX: python-qubesagent ships
+  bin/qubes-startapp (wrapped: GUIX_PYTHONPATH + GI_TYPELIB_PATH;
+  propagates pyxdg, pygobject, qubesdb); core-agent symlinks
+  etc/qubes-rpc/qubes.StartApp to it.
+- Clipboard from the EMULATED (stubdom) window: guid uses qrexec service
+  qubes.ClipboardCopy/Paste ("specific to Windows/non-X11",
+  xside.c:736 when domid != target_domid). No Linux agent ships it, and
+  dom0 sends "QUBESRPC qubes.ClipboardCopy" with no source-domain field,
+  which libqrexec rejects ("No space found after service descriptor").
+  EXPECTED/unsupported. Clipboard in SEAMLESS windows goes over the GUI
+  protocol instead — test there.
+
+- qubes.SelectFile/SelectDirectory (GUI backup/restore location picker)
+  `exec zenity` -> not found. FIX: zenity as core-agent input; store path
+  rewritten in scripts (SelectFile/Dir, qvm-open-in-vm, qvm-actions.sh)
+  and in gui-fatal.c (qfile-agent/unpacker error dialogs).
+  Then: zenity 4 (GTK4) aborted (int3) "Settings schema
+  'org.gtk.gtk4.Settings.FileChooser' is not installed" — qrexec session's
+  XDG_DATA_DIRS lacks GTK. FIX: core-agent compiles GTK's *.gschema.xml
+  into $out/share/qubes/gsettings-schemas (glib:bin native input) and all
+  call sites use $out/libexec/qubes-zenity, a wrapper exporting
+  GSETTINGS_SCHEMA_DIR. GENERAL LESSON: GUI tools launched via qrexec get
+  the minimal session env, not a desktop env — wrap them.
+- Backup/Restore: CLI verified end to end (qvm-backup -d guix,
+  qvm-backup-restore -d guix --verify-only). Silent restore hang =
+  dom0 qfile-dom0-unpacker wait_for_space() (-w 500MB, no timeout,
+  unpack.c:77) when dom0 root is nearly full — not a guix bug.
+  `tar tv` stops after backup-header: Qubes backups are concatenated tars,
+  use `tar tvi`.
+
 ## STEP 5 HISTORY (2026-09-28): qubes-gui-agent (qubes/packages/gui.scm)
 - Sources: gui-agent-linux v4.3.21 (a7528d157abea4fef71dacf64bb1981e24ef1a1d),
   gui-common v4.3.1 (66b879e36d6cd2a01271fc8d4c2c0f3be85d0029, headers only,

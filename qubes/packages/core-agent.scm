@@ -16,6 +16,10 @@
   #:use-module (gnu packages bash)
   #:use-module (gnu packages python)
   #:use-module (gnu packages python-build)
+  #:use-module (gnu packages freedesktop)     ; python-pyxdg
+  #:use-module (gnu packages gnome)           ; zenity
+  #:use-module (gnu packages gtk)             ; gtk (schemas for zenity)
+  #:use-module (gnu packages glib)            ; python-pygobject, gobject-introspection
   ;; Adjust these three to your actual module / variable names if they differ.
   #:use-module (qubes packages linux-utils)   ; qubes-linux-utils
   #:use-module (qubes packages qrexec)        ; qubes-core-qrexec
@@ -50,6 +54,13 @@
           ;; a command-line value would replace -Wall -fPIC -pie wholesale.
           ;; No DEVEL_BUILD: its $ORIGIN rpath only helps when the libs share
           ;; our prefix; ld-wrapper already adds RUNPATH for the input libs.
+          ;; gui-fatal.c (error dialogs of qfile-agent/qfile-unpacker)
+          ;; execlp()s /usr/bin/zenity.
+          (add-before 'build 'patch-zenity
+            (lambda* (#:key inputs #:allow-other-keys)
+              (substitute* "qubes-rpc/gui-fatal.c"
+                (("/usr/bin/zenity")
+                 (string-append #$output "/libexec/qubes-zenity")))))
           (replace 'build
             (lambda _
               (invoke "make" "-C" "qubes-rpc" "CC=gcc")))
@@ -62,13 +73,41 @@
                       (string-append "BINDIR=" #$output "/bin")
                       (string-append "LIBDIR=" #$output "/lib")
                       (string-append "SYSCONFDIR=" #$output "/etc"))))
-          (add-after 'install 'fix-script-paths
+          ;; zenity 4 (GTK4) aborts unless GSettings finds GTK's schemas
+          ;; (org.gtk.gtk4.Settings.FileChooser); qrexec sessions don't have
+          ;; GTK on XDG_DATA_DIRS. Compile GTK's schemas into our own dir and
+          ;; call zenity through a wrapper that points GSETTINGS_SCHEMA_DIR
+          ;; at it.
+          (add-after 'install 'install-zenity-wrapper
+            (lambda* (#:key inputs #:allow-other-keys)
+              (let* ((schemas (string-append #$output "/share/qubes/gsettings-schemas"))
+                     (gtk-xml (search-input-file
+                               inputs
+                               "/share/glib-2.0/schemas/org.gtk.gtk4.Settings.FileChooser.gschema.xml"))
+                     (wrapper (string-append #$output "/libexec/qubes-zenity")))
+                (mkdir-p schemas)
+                (for-each (lambda (f) (install-file f schemas))
+                          (find-files (dirname gtk-xml) "\\.gschema\\.xml$"))
+                (invoke "glib-compile-schemas" schemas)
+                (mkdir-p (dirname wrapper))
+                (call-with-output-file wrapper
+                  (lambda (port)
+                    (format port "#!~a
+export GSETTINGS_SCHEMA_DIR=~a
+exec ~a \"$@\"
+"
+                            (search-input-file inputs "/bin/sh")
+                            schemas
+                            (search-input-file inputs "/bin/zenity"))))
+                (chmod wrapper #o755))))
+          (add-after 'install-zenity-wrapper 'fix-script-paths
             (lambda* (#:key inputs #:allow-other-keys)
               (let* ((qubeslib  (string-append #$output "/lib/qubes/"))
                      (client-vm (search-input-file
                                  inputs "/usr/bin/qrexec-client-vm"))
                      (bash      (search-input-file inputs "/bin/bash"))
                      (vmexec    (search-input-file inputs "/bin/qubes-vmexec"))
+                     (zenity    (string-append #$output "/libexec/qubes-zenity"))
                      ;; Regular non-ELF files only: substitute* would turn
                      ;; symlinks into copies (qubes.VMExecGUI, qubes.Log),
                      ;; choke on the dangling /dev/tcp ones, and mangle
@@ -91,6 +130,11 @@
                   (("exec /bin/bash") (string-append "exec " bash))
                   ;; qubes.VMExec / qubes.VMRootExec
                   (("/usr/bin/qubes-vmexec") vmexec)
+                  ;; qubes.SelectFile/SelectDirectory (exec zenity ...),
+                  ;; qvm-open-in-vm (test -f + prompt), qvm-actions.sh.
+                  (("/usr/bin/zenity") zenity)
+                  (("(^|[[:space:]])zenity --" all pre)
+                   (string-append pre zenity " --"))
                   ;; qvm-copy finds helpers via ${0%/*}/../lib/qubes, i.e.
                   ;; relative to the *profile* symlink, where
                   ;; qrexec-client-vm does not exist.
@@ -109,7 +153,18 @@
               (symlink (search-input-file
                         inputs "/etc/qubes-rpc/qubes.WaitForSession")
                        (string-append #$output
-                                      "/etc/qubes-rpc/qubes.WaitForSession")))))))
+                                      "/etc/qubes-rpc/qubes.WaitForSession"))))
+          ;; qubes.StartApp needs qubesagent + pyxdg + PyGObject + qubesdb on
+          ;; its path; python-qubesagent ships it as a wrapped program.
+          ;; (Symlink to a regular file: fine for the agent's readlink check.)
+          (add-after 'link-wait-for-session 'link-startapp
+            (lambda* (#:key inputs #:allow-other-keys)
+              (let ((svc (string-append #$output "/etc/qubes-rpc/qubes.StartApp")))
+                (delete-file svc)
+                (symlink (search-input-file inputs "/bin/qubes-startapp")
+                         svc)))))))
+    (native-inputs
+     (list `(,glib "bin")))             ; glib-compile-schemas
     (inputs
      (list bash                         ; full bash: VMShell is interactive
            python                       ; shebangs of qrun-in-vm, xdg-icon,
@@ -117,7 +172,9 @@
            qubes-linux-utils            ; libqubes-rpc-filecopy, libqubes-pure
            qubes-core-qubesdb           ; libqubesdb (vm-log)
            qubes-core-qrexec            ; qrexec-client-vm path
-           python-qubesagent))          ; qubes-vmexec for qubes.VMExec
+           python-qubesagent            ; qubes-vmexec for qubes.VMExec
+           zenity                       ; SelectFile/SelectDirectory, dialogs
+           gtk))                        ; its GSettings schemas (see wrapper)
     (home-page "https://github.com/QubesOS/qubes-core-agent-linux")
     (synopsis "Qubes OS guest agent: qrexec services and file-copy tools")
     (description
@@ -166,7 +223,23 @@ if __name__ == '__main__':
 " python (cdr entry))))
                      (chmod file #o755)))
                  '(("qubes-vmexec" . "qubesagent.vmexec")
-                   ("qubes-firewall" . "qubesagent.firewall"))))))
+                   ("qubes-firewall" . "qubesagent.firewall")))
+                ;; qubes.StartApp (lives in qubes-rpc/, not the module); its
+                ;; "#!/usr/bin/python3 --" is fixed by 'patch-shebangs and it
+                ;; gets GUIX_PYTHONPATH from 'wrap like the launchers.
+                (copy-file "qubes-rpc/qubes.StartApp"
+                           (string-append bin "/qubes-startapp"))
+                (chmod (string-append bin "/qubes-startapp") #o755))))
+          ;; 'wrap only sets GUIX_PYTHONPATH; qubesagent.xdg also needs the
+          ;; Gio/GLib typelibs.
+          (add-after 'wrap 'wrap-typelibs
+            (lambda _
+              (for-each
+               (lambda (prog)
+                 (wrap-program (string-append #$output "/bin/" prog)
+                   `("GI_TYPELIB_PATH" ":" prefix
+                     (,(getenv "GI_TYPELIB_PATH")))))
+               '("qubes-startapp"))))
           ;; Only the vmexec tests: the others need qubesdb running,
           ;; pyxdg, gi or a network VM.
           (replace 'check
@@ -174,9 +247,11 @@ if __name__ == '__main__':
               (when tests?
                 (invoke "python3" "-m" "unittest" "qubesagent.test_vmexec")))))))
     (native-inputs (list python-setuptools python-wheel))
-    ;; firewall.py imports qubesdb; propagate so the wrapper's
-    ;; GUIX_PYTHONPATH includes its python module.
-    (propagated-inputs (list qubes-core-qubesdb))
+    ;; GI_TYPELIB_PATH search path comes from gobject-introspection.
+    (inputs (list gobject-introspection glib))
+    ;; Propagated so the 'wrap phase's GUIX_PYTHONPATH covers them:
+    ;; qubesdb (firewall, StartApp), pyxdg + PyGObject (qubesagent.xdg).
+    (propagated-inputs (list qubes-core-qubesdb python-pyxdg python-pygobject))
     (home-page "https://github.com/QubesOS/qubes-core-agent-linux")
     (synopsis "Qubes OS guest agent python module (qubes-vmexec)")
     (description

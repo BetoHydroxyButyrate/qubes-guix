@@ -125,6 +125,7 @@
                 (install-file "appvm-scripts/usr/lib/qubes/qubes-xorg-wrapper" qlib)
                 (install-file "appvm-scripts/etc/X11/xorg-qubes.conf.template" x11)
                 (install-file "appvm-scripts/usrbin/qubes-set-monitor-layout" bin)
+                (install-file "appvm-scripts/usr/lib/qubes/qubes-keymap.sh" qlib)
                 ;; qrexec service (upstream: symlink into /etc/qubes-rpc).
                 ;; The guest service links this dir into /run/qubes-rpc.
                 (mkdir-p (string-append #$output "/etc/qubes-rpc"))
@@ -186,6 +187,24 @@
                     (("(^|[^_$[:alnum:]])xrandr " all pre)
                      (string-append pre xrandr " "))
                     (("`cvt ") (string-append "`" cvt " "))))
+                ;; Keyboard: the qubes input driver registers its keyboard
+                ;; with the server's DEFAULT XKB keymap, and dom0 sends raw
+                ;; evdev keycodes. Guix's Xorg default isn't evdev, so the
+                ;; letters (same codes either way) worked but arrows/nav keys
+                ;; didn't. Apply dom0's layout (qubesdb /keyboard-layout) with
+                ;; evdev rules forced, on our display only (:1 — not the local
+                ;; desktop's :0), and follow changes via qubesdb-watch.
+                (let ((setxkbmap (search-input-file inputs "/bin/setxkbmap"))
+                      (qwatch (string-append (dirname qdb) "/qubesdb-watch"))
+                      (keymap (string-append #$output "/lib/qubes/qubes-keymap.sh")))
+                  (substitute* keymap
+                    (("/usr/bin/qubesdb-read") qdb)
+                    (("qubesdb-watch ") (string-append qwatch " "))
+                    (("for x in /tmp/\\.X11-unix/X\\*")
+                     "for x in /tmp/.X11-unix/X1")
+                    (("setxkbmap -display")
+                     (string-append setxkbmap " -rules evdev -model pc105 -display")))
+                  (patch-shebang keymap))
                 (substitute* (string-append #$output "/lib/qubes/qubes-xorg-wrapper")
                   (("XORG=\"/usr/bin/X\"") (string-append "XORG=\"" xorg "\"")))
                 ;; Our drivers live outside xorg-server's module dir; a Files
@@ -252,6 +271,7 @@ exec " #$output "/bin/qubes-gui $opts </dev/null
                 (write-script "qubes-session"
                   (string-append "
 " xsetroot " -solid white || true
+" #$output "/lib/qubes/qubes-keymap.sh &
 " fork "
 exec " sleep " infinity
 "))))))))
@@ -276,6 +296,7 @@ exec " sleep " infinity
            xorgproto
            xorg-server                  ; also provides cvt
            xrandr
+           setxkbmap
            xsetroot
            qubes-core-vchan-xen
            qubes-core-qubesdb

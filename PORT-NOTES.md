@@ -260,6 +260,20 @@ Two independent faults, both now fixed:
   (icon-sender, python-xcffib); keyboard layout (qubes-keymap.sh);
   audio (pulse/ or pipewire/ module) — all deferred.
 
+## KEYBOARD (2026-09-29)
+- Letters OK, arrows/nav keys dead in seamless windows (fine in dom0 and
+  in the local XFCE :0). qubes-gui feeds dom0's RAW keycodes to the qubes
+  input driver ('K' via xf86-qubes-socket), which registers its keyboard
+  with the server's DEFAULT XKB keymap. Upstream distros default to evdev
+  rules; Guix's Xorg apparently doesn't -> nav cluster keycodes (evdev Up=111,
+  Left=113...) land on other keys. Upstream also runs qubes-keymap.sh
+  (qubesdb /keyboard-layout -> setxkbmap, qubesdb-watch loop) from XDG
+  autostart, which we skipped.
+- FIX (gui.scm): install lib/qubes/qubes-keymap.sh, store paths for
+  qubesdb-read/-watch + setxkbmap, force "-rules evdev -model pc105",
+  only display :1; qubes-session starts it in the background.
+- Quick manual check: DISPLAY=:1 setxkbmap -rules evdev -model pc105 -layout us
+
 ## SHUTDOWN + SetMonitorLayout (2026-09-29)
 - qvm-shutdown of the HVM did nothing, no logs: dom0 writes xenstore
   control/shutdown -> kernel Xen driver -> orderly_poweroff() runs usermode

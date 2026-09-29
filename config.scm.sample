@@ -78,18 +78,9 @@ dap	ALL=(ALL) NOPASSWD: ALL
 								"(public-key (ecc (curve Ed25519) (q #C1FD53E5D4CE971933EC50C9F307AE2171A2D3B52C804642A7A35F84F3A4EA98#)))")
 						    ))))
 
-		 ;; static networking
-		 (service static-networking-service-type
-		  (list (static-networking
-		 	(addresses (list
-		 			(network-address
-		 			 (device "eth0")
-		 			 (value "10.137.0.50/8"))))
-		 	(routes (list
-		 		  (network-route
-		 		   (destination "default")
-		 		   (gateway "10.138.24.90"))))
-		 	(name-servers '("10.139.1.1" "10.139.1.2")))))
+		 ;; Networking: configured from qubesdb by qubes-guest-service-type
+		 ;; (which provides 'networking). Do NOT also use
+		 ;; static-networking-service-type — the two would conflict.
                  ;; To configure OpenSSH, pass an 'openssh-configuration'
                  ;; record as a second argument to 'service' below.
 		 ;; (service dhcpcd-service-type)

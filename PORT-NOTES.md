@@ -260,6 +260,19 @@ Two independent faults, both now fixed:
   (icon-sender, python-xcffib); keyboard layout (qubes-keymap.sh);
   audio (pulse/ or pipewire/ module) — all deferred.
 
+## NETWORK FROM QUBESDB (2026-09-29, drafted)
+- qubes-guest-service-type now provides 'networking via one-shot
+  'qubes-network (fields network? #t, network-interface "eth0"): port of
+  core-agent network/setup-ip non-NM path — /net-config/<MAC>/* with
+  /qubes-* fallback, /32 addr, gateway neighbour pinned to fe:ff:ff:ff:ff:ff,
+  link route + default onlink, IPv6 if present, resolv.conf from
+  /qubes-primary-dns/-secondary-dns; honours qubes-service
+  disable-default-route / disable-dns-server (read from qubesdb directly;
+  /run/qubes-service isn't populated on Guix). Waits up to 30s for
+  /qubes-ip (qubesdb -w); no netvm => exits 0, 'networking still provided.
+- config.scm: static-networking-service-type REMOVED (would conflict on
+  'networking).
+
 ## AUDIO (2026-09-29): WORKING — sox tone via paplay and Firefox/YouTube audio reach dom0
 - pulse/module-vchan-sink: compiled -Werror clean outside Guix (PA 16.1,
   matching pulsecore-16.1); needs ltdl.h (libltdl). Links only

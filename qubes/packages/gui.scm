@@ -20,6 +20,7 @@
   #:use-module (gnu packages gl)              ; mesa (gbm)
   #:use-module (gnu packages libunistring)
   #:use-module (gnu packages linux)           ; linux-pam
+  #:use-module (gnu packages pulseaudio)
   #:use-module (gnu packages pkg-config)
   #:use-module (gnu packages virtualization)  ; xen (xengnttab)
   #:use-module (gnu packages xdisorg)         ; libdrm, pixman
@@ -107,7 +108,17 @@
                            (string-append "--prefix=" #$output)
                            (string-append "LDFLAGS=-Wl,-rpath," #$output "/lib"))
                    (invoke "make")))
-               '("xf86-video-dummy" "xf86-input-mfndev"))))
+               '("xf86-video-dummy" "xf86-input-mfndev"))
+              ;; PulseAudio sink over vchan. It includes PA's *internal*
+              ;; pulsecore headers, vendored per PA release: pick the set
+              ;; matching our pulseaudio exactly (upstream's Makefile does
+              ;; the same symlink), and fail loudly if there is none.
+              (invoke "sh" "-c"
+                      (string-append
+                       "v=$(pkg-config --modversion libpulse | cut -d- -f1) && "
+                       "test -d pulse/pulsecore-$v && "
+                       "ln -sfn pulsecore-$v pulse/pulsecore"))
+              (invoke "make" "-C" "pulse" "module-vchan-sink.so")))
           (replace 'install
             (lambda _
               (let ((bin     (string-append #$output "/bin"))
@@ -126,6 +137,12 @@
                 (install-file "appvm-scripts/etc/X11/xorg-qubes.conf.template" x11)
                 (install-file "appvm-scripts/usrbin/qubes-set-monitor-layout" bin)
                 (install-file "appvm-scripts/usr/lib/qubes/qubes-keymap.sh" qlib)
+                ;; PA can't take modules into its own (store) module dir; we
+                ;; start it with --dl-search-path covering this dir too.
+                (install-file "pulse/module-vchan-sink.so"
+                              (string-append #$output "/lib/pulse-qubes"))
+                (install-file "pulse/qubes-default.pa"
+                              (string-append #$output "/etc/pulse"))
                 ;; qrexec service (upstream: symlink into /etc/qubes-rpc).
                 ;; The guest service links this dir into /run/qubes-rpc.
                 (mkdir-p (string-append #$output "/etc/qubes-rpc"))
@@ -260,6 +277,26 @@ echo 1073741824 > /sys/module/xen_gntalloc/parameters/limit || true
 export DISPLAY=:1
 exec " #$output "/bin/qubes-gui $opts </dev/null
 "))
+                ;; = upstream start-pulseaudio-with-vchan. Run from
+                ;; qubes-session (background: it waits for the audio domain).
+                ;; A local desktop may already have autospawned a PA for this
+                ;; user (one per user): replace it with the Qubes-configured
+                ;; one; later `pulseaudio --start` calls then find ours.
+                (let* ((pa    (search-input-file inputs "/bin/pulseaudio"))
+                       (padir (dirname (search-input-file
+                                        inputs
+                                        "/lib/pulseaudio/modules/module-null-sink.so"))))
+                  (write-script "qubes-start-pulseaudio"
+                    (string-append "
+set -u
+[ -e /run/qubes-service/pipewire ] && exit 0
+" qdb " -w /qubes-audio-domain-xid >/dev/null || exit 0
+" pa " --kill 2>/dev/null || true
+sleep 1
+exec " pa " --start -n --file=" #$output "/etc/pulse/qubes-default.pa \\
+  --exit-idle-time=-1 \\
+  --dl-search-path=" #$output "/lib/pulse-qubes:" padir "
+")))
                 ;; = upstream qubes-session, minus systemd --user and XDG
                 ;; autostart (needs pyxdg; later). The fork server creates
                 ;; /var/run/qubes/qrexec-server.$USER.sock, which
@@ -272,6 +309,7 @@ exec " #$output "/bin/qubes-gui $opts </dev/null
                   (string-append "
 " xsetroot " -solid white || true
 " #$output "/lib/qubes/qubes-keymap.sh &
+" #$output "/bin/qubes-start-pulseaudio &
 " fork "
 exec " sleep " infinity
 "))))))))
@@ -297,6 +335,8 @@ exec " sleep " infinity
            xorg-server                  ; also provides cvt
            xrandr
            setxkbmap
+           pulseaudio                   ; libpulse.pc + the daemon we start
+           libltdl                      ; pulsecore/module.h includes ltdl.h
            xsetroot
            qubes-core-vchan-xen
            qubes-core-qubesdb

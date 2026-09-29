@@ -17,6 +17,7 @@
   #:use-module (gnu system pam)
   #:use-module (gnu system privilege)       ; privileged-program
   #:use-module (gnu system shadow)          ; user-group
+  #:use-module (gnu packages pulseaudio)     ; pactl/paplay for the vchan sink
   #:use-module (guix gexp)
   #:use-module (guix records)
   #:use-module (qubes packages qrexec)
@@ -173,7 +174,9 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
                 (qubes-guest-qubesdb config)
                 (qubes-guest-core-agent config))
           (if (qubes-guest-gui? config)
-              (list (qubes-guest-gui-agent config))
+              ;; pulseaudio: the agent starts it with the vchan sink; this
+              ;; also puts pactl/paplay on PATH for checking audio.
+              (list (qubes-guest-gui-agent config) pulseaudio)
               '())))
 
 (define qubes-guest-service-type

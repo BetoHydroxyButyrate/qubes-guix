@@ -260,6 +260,19 @@ Two independent faults, both now fixed:
   (icon-sender, python-xcffib); keyboard layout (qubes-keymap.sh);
   audio (pulse/ or pipewire/ module) — all deferred.
 
+## AUDIO (2026-09-29): WORKING — sox tone via paplay and Firefox/YouTube audio reach dom0
+- pulse/module-vchan-sink: compiled -Werror clean outside Guix (PA 16.1,
+  matching pulsecore-16.1); needs ltdl.h (libltdl). Links only
+  libvchan-xen + libqubesdb; ~85 pa_* symbols resolved from the running
+  PA at load -> header set MUST match the running PA (vendored
+  pulse/pulsecore-<ver>, 17.0 present for Guix's pulseaudio 17.0).
+- Guix: module can't go in PA's store module dir -> $out/lib/pulse-qubes,
+  PA started with --dl-search-path=<ours>:<pa modules>, config
+  $out/etc/pulse/qubes-default.pa. bin/qubes-start-pulseaudio (from
+  qubes-session, background): waits qubesdb /qubes-audio-domain-xid,
+  kills any desktop-autospawned PA for the user (one per user), starts ours.
+- KEYBOARD fix verified working (arrows OK).
+
 ## KEYBOARD (2026-09-29)
 - Letters OK, arrows/nav keys dead in seamless windows (fine in dom0 and
   in the local XFCE :0). qubes-gui feeds dom0's RAW keycodes to the qubes
@@ -308,8 +321,10 @@ Two independent faults, both now fixed:
 - qubes-gui-agent service now auto-start? #t, respawn? #t; survives
   reboot. Seamless windows, app menu launch (StartApp), GUI backup/restore
   (SelectFile via zenity wrapper) all working.
+- Done since: keyboard layout sync (evdev rules), audio (pulse vchan sink),
+  qvm-shutdown (/sbin helpers), SetMonitorLayout.
 - Still deferred: XDG autostart in qubes-session, window icons
-  (icon-sender), keyboard layout sync, audio (pulse/pipewire module),
+  (icon-sender), audio INPUT (microphone) untested, pipewire variant,
   qvm-features-request (so dom0 learns vmexec/etc. automatically),
   PCI detach test, upstream reports (env_buf[64] in qrexec-agent,
   env_buf[256] in qubes-gui-runuser, wait_for_space no-timeout).

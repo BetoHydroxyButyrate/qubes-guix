@@ -11,18 +11,23 @@
   #:use-module (gnu packages icu4c)
   #:use-module (qubes packages vchan))
 
+;; Pinned to the R4.3 release branch to match the R4.3 dom0. The previous pin
+;; (main, mm_25063069) was only 2 commits ahead: upstream 4575219 "Report
+;; swapinfo", which needs an R4.4 dom0 (core-admin 0046d33 creates the
+;; writable memory/swapinfo key) and killed meminfo-writer on R4.3. Nothing
+;; else differs (qrexec-lib identical), so the nonfatal-swapinfo phase is gone.
 (define-public qubes-linux-utils
   (package
     (name "qubes-linux-utils")
-    (version "mm_25063069")                       ;; <- from `git describe --tags`
+    (version "4.3.19")
     (source (origin
               (method git-fetch)
               (uri (git-reference
                     (url "https://github.com/QubesOS/qubes-linux-utils")
-                    (commit "25063069abf57d229e01025bb60dbdf3747c60ae")))  ;; <- HEAD of your checkout
+                    (commit "2c79ddbf9d9f9024d1881215d8441b3f0f6058fa"))) ; v4.3.19 = release4.3
               (file-name (git-file-name name version))
               (sha256
-               (base32 "0zd8f1g5hmc3xaid33kc98i7imzxsamk7ad2g8ykwcxg5806vppi"))))
+               (base32 "1vzssg29wjxpzrkvfppsp021r3ngw76dgryb1in3080k241kyshr"))))
     (build-system gnu-build-system)
     (arguments
      `(#:tests? #f
@@ -34,7 +39,7 @@
              (string-append "SCRIPTSDIR=" (assoc-ref %outputs "out") "/lib/qubes")
              (string-append "INCLUDEDIR=" (assoc-ref %outputs "out") "/include")
              (string-append "BINDIR=" (assoc-ref %outputs "out") "/bin")
-	     (string-append "LDFLAGS=-Wl,-rpath=" (assoc-ref %outputs "out") "/lib"))
+             (string-append "LDFLAGS=-Wl,-rpath=" (assoc-ref %outputs "out") "/lib"))
        #:phases
        (modify-phases %standard-phases
          (delete 'configure)
@@ -48,14 +53,6 @@
                (("install -d .*/systemd/system/.*") "true")
                (("install -m 0644 .*\\.service.*") "true"))
              #t))
-	 (add-after 'unpack 'nonfatal-swapinfo
-		    (lambda _
-		      ;; Upstream 4575219 exits if memory/swapinfo can't be written; R4.3
-		      ;; dom0 doesn't make it writable, so the writer died after every update.
-		      (substitute* "qmemman/meminfo-writer.c"
-				   (("\"memory/swapinfo\", used->swap, strlen\\(used->swap\\)\\)\\)")
-				    "\"memory/swapinfo\", used->swap, strlen(used->swap)) && 0)"))))
-         ;; ... build/install phases unchanged
          (replace 'build
            (lambda* (#:key make-flags #:allow-other-keys)
              (for-each (lambda (d)

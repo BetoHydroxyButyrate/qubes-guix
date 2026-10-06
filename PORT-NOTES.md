@@ -557,3 +557,65 @@ the management plane is open. 2026-09-29: seamless GUI live. PAM user switching 
 ~dap/QubesIncoming (was /root pre-PAM), then gui-agent (step 5).
 The port is winning.
 ## WINDOW ICONS (2026-09-29): WORKING (icon-sender)
+- gui.scm installs window-icon-updater/icon-sender at lib/qubes/icon-sender.
+  The python3 shebang and qrexec-client-vm path are patched, and it is
+  wrapped with GUIX_PYTHONPATH (python-xcffib + cffi). It doesn't use
+  qubesimgconverter; dom0 does the tinting. qubes-session starts it in the
+  background (upstream uses XDG autostart). Log: ~/.cache/icon-sender.log.
+  qrexec service: qubes.WindowIconUpdater (VM -> dom0).
+- qrexec binaries live under $qrexec/usr/bin (the DESTDIR install), so
+  search-input-file needs "/usr/bin/qrexec-client-vm", not "/bin/...".
+
+## U2F / FIDO2 PROXY (2026-10-06): WORKING, qubes-ctap (qubes-app-u2f v2.0.7)
+- New module qubes/packages/ctap.scm (pyproject). Guest frontend only:
+  qctap-proxy <backend> creates a virtual FIDO HID via /dev/uhid and
+  forwards requests over qrexec (ctap.GetInfo, ctap.ClientPin,
+  u2f.Register, u2f.Authenticate+<hash>) to sys-usb.
+- Guix has python-fido2 2.2.1 (upstream CI pins >=1.1). All 65 upstream
+  tests pass against 2.2.1; the check phase runs them.
+- setup.py CustomInstall (writes <root>/usr/bin) dropped; our own launcher
+  bin/qctap-proxy gets wrapped. const.py's QREXEC_CLIENT is patched to
+  $qrexec/usr/bin/qrexec-client-vm.
+- agent.scm: fields ctap (package) and ctap-backend ("sys-usb"; #f = off).
+  Shepherd 'qubes-ctap-proxy is gated on qubesdb
+  /qubes-service/qubes-ctap-proxy or qubes-u2f-proxy = 1 (the upstream
+  ConditionPathExists pair). Also: uhid module; udev 60-qctap-hidraw.rules
+  (hidraw 0660 group qubes, so the browser can open the virtual key);
+  features supported-service.qubes-ctap-proxy/qubes-u2f-proxy.
+  Logs: /var/log/qubes/qctap (python logging), qctap-proxy.log (stdout).
+- dom0: qvm-service guix qubes-ctap-proxy on. sys-usb template needs the
+  qubes-ctap package.
+- Build fix: 2 test_systemd_notify tests failed with "AF_UNIX path too long"
+  (the pytest tmp dir under /tmp/guix-build-...drv-0 is too deep). The check
+  phase now passes --basetemp=/tmp/qctap.
+- dom0 "Update qubes" on guix: the R4.3 updater runs `/usr/bin/python3
+  entrypoint.py` via qubes.VMExec (FileNotFoundError: no /usr/bin/python3),
+  and its agent only knows apt/dnf/pacman anyway. Guix updates are
+  `guix pull` + reconfigure. FIX (dom0): qvm-features guix skip-update 1.
+- Bring-up gotchas: (1) a reconfigure doesn't make the running udev
+  reload rules, so the hidraw node stayed root:root until reboot (or
+  `udevadm control --reload; udevadm trigger --action=change
+  --subsystem-match=hidraw`). Guix's own 60-fido-id.rules also tags it
+  uaccess (the ACL "+"). (2) From R4.2, dom0 ships no ctap policy; Qubes
+  Global Config -> USB Devices -> U2F Proxy writes it. A denial shows in
+  /var/log/qubes/qctap as "qrexec call was denied ... returncode 126", and
+  the client sees CTAP INVALID_COMMAND.
+- VERIFIED 2026-10-06: webauthn site login with a YubiKey from guix Firefox.
+  A direct fido2 Ctap2(dev).get_info() still errors; ignored for now.
+- UPSTREAM BUG (hidemu._handle_ctaphid_request, v2.0.7 and master): replies
+  to CTAPHID_CBOR requests are framed as CTAPHID_MSG. python-fido2 rejects
+  that as INVALID_COMMAND (which explains the get_info() failure, even with
+  policy allowed and a FIDO2-capable YubiKey). ctap.scm phase
+  'cbor-reply-command answers with CBOR for CBOR requests. Checked with a
+  mock: the original replies MSG, the patched one CBOR; 65 tests pass.
+  To report upstream. FIDO2 also needs dom0 policy ctap.GetInfo +
+  ctap.ClientPin (guix -> sys-usb allow); Global Config gave only u2f.*.
+- UPSTREAM BUG #2: makeCredential with rp = {"id": ...} and no "name"
+  (CTAP2 makes name optional; Firefox omits it) fails with "Error parsing
+  field rp for MakeCredential" (0x6A80), because python-fido2's
+  PublicKeyCredentialRpEntity requires name (1.1.3 and 2.2.1 both). sys-usb
+  parses the forwarded request with the same code, so fixing only the type
+  just moves the failure there. ctap.scm phase 'default-rp-name sets
+  name = id when it is missing. The request is re-encoded from the parsed
+  object, so sys-usb gets the name too. Verified on both fido2 versions:
+  guix parse, forwarded bytes and sys-usb-side parse all OK; 65 tests pass.

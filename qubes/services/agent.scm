@@ -29,6 +29,7 @@
   #:use-module (qubes packages qubesdb)
   #:use-module (qubes packages core-agent)
   #:use-module (qubes packages gui)
+  #:use-module (qubes packages ctap)        ; qctap-proxy (U2F/FIDO2)
   #:export (qubes-guest-configuration
             qubes-guest-configuration?
             qubes-guest-service-type
@@ -51,7 +52,12 @@
   ;; #t: configure the uplink from qubesdb and provide 'networking (replaces
   ;; static-networking-service-type — do not use both).
   (network?   qubes-guest-network?   (default #t))
-  (network-interface qubes-guest-network-interface (default "eth0")))
+  (network-interface qubes-guest-network-interface (default "eth0"))
+  ;; U2F/FIDO2 proxy: the qube holding the real security key, or #f for no
+  ;; proxy. Runs only when dom0 enables the qube's qubes-ctap-proxy (or
+  ;; legacy qubes-u2f-proxy) service.
+  (ctap       qubes-guest-ctap       (default qubes-ctap))
+  (ctap-backend qubes-guest-ctap-backend (default "sys-usb")))
 
 (define %xen-modules
   ;; xen-privcmd is the critical one (libxenctrl's xencall).
@@ -64,6 +70,13 @@
 (define %qubes-mem-hotplug-udev-rule
   (udev-rule "50-qubes-mem-hotplug.rules"
              "SUBSYSTEM==\"memory\", ACTION==\"add\", ATTR{state}==\"offline\", ATTR{state}=\"online\"\n"))
+
+;; qctap-proxy's virtual key appears as /dev/hidrawN; the browser (running
+;; as the user, who is in "qubes") must open it (upstream
+;; 60-qctap-hidraw.rules, minus its blanket rule for raw USB devices).
+(define %qubes-ctap-udev-rule
+  (udev-rule "60-qctap-hidraw.rules"
+             "ACTION!=\"remove\", SUBSYSTEM==\"hidraw\", MODE=\"0660\", GROUP=\"qubes\"\n"))
 
 (define %qubes-xen-udev-rule
   (udev-rule "90-qubes-xen.rules"
@@ -192,7 +205,9 @@ req vmexec 1
 req gui " (if (qubes-guest-gui? config) "1" "0") "
 req qubes-firewall 0
 req supported-service.meminfo-writer 1
-hp=
+" (if (qubes-guest-ctap-backend config)
+       "req supported-service.qubes-ctap-proxy 1\nreq supported-service.qubes-u2f-proxy 1\n"
+       "") "hp=
 if [ -r /proc/config.gz ] && " zcat " /proc/config.gz | " grep* " -q '^CONFIG_XEN_BALLOON_MEMORY_HOTPLUG=y'; then
     hp=1
 fi
@@ -202,10 +217,9 @@ exec " client " dom0 qubes.FeaturesRequest </dev/null >/dev/null
 
 (define %meminfo-supervisor
   ;; meminfo-writer (pidfile mode) daemonizes and waits for SIGUSR1, which
-  ;; qrexec-agent sends ONCE per boot on its first request. At boot that is
-  ;; too early: dom0 hasn't yet made memory/swapinfo writable, the first
-  ;; report fails ("error writing swapinfo to xenstore ?", exit 1), and a
-  ;; respawned instance would wait for a wake that never comes. So: keep
+  ;; qrexec-agent sends ONCE per boot on its first request; a respawned
+  ;; instance would wait for a wake that never comes (see PORT-NOTES:
+  ;; swapinfo, which also killed every instance until patched). So: keep
   ;; the pidfile the agent expects, wake it ourselves after a delay, and
   ;; restart it if it dies. Extra SIGUSR1s are harmless (handler stays).
   (mixed-text-file "qubes-meminfo-supervisor" "
@@ -274,6 +288,35 @@ balancer (qmemman).")
     (stop #~(make-kill-destructor))
     (respawn? #t))))
 
+(define (qubes-ctap-shepherd-service config)
+  (let ((qdb     (qubesdb-read-path config))
+        (backend (qubes-guest-ctap-backend config)))
+    (shepherd-service
+     (documentation (string-append "U2F/FIDO2 proxy: virtual security key
+(uhid) whose requests go over qrexec to " backend "."))
+     (provision '(qubes-ctap-proxy))
+     (requirement '(qubesdb-daemon qrexec-agent))
+     ;; Upstream unit: ConditionPathExists=|/var/run/qubes-service/
+     ;; qubes-ctap-proxy or qubes-u2f-proxy (i.e. qvm-service ... on).
+     (start #~(lambda args
+                (if (zero? (system* #$(file-append bash-minimal "/bin/sh") "-c"
+                                    (string-append
+                                     #$(file-append coreutils "/bin/timeout")
+                                     " 30 " #$qdb " -w /name >/dev/null && { [ \"$("
+                                     #$qdb " /qubes-service/qubes-ctap-proxy 2>/dev/null)\" = 1 ] || [ \"$("
+                                     #$qdb " /qubes-service/qubes-u2f-proxy 2>/dev/null)\" = 1 ]; }")))
+                    (apply (make-forkexec-constructor
+                            (list #$(file-append (qubes-guest-ctap config)
+                                                 "/bin/qctap-proxy")
+                                  #$backend)
+                            #:log-file "/var/log/qubes/qctap-proxy.log")
+                           args)
+                    (begin
+                      (format #t "qctap-proxy: qubes-ctap-proxy service not enabled in dom0~%")
+                      #t))))
+     (stop #~(make-kill-destructor))
+     (respawn? #t))))
+
 (define (qubes-shepherd-services config)
   (let ((qrexec  (qubes-guest-qrexec config))
         (qubesdb (qubes-guest-qubesdb config))
@@ -318,6 +361,9 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
          '())
      (if (qubes-guest-network? config)
          (list (qubes-network-shepherd-service config))
+         '())
+     (if (qubes-guest-ctap-backend config)
+         (list (qubes-ctap-shepherd-service config))
          '())
      (qubes-extra-shepherd-services config))))
 
@@ -400,10 +446,18 @@ qrexec services, file copy, and (optionally) the seamless GUI agent.")
           (service-extension activation-service-type qubes-activation)
           (service-extension profile-service-type qubes-packages)
           (service-extension kernel-module-loader-service-type
-                             (const %xen-modules))
+                             (lambda (config)
+                               (if (qubes-guest-ctap-backend config)
+                                   (cons "uhid" %xen-modules)
+                                   %xen-modules)))
           (service-extension udev-service-type
-                             (const (list %qubes-xen-udev-rule
-                                          %qubes-mem-hotplug-udev-rule)))
+                             (lambda (config)
+                               (append
+                                (list %qubes-xen-udev-rule
+                                      %qubes-mem-hotplug-udev-rule)
+                                (if (qubes-guest-ctap-backend config)
+                                    (list %qubes-ctap-udev-rule)
+                                    '()))))
           (service-extension account-service-type
                              (const (list (user-group
                                            (name "qubes")

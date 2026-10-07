@@ -1,100 +1,103 @@
+;;; qubes/packages/qrexec.scm — qubes-core-qrexec, guest side.
+;;;
+;;; Builds libqrexec-utils and agent/ (qrexec-agent, qrexec-client-vm,
+;;; qrexec-fork-server). The dom0 daemon, policy tools and python package are
+;;; not built. Installed with DESTDIR, so binaries live under $out/usr/bin and
+;;; $out/usr/lib/qubes (other packages refer to those paths).
+
 (define-module (qubes packages qrexec)
   #:use-module (guix packages)
+  #:use-module (guix gexp)
   #:use-module (guix git-download)
   #:use-module (guix build-system gnu)
   #:use-module ((guix licenses) #:prefix license:)
-  #:use-module (guix gexp)
   #:use-module ((guix utils) #:select (cc-for-target))
-  #:use-module (gnu packages)
-  #:use-module (gnu packages haskell-xyz)
-  #:use-module (gnu packages virtualization)
+  #:use-module (gnu packages base)            ; coreutils (sleep)
+  #:use-module (gnu packages bash)            ; bash-minimal
+  #:use-module (gnu packages haskell-xyz)     ; pandoc (qrexec-client-vm.1)
+  #:use-module (gnu packages linux)           ; linux-pam
   #:use-module (gnu packages pkg-config)
-  #:use-module (gnu packages linux)
-  #:use-module (gnu packages haskell-apps)
+  #:use-module (gnu packages virtualization)  ; xen
   #:use-module (qubes packages vchan)
-  #:use-module (qubes packages qubesdb))   ; qubesdb-read for WaitForSession
+  #:use-module (qubes packages qubesdb))      ; qubesdb-read, for WaitForSession
 
 (define-public qubes-core-qrexec
   (package
     (name "qubes-core-qrexec")
-    (version "mm_fa044832")
-    (source (origin
-              (method git-fetch)
-              (uri (git-reference
-                    (url "https://github.com/QubesOS/qubes-core-qrexec")
-                    (commit "fa044832457f3aad8abbbc434df21979db52e23e")))
-              (file-name (git-file-name name version))
-              (sha256
-               (base32 "0mp8qd8wxxdbmnzycdgi6vvx2ba4b29fjh4mjl0bx2pbk85nhb9c"))))
+    (version "4.3.15")
+    (source
+     (origin
+       (method git-fetch)
+       (uri (git-reference
+             (url "https://github.com/QubesOS/qubes-core-qrexec")
+             (commit "205db68abd6d89dff1bc03bce8ce0c88749b7248"))) ; v4.3.15
+       (file-name (git-file-name name version))
+       (sha256
+        (base32 "0y9izzyknkd6jncvgqzpqp2n726v8dsb7prpg3i83mfvscb0kf0f"))))
     (build-system gnu-build-system)
     (arguments
-     `(#:tests? #f
-       #:phases
-       (modify-phases %standard-phases
-         (delete 'configure)
-         (add-before 'build 'ensure-pkgconfig
-           (lambda* (#:key inputs #:allow-other-keys)
-             (setenv "PKG_CONFIG_PATH"
-                     (string-append (assoc-ref inputs "qubes-core-vchan-xen")
-                                    "/lib/pkgconfig:"
-                                    (or (getenv "PKG_CONFIG_PATH") "")))))
-         ;; do_exec() formats HOME=/SHELL=/USER=... into a 64-byte buffer and
-         ;; bails out (exit 125, nothing logged) if one doesn't fit. On Guix
-         ;; SHELL is a store path (~70 chars with the prefix), so every
-         ;; PAM user switch failed right after pam_open_session.
-         (add-after 'unpack 'enlarge-env-buf
-           (lambda _
-             (substitute* "agent/qrexec-agent.c"
-               (("char env_buf\\[64\\];") "char env_buf[4096];"))))
-         (add-after 'unpack 'fix-agent-rpath
-           (lambda* (#:key outputs #:allow-other-keys)
-             (let ((out (assoc-ref outputs "out")))
-               (substitute* "agent/Makefile"
-                 (("LDFLAGS \\+= -pie")
-                  (string-append "LDFLAGS += -Wl,-rpath," out "/lib\n"
-                                 "LDFLAGS += -pie"))))))
-         ;; HAVE_PAM_APPL is a plain `=` wildcard probe on
-         ;; /usr/include/security/pam_appl.h (never true on Guix), so the
-         ;; command-line override is the right tool here. Without it the agent
-         ;; runs every service as root and falls back to /bin/su for commands.
-         (replace 'build
-           (lambda* (#:key outputs #:allow-other-keys)
-             (let ((out (assoc-ref outputs "out")))
-               (invoke "make" "-C" "libqrexec" "CC=gcc"
-                       (string-append "LIBDIR=" out "/lib")
-                       (string-append "INCLUDEDIR=" out "/include"))
-               (invoke "make" "-C" "agent" "CC=gcc" "os=Gentoo"
-                       "HAVE_PAM_APPL=1"))))
-         ;; `install: all` — pass the same flag so make never sees a different
-         ;; CFLAGS/LDLIBS set than the one the objects were built with.
-         (replace 'install
-           (lambda* (#:key outputs #:allow-other-keys)
-             (let ((out (assoc-ref outputs "out")))
-               (invoke "make" "-C" "libqrexec" "install" "CC=gcc"
-                       (string-append "LIBDIR=" out "/lib")
-                       (string-append "INCLUDEDIR=" out "/include"))
-               (invoke "make" "-C" "agent" "install" "CC=gcc"
-                       (string-append "DESTDIR=" out)
-                       "os=Gentoo" "HAVE_PAM_APPL=1"))))
-         ;; The agent execs qubes.WaitForSession for every wait-for-session=1
-         ;; service. Upstream's (qubes-rpc-base/, installed only by the
-         ;; top-level Makefile) needs `systemctl --user` and, when the GUI is
-         ;; enabled, waits with NO timeout for the gui-agent's per-user qrexec
-         ;; socket — i.e. forever on a qube without a gui agent.
-         ;; Guix version: no-op until a gui agent is installed, then the
-         ;; upstream socket wait. The qubes-gui path is a placeholder until
-         ;; qubes-gui-agent is packaged.
-         (add-after 'install 'install-wait-for-session
-           (lambda* (#:key inputs outputs #:allow-other-keys)
-             (let* ((out    (assoc-ref outputs "out"))
-                    (file   (string-append out "/etc/qubes-rpc/qubes.WaitForSession"))
-                    (sh     (search-input-file inputs "/bin/sh"))
-                    (sleep  (search-input-file inputs "/bin/sleep"))
-                    (qdb    (search-input-file inputs "/bin/qubesdb-read")))
-               (mkdir-p (dirname file))
-               (call-with-output-file file
-                 (lambda (port)
-                   (format port "#!~a
+     (list
+      #:tests? #f                       ; the test suite targets dom0/python
+      #:phases
+      #~(let ((agent-flags
+               ;; HAVE_PAM_APPL is a `wildcard` probe of
+               ;; /usr/include/security/pam_appl.h, which never matches on Guix.
+               ;; Without it the agent runs every service as root and falls back
+               ;; to /bin/su. `os` only selects the PAM file to install.
+               (list (string-append "CC=" #$(cc-for-target))
+                     "os=Gentoo" "HAVE_PAM_APPL=1"))
+              (lib-flags
+               (list (string-append "CC=" #$(cc-for-target))
+                     (string-append "LIBDIR=" #$output "/lib")
+                     (string-append "INCLUDEDIR=" #$output "/include"))))
+          (modify-phases %standard-phases
+            (delete 'configure)
+            ;; Make vchan.pc (VCHAN_PKG) visible to the Makefiles' pkg-config calls.
+            (add-before 'build 'ensure-pkgconfig
+              (lambda* (#:key inputs #:allow-other-keys)
+                (setenv "PKG_CONFIG_PATH"
+                        (string-append
+                         (dirname (search-input-file inputs "/lib/pkgconfig/vchan.pc")) ":"
+                         (or (getenv "PKG_CONFIG_PATH") "")))))
+            ;; Upstream bug: do_exec() formats HOME=/SHELL=/USER=... into a
+            ;; 64-byte buffer and exits 125, logging nothing, when one doesn't
+            ;; fit. A store-path SHELL (~70 chars) broke every PAM user switch.
+            (add-after 'unpack 'enlarge-env-buf
+              (lambda _
+                (substitute* "agent/qrexec-agent.c"
+                  (("char env_buf\\[64\\];") "char env_buf[4096];"))))
+            (add-after 'unpack 'add-agent-rpath
+              (lambda _
+                (substitute* "agent/Makefile"
+                  (("LDFLAGS \\+= -pie")
+                   (string-append "LDFLAGS += -Wl,-rpath," #$output "/lib\n"
+                                  "LDFLAGS += -pie")))))
+            (replace 'build
+              (lambda _
+                (apply invoke "make" "-C" "libqrexec" lib-flags)
+                (apply invoke "make" "-C" "agent" agent-flags)))
+            ;; `install: all` -- same flags, so nothing is rebuilt differently.
+            (replace 'install
+              (lambda _
+                (apply invoke "make" "-C" "libqrexec" "install" lib-flags)
+                (apply invoke "make" "-C" "agent" "install"
+                       (string-append "DESTDIR=" #$output) agent-flags)))
+            ;; The agent runs qubes.WaitForSession before every
+            ;; wait-for-session=1 service. Upstream's version (qubes-rpc-base/)
+            ;; needs `systemctl --user`. This one waits, like upstream, for the
+            ;; GUI session's fork-server socket, but returns at once on a qube
+            ;; without the GUI agent (upstream would wait forever there).
+            (add-after 'install 'install-wait-for-session
+              (lambda* (#:key inputs #:allow-other-keys)
+                (let ((file  (string-append #$output
+                                            "/etc/qubes-rpc/qubes.WaitForSession"))
+                      (sh    (search-input-file inputs "/bin/sh"))
+                      (sleep (search-input-file inputs "/bin/sleep"))
+                      (qdb   (search-input-file inputs "/bin/qubesdb-read")))
+                  (mkdir-p (dirname file))
+                  (call-with-output-file file
+                    (lambda (port)
+                      (format port "#!~a
 # Guix port of qubes.WaitForSession (see qubes/packages/qrexec.scm).
 set -eu
 if [ -n \"${QREXEC_SERVICE_ARGUMENT-}\" ]; then
@@ -108,11 +111,16 @@ while ! [ -e \"/var/run/qubes/qrexec-server.$user.sock\" ]; do
     ~a 0.1
 done
 " sh qdb qdb sleep)))
-               (chmod file #o755)))))))
+                  (chmod file #o755))))))))
     (native-inputs (list pkg-config pandoc))
-    (inputs (list xen qubes-core-vchan-xen linux-pam qubes-core-qubesdb))
-    (synopsis "Guest-side qrexec agent for Qubes OS")
-    (description "The qrexec guest agent and supporting library, built for
-Guix System.")
+    (inputs (list bash-minimal coreutils linux-pam xen
+                  qubes-core-vchan-xen qubes-core-qubesdb))
     (home-page "https://github.com/QubesOS/qubes-core-qrexec")
+    (synopsis "Qubes OS qrexec guest agent")
+    (description
+     "The guest side of qrexec, the Qubes OS inter-qube RPC mechanism:
+@command{qrexec-agent}, which answers dom0 and runs services (with PAM user
+switching), @command{qrexec-client-vm} for calling services in other qubes,
+@command{qrexec-fork-server} for running services inside the user's session,
+and the @code{libqrexec-utils} library.")
     (license license:gpl2+)))

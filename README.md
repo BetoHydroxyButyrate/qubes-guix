@@ -52,13 +52,13 @@ Add it to `~/.config/guix/channels.scm`:
 ```scheme
 (cons* (channel
         (name 'qubes)
-        (url "https://github.com/<you>/<repo>")          ; TODO: published URL
+        (url "https://github.com/BetoHydroxyButyrate/qubes-guix")
         (branch "main")
         (introduction
          (make-channel-introduction
-          "<INTRODUCTION-COMMIT>"                          ; TODO
-          (openpgp-fingerprint
-           "F9BE 45DF A380 E9C8 8D47  4E96 6767 C5ED 20D3 1AEA"))))
+          "ea33fcb13bff41db38017f9ec385565f66f88fae"
+          (openpgp-fingerprint            ; the signing SUBKEY (see .guix-authorizations)
+           "1607 721B 3110 F370 9497  F436 B548 D5A5 665F D366"))))
        %default-channels)
 ```
 
@@ -147,7 +147,8 @@ qvm-prefs guix memory 2000; qvm-prefs guix maxmem 8000   # then enable memory ba
   ```
 - **guix:**
   ```
-  echo no-autostart >> ~/.gnupg/gpg.conf    # never fall back to an empty local agent
+  # never start an empty local gpg-agent (keyboxd must still autostart, so not `no-autostart`)
+  echo 'agent-program /run/current-system/profile/libexec/split-gpg2/gpg-agent-placeholder' >> ~/.gnupg/gpg.conf
   gpg --import pubkey.asc                    # the PUBLIC key (qvm-copy it from the vault)
   gpg -K                                     # sec# + ssb lines = working
   ```

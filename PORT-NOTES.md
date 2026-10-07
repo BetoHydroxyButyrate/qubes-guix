@@ -688,3 +688,23 @@ The port is winning.
   (Codeberg/GitLab, push-mirrored from Gitea).
 - TODO: the split-gpg2 hook should kill a stray local gpg-agent before
   binding.
+- CHANNEL SIGNING GOTCHA: Guix compares the introduction's
+  openpgp-fingerprint with the key that actually made the signature, here
+  the [S] SUBKEY 1607 721B 3110 F370 9497  F436 B548 D5A5 665F D366, not the
+  primary F9BE.... So the introduction uses the subkey fingerprint, and
+  .guix-authorizations lists the subkey (plus the primary, harmless). The
+  original intro commit 0398b29 was abandoned; a new commit that adds the
+  subkey to .guix-authorizations is the introduction.
+- 2026-10-07: qrexec.scm cleanup for publishing. Pinned to v4.3.15 (205db68,
+  head of release4.3) instead of main (fa04483); agent/ + libqrexec/ differ
+  by 7 files / ~20 lines, and both patch anchors still match. Converted to
+  the gexp style; CC from cc-for-target; unused imports dropped (gnu
+  packages, haskell-apps). NOT build-tested here; the source hash was
+  computed locally (same method reproduced the old pin's hash).
+- Correction: `no-autostart` in gpg.conf is WRONG for GnuPG 2.5. gpg uses
+  keyboxd (the public keyring daemon), and no-autostart stops it from
+  starting too: "no keyboxd running in this session", and signing fails.
+  Use upstream's approach instead:
+  `agent-program /run/current-system/profile/libexec/split-gpg2/gpg-agent-placeholder`
+  (it refuses to start a local agent for ~/.gnupg while the
+  split-gpg2-client service is on, and otherwise execs the real gpg-agent).

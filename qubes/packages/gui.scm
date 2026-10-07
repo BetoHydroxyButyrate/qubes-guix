@@ -332,6 +332,11 @@ exec " pa " --start -n --file=" #$output "/etc/pulse/qubes-default.pa \\
 " #$output "/bin/qubes-start-pulseaudio &
 " (search-input-file inputs "/bin/mkdir") " -p \"$HOME/.cache\"
 " #$output "/lib/qubes/icon-sender 2>\"$HOME/.cache/icon-sender.log\" &
+# Session hooks from other qube packages (e.g. the split-gpg2 client): each
+# gates itself on its qubes-service and runs for the life of the session.
+for f in /run/current-system/profile/lib/qubes/session.d/*; do
+    [ -x \"$f\" ] && \"$f\" &
+done
 " fork "
 exec " sleep " infinity
 "))))))))

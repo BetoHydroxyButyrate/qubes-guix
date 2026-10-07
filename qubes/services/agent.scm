@@ -24,12 +24,14 @@
   #:use-module (guix gexp)
   #:use-module (guix records)
   #:use-module (gnu packages compression)    ; gzip (zcat /proc/config.gz)
+  #:use-module (gnu packages gnupg)          ; gpg for split-gpg2
   #:use-module (qubes packages linux-utils)  ; meminfo-writer
   #:use-module (qubes packages qrexec)
   #:use-module (qubes packages qubesdb)
   #:use-module (qubes packages core-agent)
   #:use-module (qubes packages gui)
   #:use-module (qubes packages ctap)        ; qctap-proxy (U2F/FIDO2)
+  #:use-module (qubes packages split-gpg)   ; split-gpg2 client
   #:export (qubes-guest-configuration
             qubes-guest-configuration?
             qubes-guest-service-type
@@ -57,7 +59,10 @@
   ;; proxy. Runs only when dom0 enables the qube's qubes-ctap-proxy (or
   ;; legacy qubes-u2f-proxy) service.
   (ctap       qubes-guest-ctap       (default qubes-ctap))
-  (ctap-backend qubes-guest-ctap-backend (default "sys-usb")))
+  (ctap-backend qubes-guest-ctap-backend (default "sys-usb"))
+  ;; split-gpg2 client (qubes.Gpg2), or #f. Runs in the user's Qubes session
+  ;; only when dom0 enables the qube's split-gpg2-client service.
+  (split-gpg2 qubes-guest-split-gpg2 (default qubes-split-gpg2-client)))
 
 (define %xen-modules
   ;; xen-privcmd is the critical one (libxenctrl's xencall).
@@ -207,6 +212,8 @@ req qubes-firewall 0
 req supported-service.meminfo-writer 1
 " (if (qubes-guest-ctap-backend config)
        "req supported-service.qubes-ctap-proxy 1\nreq supported-service.qubes-u2f-proxy 1\n"
+       "") (if (qubes-guest-split-gpg2 config)
+       "req supported-service.split-gpg2-client 1\n"
        "") "hp=
 if [ -r /proc/config.gz ] && " zcat " /proc/config.gz | " grep* " -q '^CONFIG_XEN_BALLOON_MEMORY_HOTPLUG=y'; then
     hp=1
@@ -431,6 +438,11 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
               ;; pulseaudio: the agent starts it with the vchan sink; this
               ;; also puts pactl/paplay on PATH for checking audio.
               (list (qubes-guest-gui-agent config) pulseaudio)
+              '())
+          ;; In the profile so qubes-session finds its session.d hook; gnupg
+          ;; because split-gpg2 is used through the ordinary gpg command.
+          (if (and (qubes-guest-gui? config) (qubes-guest-split-gpg2 config))
+              (list (qubes-guest-split-gpg2 config) gnupg)
               '())))
 
 (define qubes-guest-service-type

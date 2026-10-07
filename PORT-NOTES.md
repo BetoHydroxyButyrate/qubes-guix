@@ -619,3 +619,72 @@ The port is winning.
   name = id when it is missing. The request is re-encoded from the parsed
   object, so sys-usb gets the name too. Verified on both fido2 versions:
   guix parse, forwarded bytes and sys-usb-side parse all OK; 65 tests pass.
+- VERIFIED 2026-10-06 (FIDO2): webauthn.io registered a device-bound
+  passkey from guix Firefox through sys-usb. The site identified the key as
+  YubiKey 5 Series with NFC (AAGUID 2fc0579f-8113-47ea-b116-bb5a8db9202a),
+  transport usb. The fixes it needed: CBOR reply framing, rp.name default,
+  dom0 policy ctap.GetInfo/ctap.ClientPin.
+
+## MICROPHONE (2026-10-06): WORKING
+- module-vchan-sink provides the source vchan_input (plus vchan_output.monitor).
+  `qvm-device mic attach guix dom0:mic`, then `parecord -d vchan_input`
+  records the dom0 mic; playback is fine. No port changes needed.
+- 2026-10-06: qubes-linux-utils is now pinned to v4.3.19 (2c79ddb, the head of
+  release4.3). The old main pin was just 4575219 + a merge ahead, with no other
+  diff (qrexec-lib identical), so the nonfatal-swapinfo phase is dropped.
+  The other repos are still on main/mm_ pins; consider release4.3 for them
+  too (check the qrexec/gui/core-agent diffs first).
+
+## SPLIT-GPG2 CLIENT (2026-10-06): packaged, untested
+- The gpg qube is gpg-admin (Debian trixie) and had only split-gpg v1
+  (qubes.Gpg). Install split-gpg2 in its template; both coexist.
+- New qubes/packages/split-gpg.scm: qubes-split-gpg2-client v1.1.14
+  (b48de62). Installs libexec/split-gpg2/split-gpg2-client (socat on gpg's
+  agent socket -> qrexec-client-vm @default qubes.Gpg2; tool paths patched)
+  and the gpg-agent-placeholder (gated via qubesdb, not
+  /run/qubes-service). The session hook lib/qubes/session.d/split-gpg2-client
+  is gated on qubesdb /qubes-service/split-gpg2-client = 1 and loops the
+  forwarder.
+- gui.scm qubes-session now runs every executable in
+  /run/current-system/profile/lib/qubes/session.d/ in the background (a
+  generic hook point instead of XDG autostart).
+- agent.scm: field split-gpg2 (package, or #f); in the profile when gui?;
+  advertises supported-service.split-gpg2-client.
+- dom0: policy `qubes.Gpg2 + guix @default allow target=gpg-admin`;
+  `qvm-service guix split-gpg2-client on`. Server exposes subkeys only by
+  default, so a signing subkey ([S]) is required.
+- 2026-10-07: split-gpg2 WORKING. guix gpg -K shows sec# + 3 ssb from
+  gpg-admin (Debian trixie, split-gpg2 1.1.14). Gotchas:
+  (1) dom0 policy `qubes.Gpg2 * guix @default allow target=gpg-admin`.
+  (2) While the forwarder was being denied, gpg auto-started a LOCAL
+      gpg-agent, which took over the socket path (socat kept listening on
+      the old, replaced socket file), giving a confusing
+      "ERR ... No such file or directory <GPG Agent>". Fix: kill the local
+      agent and socat (the hook restarts it). Prevent: `no-autostart` in
+      ~/.gnupg/gpg.conf.
+  (3) The split-gpg2 server matches Assuan command names case-sensitively:
+      gpg-connect-agent 'keyinfo --list' -> "Command filtered", while
+      'KEYINFO --list' is OK.
+  (4) gpg 2.5.21 (guix) vs agent 2.4.7 (gpg-admin) prints a harmless
+      "server is older than us" warning. Don't `gpgconf --kill all`.
+  (5) The gnupg package was not in the profile; agent.scm now adds it with
+      split-gpg2.
+- VERIFIED 2026-10-07: `git commit -S` in guix, signed via split-gpg2 by the
+  [S] subkey 1607721B3110F3709497F436B548D5A5665FD366 (primary
+  F9BE45DFA380E9C88D474E966767C5ED20D31AEA); `git log --show-signature`
+  says Good signature. Guix channel auth is by key fingerprint only;
+  author email is irrelevant.
+
+## CHANNEL (2026-10-06/07)
+- ~/src/qubes is a git repo with .guix-channel (version 0), pulled via
+  ~/.config/guix/channels.scm (url file:///home/dap/src/qubes).
+- Workflow: -L ~/src/qubes for iteration (it shadows the pulled channel);
+  commit + guix pull + reconfigure without -L to record provenance. Pin the
+  guix channel commit if you don't want every pull to update Guix too.
+- NEXT: sign it. A keyring branch with the public key,
+  .guix-authorizations (F9BE 45DF A380 E9C8 8D47  4E96 6767 C5ED 20D3 1AEA),
+  and an introduction commit; check with `guix git authenticate`; add
+  `introduction` to channels.scm. Then README/COPYING/cleanup and publish
+  (Codeberg/GitLab, push-mirrored from Gitea).
+- TODO: the split-gpg2 hook should kill a stray local gpg-agent before
+  binding.

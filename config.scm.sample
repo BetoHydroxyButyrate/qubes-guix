@@ -1,13 +1,6 @@
-;; This is an operating system configuration generated
-;; by the graphical installer.
 ;;
-;; Once installation is complete, you can learn and modify
-;; this file to tweak the system configuration, and pass it
-;; to the 'guix system reconfigure' command to effect your
-;; changes.
-
-
-;; Guix System in a Qubes OS standalone HVM
+;; not a working config.
+;;
 (use-modules (gnu)
              (gnu services)
              (gnu services ssh)
@@ -19,55 +12,17 @@
 	     (gnu packages xorg)
              (qubes services agent))  ; <-- all Qubes integration
 
-(define %sudoers-specification
-  (plain-file "sudoers" "\
-root	ALL=(ALL) ALL
-%wheel	ALL=(ALL) ALL
-dap	ALL=(ALL) NOPASSWD: ALL
-"))
-
-
 (operating-system
   (locale "en_AU.utf8")
   (timezone "Australia/Brisbane")
   (keyboard-layout (keyboard-layout "au"))
   (host-name "guix")
-  (sudoers-file %sudoers-specification)
   (kernel-arguments (append %qubes-kernel-arguments '("quiet")))
-  ;; The list of user accounts ('root' is implicit).
-  (users (cons* (user-account
-                  (name "dap")
-                  (comment "Damon Permezel")
-                  (group "users")
-                  (home-directory "/home/dap")
-		  (supplementary-groups '("wheel" "netdev" "audio" "video" "qubes")))
-                %base-user-accounts))
 
-  ;; Packages installed system-wide.  Users can also install packages
-  ;; under their own account: use 'guix search KEYWORD' to search
-  ;; for packages and 'guix install PACKAGE' to install a package.
   (packages (append (list (specification->package "emacs")
-                          (specification->package "emacs-exwm")
-                          (specification->package
-                           "emacs-desktop-environment")
-                          (specification->package "sway")
-                          (specification->package "wmenu")
-                          (specification->package "foot")
-			  ;; japanese
-			  ;; Install the Japanese output of Source Han Sans
-			  (list font-adobe-source-han-sans "jp")
-			  ;; Other recommended Japanese fonts
-			  font-ipa-ex
-			  font-takao
-			  ;; (qubes packages come from qubes-guest-service-type)
-			  alacritty
-			  xterm
-			  )
-;; (use-service-modules cups desktop networking ssh xorg)
+			  alacritty)
 		    %base-packages))
 
-  ;; Below is the list of system services.  To search for available
-  ;; services, run 'guix system search KEYWORD' in a terminal.
   (services
    (append (list (service xfce-desktop-service-type)
 		 (simple-service 'nonguix-substitutes guix-service-type
@@ -79,27 +34,18 @@ dap	ALL=(ALL) NOPASSWD: ALL
 						    ))))
 
 		 ;; Networking: configured from qubesdb by qubes-guest-service-type
-		 ;; (which provides 'networking). Do NOT also use
-		 ;; static-networking-service-type — the two would conflict.
-                 ;; To configure OpenSSH, pass an 'openssh-configuration'
-                 ;; record as a second argument to 'service' below.
-		 ;; (service dhcpcd-service-type)
                  (service openssh-service-type)
                  (service tor-service-type)
                  (set-xorg-configuration
                   (xorg-configuration (keyboard-layout keyboard-layout)))
+
 		 ;; Qubes guest integration: qrexec, qubesdb, qubes-rpc, PAM,
 		 ;; udev, setuid qfile-unpacker, kernel modules, GUI agent.
-		 (service qubes-guest-service-type)
-		 ;; new services here...
-		)
+		 (service qubes-guest-service-type))
 
-           ;; This is the default list of services we
-           ;; are appending to.
-           ;; %desktop-services))
-	   ( modify-services %desktop-services
-	     (delete network-manager-service-type)
-	     (delete wpa-supplicant-service-type))))
+	   (modify-services %desktop-services
+			    (delete network-manager-service-type)
+			    (delete wpa-supplicant-service-type))))
   (bootloader (bootloader-configuration
                 (bootloader grub-bootloader)
                 (targets (list "/dev/xvda"))

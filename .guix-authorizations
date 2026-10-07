@@ -1,4 +1,8 @@
 (authorizations
  (version 0)
- (("F9BE 45DF A380 E9C8 8D47  4E96 6767 C5ED 20D3 1AEA"
-   (name "damon"))))
+ (("1607 721B 3110 F370 9497  F436 B548 D5A5 665F D366"   ; [S] subkey 
+   (name "damon"))
+  ("F9BE 45DF A380 E9C8 8D47  4E96 6767 C5ED 20D3 1AEA"   ; primary 
+   (name "damon-primary"))))
+~
+~

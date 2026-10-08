@@ -34,6 +34,9 @@ qubes/packages/gui.scm          qubes-gui-common, qubes-gui-agent (Xorg drivers,
 qubes/packages/ctap.scm         qubes-ctap (U2F/FIDO2 proxy, frontend)
 qubes/packages/split-gpg.scm    qubes-split-gpg2-client
 qubes/services/agent.scm        qubes-guest-service-type — the integration
+qubes/system.scm                qubes-operating-system — adds all of it to any operating-system
+dom0/qubes-guix-create          dom0: create the qube and boot the installer
+guest/qubes-guix-setup          guest: channel, guix pull, config.scm, reconfigure
 PORT-NOTES.md                   the porting log: every problem hit and why things are the way they are
 ```
 
@@ -66,27 +69,45 @@ Then `guix pull`. Commits are signed. Guix verifies them against `.guix-authoriz
 
 ## System configuration
 
-The minimum in `/etc/config.scm`:
+The simplest way is to wrap your whole `operating-system` (the one the installer wrote, for example) in `qubes-operating-system`. `guest/qubes-guix-setup` does exactly this edit for you:
+
+```scheme
+(use-modules (gnu) (qubes system))
+
+(qubes-operating-system
+ (operating-system
+   ;; ... unchanged ...
+   ))
+```
+
+It adds what a qube needs and nothing else:
+- **`%qubes-kernel-arguments`:** this is `xen_privcmd.unrestricted=1`. Without it, recent kernels refuse the hypercalls that vchan needs.
+- **The `qubes` group for every regular user:** they need it for the Xen device nodes, `/var/run/qubes` and the CTAP hidraw device.
+- **`qubes-guest-service-type`,** which provides `networking` itself, from QubesDB.
+- **No NetworkManager, connman or DHCP client,** because they provide `networking` too, and Shepherd refuses two providers. A `static-networking` service for `eth0` has to go as well; the setup leaves `static-networking` alone, since `%base-services` uses it for loopback.
+
+To pass options, use `(qubes-operating-system os #:config (qubes-guest-configuration ...))`. It is idempotent: an `operating-system` that already has the service is returned unchanged.
+
+To write it out by hand instead:
 
 ```scheme
 (use-modules (gnu) (qubes services agent))
+(use-service-modules networking)
 
 (operating-system
   ;; ...
-  (kernel-arguments (append %qubes-kernel-arguments '("quiet")))
+  (kernel-arguments (append %qubes-kernel-arguments %default-kernel-arguments))
   (users (cons (user-account
                 (name "user")
                 (group "users")
                 (supplementary-groups '("wheel" "audio" "video" "qubes")))
                %base-user-accounts))
   (services (cons (service qubes-guest-service-type)
-                  %desktop-services)))     ; or %base-services
+                  (modify-services %desktop-services     ; or %base-services
+                    (delete network-manager-service-type)))))
 ```
 
-- **`%qubes-kernel-arguments`:** this is `xen_privcmd.unrestricted=1`. Without it, recent kernels refuse the hypercalls that vchan needs.
-- **The default user must be in the `qubes` group:** it needs the Xen device nodes, `/var/run/qubes`, and the CTAP hidraw device.
-- **Don't also use `static-networking-service-type`:** the Qubes service provides `networking` itself, from QubesDB.
-- **A local desktop (e.g. XFCE on `:0`) can coexist:** the Qubes GUI agent runs its own X server on `:1`, with no VT.
+A local desktop (e.g. XFCE on `:0`) can coexist: the Qubes GUI agent runs its own X server on `:1`, with no VT.
 
 ### Options
 
@@ -104,22 +125,52 @@ Package fields (`qrexec`, `qubesdb`, `core-agent`, `gui-agent`, `ctap`) can be o
 
 ## Creating the qube (dom0)
 
-Outline: create a StandaloneVM in HVM mode, then install Guix from the Guix System ISO.
+`dom0/qubes-guix-create` creates the qube and boots it from the Guix System installer ISO. Download the ISO from [guix.gnu.org](https://guix.gnu.org/en/download/) into any qube, then copy the script into dom0. Read it first: anything you copy into dom0 runs with full control of the machine.
 
 ```
-qvm-create --class StandaloneVM --label purple --property virt_mode=hvm guix
-qvm-prefs guix kernel ''
-qvm-volume extend guix:root 60g
-qvm-start guix --cdrom=<qube>:/path/to/guix-system-install.iso
+# dom0 — <qube> is where you cloned this repository
+qvm-run --pass-io <qube> 'cat qubes-guix/dom0/qubes-guix-create' > qubes-guix-create
+chmod +x qubes-guix-create
+./qubes-guix-create guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
 ```
 
-Install as usual. Then add the channel, and reconfigure with the configuration above. On first boot with the agent, dom0 hides the emulated VGA window once the Qubes GUI agent connects. If you need the console back, run `qvm-start-daemon --force-stubdomain guix`.
+```
+qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+  defaults: 2 vCPUs, 4000 MiB, 8000 MiB max; -s root size (60g), -l label, -n netvm, --dry-run
+```
 
-Recommended dom0 settings:
+It checks everything before changing anything, and removes the qube again if a step fails. It creates a StandaloneVM in HVM mode that boots its own kernel, grows the root volume, sets `skip-update` (the Qubes Update tool can't update Guix) and turns on memory balancing when MAXMEM > MEMORY. Then it boots the installer and prints the qube's network settings. Qubes networking is static, so you may need these in the installer and in your first `config.scm`. Until the agent runs, the qube has exactly MEMORY, which is why the default is 4000 MiB: `guix system init` needs it.
+
+The installer needs three manual steps under Qubes, and the script prints them with this qube's values:
+1. **In GRUB:** pick the non-graphical install entry, press `e`, and add `nomodeset` to the `linux` line.
+2. **In the shell:** set the network by hand (Qubes has no DHCP). Use a **/8** address so the gateway is on-link: `ip addr add <ip>/8 dev eth0`, then `ip link set eth0 up`, `ip route add default via <gateway>`, and the DNS servers in `/etc/resolv.conf`.
+3. **Back to the installer:** dom0's desktop grabs Alt+Fn, so switch consoles from dom0 with `xdotool key --window $(xdotool selectwindow) alt+F2` and click the qube's window.
+
+Install as usual, then reboot into the new system. Its network isn't configured yet, so run the same `ip` commands as root once more (stop NetworkManager first if the installer added it: `sudo herd stop NetworkManager`).
+
+## Setting up the guest
+
+As your normal user in the new system:
 
 ```
-qvm-features guix skip-update 1             # the Qubes Update tool can't update Guix
-qvm-prefs guix memory 2000; qvm-prefs guix maxmem 8000   # then enable memory balancing in Qube settings
+guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
+qubes-guix/guest/qubes-guix-setup
+sudo reboot
+```
+
+`qubes-guix-setup`:
+1. adds the qubes channel to `~/.config/guix/channels.scm` and runs `guix pull`;
+2. wraps `/etc/config.scm` in `(qubes-operating-system ...)` and saves the old one as `/etc/config.scm.pre-qubes`;
+3. checks the new configuration with a dry-run build before installing it, then runs `guix system reconfigure`. That builds the Qubes agents from source, so it takes a while.
+
+If any step fails it stops, and `/etc/config.scm` is left as it was. Running it again is safe, since steps already done are skipped.
+
+After the reboot the network comes from QubesDB, and dom0 hides the emulated VGA window once the Qubes GUI agent connects. If you need the console back, run `qvm-start-daemon --force-stubdomain guix`. Check from dom0:
+
+```
+qvm-run --pass-io guix 'ip -br addr'
+qvm-features guix          # qrexec, gui, os-distribution=guix, ...
+qvm-run guix alacritty     # or anything installed
 ```
 
 ## Feature setup

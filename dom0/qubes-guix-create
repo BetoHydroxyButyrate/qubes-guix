@@ -1,0 +1,236 @@
+#!/bin/bash
+# qubes-guix-create — run in dom0. Creates a Guix System qube and boots it
+# from the Guix installer ISO.
+#
+#   qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+#
+# Part of the qubes-guix channel: https://github.com/BetoHydroxyButyrate/qubes-guix
+
+set -euo pipefail
+
+prog=${0##*/}
+
+# Defaults. MEMORY is what the qube gets for the whole install: there is no
+# memory balancing until the Qubes agent runs, and `guix system init`
+# needs more than a desktop does.
+vcpus=2
+memory=4000
+maxmem=8000
+label=purple
+root_size=60g
+netvm=
+dry_run=0
+
+usage() {
+    cat <<EOF
+Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+
+Create the StandaloneVM HVM qube NAME and boot it from the Guix System
+installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
+
+  VCPUS    virtual CPUs                         (default $vcpus)
+  MEMORY   initial memory, MiB                  (default $memory)
+  MAXMEM   memory-balancing maximum, MiB        (default $maxmem)
+           MAXMEM = MEMORY turns memory balancing off.
+
+Options:
+  -l, --label COLOUR    window label            (default $label)
+  -s, --size SIZE       root volume size        (default $root_size)
+  -n, --netvm QUBE      network qube            (default: the system default)
+      --dry-run         print the dom0 commands, change nothing
+  -h, --help            this help
+
+Example:
+  $prog guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
+  $prog guix untrusted:/home/user/guix.iso 4 4000 16000
+EOF
+}
+
+die() { echo "$prog: $*" >&2; exit 1; }
+
+# Show, then run (unless --dry-run). Commands that change dom0 state go
+# through this; read-only checks don't.
+run() {
+    printf '+'; printf ' %q' "$@"; printf '\n'
+    if [ "$dry_run" = 0 ]; then "$@"; fi
+}
+
+is_uint() { case $1 in ''|*[!0-9]*) return 1;; esac; }
+
+# --- arguments ---------------------------------------------------------
+
+args=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        -l|--label) [ $# -ge 2 ] || die "$1 needs a value"; label=$2; shift 2;;
+        -s|--size)  [ $# -ge 2 ] || die "$1 needs a value"; root_size=$2; shift 2;;
+        -n|--netvm) [ $# -ge 2 ] || die "$1 needs a value"; netvm=$2; shift 2;;
+        --dry-run)  dry_run=1; shift;;
+        -h|--help)  usage; exit 0;;
+        --)         shift; args+=("$@"); break;;
+        -*)         die "unknown option $1 (see --help)";;
+        *)          args+=("$1"); shift;;
+    esac
+done
+
+[ ${#args[@]} -ge 2 ] && [ ${#args[@]} -le 5 ] || { usage >&2; exit 2; }
+
+name=${args[0]}
+iso=${args[1]}
+[ ${#args[@]} -ge 3 ] && vcpus=${args[2]}
+[ ${#args[@]} -ge 4 ] && memory=${args[3]}
+[ ${#args[@]} -ge 5 ] && maxmem=${args[4]}
+# Only MEMORY given: keep MAXMEM at least MEMORY.
+if [ ${#args[@]} -eq 4 ] && is_uint "$memory" && [ "$memory" -gt "$maxmem" ]; then
+    maxmem=$memory
+fi
+
+# --- checks (nothing is changed until they all pass) --------------------
+
+command -v qvm-create >/dev/null 2>&1 ||
+    die "qvm-create not found: run this in dom0"
+
+[[ $name =~ ^[a-zA-Z][a-zA-Z0-9_.-]{0,30}$ ]] ||
+    die "invalid qube name '$name' (letter first; letters, digits, _ . -; max 31)"
+qvm-check -q "$name" 2>/dev/null &&
+    die "a qube named '$name' already exists"
+
+case $iso in
+    *:/*) iso_vm=${iso%%:*}; iso_path=${iso#*:};;
+    *)    die "ISO must be ISO_VM:/absolute/path, e.g. untrusted:/home/user/guix.iso";;
+esac
+[ -n "$iso_vm" ] || die "ISO must be ISO_VM:/absolute/path"
+case $iso_path in *.iso) ;; *) echo "$prog: warning: '$iso_path' doesn't end in .iso" >&2;; esac
+
+is_uint "$vcpus"  && [ "$vcpus" -ge 1 ]     || die "VCPUS must be a positive integer"
+is_uint "$memory" && [ "$memory" -ge 1024 ] || die "MEMORY must be at least 1024 (MiB)"
+is_uint "$maxmem"                           || die "MAXMEM must be an integer (MiB)"
+[ "$maxmem" -ge "$memory" ] || die "MAXMEM ($maxmem) is less than MEMORY ($memory)"
+[ "$memory" -ge 3000 ] ||
+    echo "$prog: warning: MEMORY $memory MiB is tight for 'guix system init'; 4000 is safer" >&2
+
+if [ -n "$netvm" ]; then
+    qvm-check -q "$netvm" 2>/dev/null || die "network qube '$netvm' doesn't exist"
+fi
+
+if [ "$iso_vm" = dom0 ]; then
+    [ -f "$iso_path" ] || die "no such file in dom0: $iso_path"
+else
+    qvm-check -q "$iso_vm" 2>/dev/null || die "qube '$iso_vm' doesn't exist"
+    # The ISO is attached from a running qube, so start it now (also needed
+    # to look for the file).
+    if ! qvm-check -q --running "$iso_vm" 2>/dev/null; then
+        run qvm-start "$iso_vm"
+    fi
+    if [ "$dry_run" = 0 ] || qvm-check -q --running "$iso_vm" 2>/dev/null; then
+        qvm-run -q --pass-io --no-gui --no-shell "$iso_vm" test -f "$iso_path" ||
+            die "no such file in $iso_vm: $iso_path"
+    fi
+fi
+
+# --- create -------------------------------------------------------------
+
+created=0
+cleanup() {
+    status=$?
+    if [ $status -ne 0 ] && [ "$created" = 1 ] && [ "$dry_run" = 0 ]; then
+        echo "$prog: failed; removing the half-made qube '$name'" >&2
+        qvm-kill "$name" >/dev/null 2>&1 || true
+        qvm-remove -f "$name" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+echo "Creating $name: HVM, $vcpus vCPU, $memory-$maxmem MiB, root $root_size"
+
+run qvm-create --class StandaloneVM --label "$label" \
+    --property virt_mode=hvm "$name"
+created=1
+
+# The kernel comes from the qube's own disk (GRUB), not from dom0.
+run qvm-prefs "$name" kernel ''
+run qvm-prefs "$name" vcpus "$vcpus"
+run qvm-prefs "$name" memory "$memory"
+run qvm-prefs "$name" maxmem "$maxmem"
+[ -n "$netvm" ] && run qvm-prefs "$name" netvm "$netvm"
+run qvm-volume extend "$name:root" "$root_size"
+
+# The Qubes Update tool can't update Guix (guix pull + reconfigure does).
+run qvm-features "$name" skip-update 1
+
+# Memory balancing. It only takes effect once the agent runs
+# meminfo-writer; until then the qube simply has MEMORY.
+if [ "$maxmem" -gt "$memory" ]; then
+    run qvm-service "$name" meminfo-writer on
+else
+    run qvm-service "$name" meminfo-writer off
+fi
+
+run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
+created=0           # it exists and boots: keep it from here on
+
+# --- what the installer needs -------------------------------------------
+
+pref() { qvm-prefs "$name" "$1" 2>/dev/null || true; }
+
+if [ "$dry_run" = 1 ]; then
+    echo
+    echo "(dry run: nothing was changed)"
+    exit 0
+fi
+
+ip=$(pref ip)
+gw=$(pref visible_gateway)
+dns=$(pref dns | xargs)
+[ -n "$dns" ] || dns="10.139.1.1 10.139.1.2"
+
+# The installer's console is the emulated VGA window. dom0's desktop grabs
+# Alt+Fn, so console switches go through xdotool (click the window when the
+# cursor turns into a cross).
+vt_key() { echo "     xdotool key --window \$(xdotool selectwindow) alt+$1"; }
+
+cat <<EOF
+
+$name is booting the Guix installer in its console window. To install:
+
+1. At the GRUB menu, highlight the non-graphical install entry, press 'e',
+   add  nomodeset  to the end of the 'linux' line, and boot it (Ctrl+X).
+EOF
+
+if [ -z "$ip" ]; then
+    cat <<EOF
+
+2. $name has no network qube, so the installer will be offline. Give it
+   one (qvm-prefs $name netvm <qube>) and restart it.
+EOF
+else
+    cat <<EOF
+
+2. Qubes has no DHCP, so set the network by hand in the shell
+   (check the interface name with 'ip -br link'):
+     ip addr add $ip/8 dev eth0
+     ip link set eth0 up
+     ip route add default via $gw
+EOF
+    for d in $dns; do echo "     echo nameserver $d >> /etc/resolv.conf"; done
+    cat <<EOF
+   The /8 puts the gateway on-link; with /32 the default route is refused.
+   Keep these for the network section of your first config.scm:
+     address $ip/8, gateway $gw, DNS $dns
+EOF
+fi
+
+cat <<EOF
+
+3. Switch to the installer screen. In dom0:
+$(vt_key F2)
+
+4. Install as usual and reboot into the new system. Set the network
+   again as root (the same ip commands; 'herd stop NetworkManager' first
+   if it's running). Then, as your user:
+     guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
+     qubes-guix/guest/qubes-guix-setup
+     sudo reboot
+   If the console window goes away once the Qubes GUI agent runs, get it
+   back with:  qvm-start-daemon --force-stubdomain $name
+EOF

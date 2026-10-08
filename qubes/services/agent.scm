@@ -34,6 +34,7 @@
   #:use-module (qubes packages split-gpg)   ; split-gpg2 client
   #:export (qubes-guest-configuration
             qubes-guest-configuration?
+            qubes-guest-network?
             qubes-guest-service-type
             %qubes-kernel-arguments))
 

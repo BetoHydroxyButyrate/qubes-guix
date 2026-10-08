@@ -1,0 +1,101 @@
+#!/bin/sh
+# qubes-guix-setup — run in a freshly installed Guix System qube, as your
+# normal user (it uses sudo where it must). Turns the installed system into
+# an integrated Qubes qube:
+#   1. adds the qubes channel to ~/.config/guix/channels.scm and runs guix pull;
+#   2. wraps /etc/config.scm in (qubes-operating-system ...)  (see qubes/system.scm);
+#   3. checks the new configuration, installs it and reconfigures.
+# Then reboot. Safe to rerun: steps already done are skipped.
+#
+#   guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
+#   qubes-guix/guest/qubes-guix-setup [CONFIG]       # default /etc/config.scm
+
+set -eu
+
+prog=${0##*/}
+here=$(cd "$(dirname "$0")" && pwd)
+config=${1:-/etc/config.scm}
+channels=${XDG_CONFIG_HOME:-$HOME/.config}/guix/channels.scm
+guix=$HOME/.config/guix/current/bin/guix
+
+say() { printf '\n==> %s\n' "$*"; }
+die() { echo "$prog: $*" >&2; exit 1; }
+
+[ -d /run/current-system ] || die "this isn't Guix System"
+[ "$(id -u)" -ne 0 ] || die "run as your normal user, not root (sudo is used where needed)"
+command -v sudo >/dev/null || die "sudo not found"
+[ -f "$config" ] || die "no such file: $config"
+for f in wrap-config.scm channels.scm; do
+    [ -f "$here/$f" ] || die "$f missing next to $prog"
+done
+
+# --- 1. channel --------------------------------------------------------
+
+if [ -f "$channels" ] && grep -q "(name 'qubes)" "$channels"; then
+    say "The qubes channel is already in $channels"
+elif [ -f "$channels" ]; then
+    die "$channels exists but has no qubes channel. Add the (channel (name 'qubes) ...)
+entry from $here/channels.scm to it, then rerun."
+else
+    say "Adding the qubes channel ($channels)"
+    mkdir -p "$(dirname "$channels")"
+    cp "$here/channels.scm" "$channels"
+fi
+
+if [ -x "$guix" ] && "$guix" describe 2>/dev/null | grep -q '^  qubes '; then
+    say "guix already includes the qubes channel; pulling for updates"
+else
+    say "guix pull (the first one takes a while)"
+fi
+guix pull
+[ -x "$guix" ] || die "guix pull didn't produce $guix"
+"$guix" describe | grep -q '^  qubes ' ||
+    die "the pulled guix doesn't include the qubes channel (see: $guix describe)"
+
+# --- 2. configuration --------------------------------------------------
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+new=$tmp/config.scm
+
+set +e
+QUBES_IN=$config QUBES_OUT=$new "$guix" repl -- "$here/wrap-config.scm"
+status=$?
+set -e
+case $status in
+    0) changed=1;;
+    3) changed=0; cp "$config" "$new";;
+    *) die "couldn't update $config (unchanged)";;
+esac
+
+say "Checking the configuration (evaluates it; builds nothing)"
+if ! "$guix" system build --dry-run "$new" >/dev/null; then
+    cp "$new" "$HOME/config.scm.qubes-failed"
+    die "the new configuration doesn't evaluate; $config is unchanged.
+The attempted version is in $HOME/config.scm.qubes-failed"
+fi
+
+if [ "$changed" = 1 ]; then
+    backup=$config.pre-qubes
+    [ -e "$backup" ] && backup=$config.pre-qubes.$(date +%Y%m%d%H%M%S)
+    say "Installing the new $config (old one: $backup)"
+    sudo cp "$config" "$backup"
+    sudo cp "$new" "$config"
+fi
+
+# --- 3. reconfigure ----------------------------------------------------
+
+say "guix system reconfigure (builds the Qubes agents from source)"
+sudo "$guix" system reconfigure "$config"
+
+cat <<EOF
+
+Done. Reboot to start the Qubes agents:  sudo reboot
+
+After the reboot the network comes from QubesDB (no manual setup), and from
+dom0 these should work:
+  qvm-run --pass-io $(hostname) 'ip -br addr'
+  qvm-features $(hostname)
+  qvm-run $(hostname) alacritty      # or any installed program
+(Use the qube's name if it differs from the host name '$(hostname)'.)
+EOF

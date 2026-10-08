@@ -1,0 +1,95 @@
+;;; guest/wrap-config.scm — wrap the last form of a Guix system configuration
+;;; in (qubes-operating-system ...). Run by qubes-guix-setup through
+;;; `guix repl`; plain Guile works too.
+;;;
+;;;   QUBES_IN=/etc/config.scm QUBES_OUT=/tmp/new.scm guix repl -- wrap-config.scm
+;;;
+;;; The edit is textual (the file is never re-printed), so comments and
+;;; layout survive. Exit status: 0 wrapped, 3 already a qube, 1 error.
+
+(use-modules (ice-9 textual-ports)
+             (ice-9 match)
+             (srfi srfi-1))
+
+;; Register #~ #$ reader syntax when Guix is around, so configs that use
+;; gexps can be read.
+(false-if-exception (resolve-module '(guix gexp)))
+
+(define (fail fmt . args)
+  (apply format (current-error-port) (string-append "wrap-config: " fmt "~%")
+         args)
+  (exit 1))
+
+(define in  (or (getenv "QUBES_IN")  (fail "QUBES_IN not set")))
+(define out (or (getenv "QUBES_OUT") (fail "QUBES_OUT not set")))
+
+(define text (call-with-input-file in get-string-all))
+
+;; Read every top-level form, remembering where each ends.
+(define forms+ends
+  (call-with-input-string text
+    (lambda (port)
+      (let loop ((acc '()))
+        (let ((form (catch #t
+                      (lambda () (read port))
+                      (lambda (key . args)
+                        (fail "~a doesn't read as Scheme: ~a ~s" in key args)))))
+          (if (eof-object? form)
+              (reverse acc)
+              (loop (cons (cons form (ftell port)) acc))))))))
+
+(when (null? forms+ends)
+  (fail "~a is empty" in))
+
+(define (mentions? symbols tree)
+  (let walk ((x tree))
+    (cond ((pair? x) (or (walk (car x)) (walk (cdr x))))
+          ((vector? x) (walk (vector->list x)))
+          (else (memq x symbols)))))
+
+(when (any (lambda (f) (mentions? '(qubes-operating-system
+                                    qubes-guest-service-type)
+                                  (car f)))
+           forms+ends)
+  (format #t "~a already uses the Qubes service; nothing to do.~%" in)
+  (exit 3))
+
+(define last-form (car (last forms+ends)))
+(define last-end  (cdr (last forms+ends)))
+(define prev-end
+  (match (reverse forms+ends)
+    ((_ (_ . end) . _) end)
+    (_ 0)))
+
+(match last-form
+  (('operating-system . _) #t)
+  (_ (fail "the last form of ~a is not (operating-system ...); wrap it by hand:
+  (qubes-operating-system <your operating-system>)" in)))
+
+;; Start of the last form: skip whitespace and ; comments after the
+;; previous form.
+(define last-start
+  (let loop ((i prev-end))
+    (cond ((>= i last-end) (fail "can't locate the last form in ~a" in))
+          ((char-whitespace? (string-ref text i)) (loop (+ i 1)))
+          ((char=? (string-ref text i) #\;)
+           (let ((nl (string-index text #\newline i)))
+             (loop (if nl (+ nl 1) last-end))))
+          ((char=? (string-ref text i) #\() i)
+          (else (fail "unexpected text before the last form of ~a" in)))))
+
+(call-with-output-file out
+  (lambda (port)
+    (put-string port (substring text 0 last-start))
+    (put-string port ";; Added by qubes-guix-setup: make this system a Qubes qube.
+;; See https://github.com/BetoHydroxyButyrate/qubes-guix (qubes/system.scm).
+(use-modules (qubes system))
+
+(qubes-operating-system
+")
+    (put-string port (substring text last-start last-end))
+    (put-string port ")")
+    (put-string port (substring text last-end))
+    (unless (string-suffix? "\n" text) (newline port))))
+
+(format #t "Wrapped ~a -> ~a~%" in out)

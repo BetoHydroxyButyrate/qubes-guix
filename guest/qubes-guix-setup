@@ -9,6 +9,9 @@
 #
 #   guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
 #   qubes-guix/guest/qubes-guix-setup [CONFIG]       # default /etc/config.scm
+#
+# QUBES_GUIX_BRANCH=test qubes-guix/guest/qubes-guix-setup   pulls the channel
+# from that branch instead of main (for testing; commits must still be signed).
 
 set -eu
 
@@ -25,7 +28,7 @@ die() { echo "$prog: $*" >&2; exit 1; }
 [ "$(id -u)" -ne 0 ] || die "run as your normal user, not root (sudo is used where needed)"
 command -v sudo >/dev/null || die "sudo not found"
 [ -f "$config" ] || die "no such file: $config"
-for f in wrap-config.scm channels.scm; do
+for f in wrap-config.guile channels.scm.txt; do
     [ -f "$here/$f" ] || die "$f missing next to $prog"
 done
 
@@ -35,11 +38,12 @@ if [ -f "$channels" ] && grep -q "(name 'qubes)" "$channels"; then
     say "The qubes channel is already in $channels"
 elif [ -f "$channels" ]; then
     die "$channels exists but has no qubes channel. Add the (channel (name 'qubes) ...)
-entry from $here/channels.scm to it, then rerun."
+entry from $here/channels.scm.txt to it, then rerun."
 else
     say "Adding the qubes channel ($channels)"
     mkdir -p "$(dirname "$channels")"
-    cp "$here/channels.scm" "$channels"
+    sed "s/(branch \"main\")/(branch \"${QUBES_GUIX_BRANCH:-main}\")/" \
+        "$here/channels.scm.txt" > "$channels"
 fi
 
 if [ -x "$guix" ] && "$guix" describe 2>/dev/null | grep -q '^  qubes '; then
@@ -59,7 +63,7 @@ trap 'rm -rf "$tmp"' EXIT
 new=$tmp/config.scm
 
 set +e
-QUBES_IN=$config QUBES_OUT=$new "$guix" repl -- "$here/wrap-config.scm"
+QUBES_IN=$config QUBES_OUT=$new "$guix" repl -- "$here/wrap-config.guile"
 status=$?
 set -e
 case $status in

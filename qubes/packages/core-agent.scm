@@ -19,6 +19,7 @@
   #:use-module (gnu packages freedesktop)     ; python-pyxdg
   #:use-module (gnu packages gnome)           ; zenity
   #:use-module (gnu packages gtk)             ; gtk (schemas for zenity)
+  #:use-module (gnu packages imagemagick)     ; graphicsmagick
   #:use-module (gnu packages glib)            ; python-pygobject, gobject-introspection
   ;; Adjust these three to your actual module / variable names if they differ.
   #:use-module (qubes packages linux-utils)   ; qubes-linux-utils
@@ -178,7 +179,30 @@ exec ~a \"$@\"
               (let ((svc (string-append #$output "/etc/qubes-rpc/qubes.StartApp")))
                 (delete-file svc)
                 (symlink (search-input-file inputs "/bin/qubes-startapp")
-                         svc)))))))
+                         svc))))
+          ;; qubes.GetImageRGBA (dom0 fetching app-menu icons) runs gm and
+          ;; rsvg-convert from PATH, and lib/qubes/xdg-icon, a python script
+          ;; that imports pyxdg and lists /usr/share/icons. qrexec services
+          ;; get a minimal environment: no GUIX_PYTHONPATH, no XDG_DATA_DIRS
+          ;; with the system profile, and no /usr/share.
+          (add-after 'link-startapp 'fix-icon-helpers
+            (lambda* (#:key inputs #:allow-other-keys)
+              (let ((rgba (string-append #$output
+                                         "/etc/qubes-rpc/qubes.GetImageRGBA"))
+                    (xdg-icon (string-append #$output "/lib/qubes/xdg-icon"))
+                    (gm (search-input-file inputs "/bin/gm"))
+                    (rsvg (search-input-file inputs "/bin/rsvg-convert")))
+                (substitute* rgba
+                  (("(^|[$(]|[[:space:]])gm " all pre)
+                   (string-append pre gm " "))
+                  (("rsvg-convert ") (string-append rsvg " ")))
+                (substitute* xdg-icon
+                  (("/usr/share/icons")
+                   "/run/current-system/profile/share/icons"))
+                (wrap-program xdg-icon
+                  `("GUIX_PYTHONPATH" ":" prefix (,(getenv "GUIX_PYTHONPATH")))
+                  `("XDG_DATA_DIRS" ":" suffix
+                    ("/run/current-system/profile/share")))))))))
     (native-inputs
      (list `(,glib "bin")))             ; glib-compile-schemas
     (inputs
@@ -191,7 +215,10 @@ exec ~a \"$@\"
            qubes-core-qrexec            ; qrexec-client-vm path
            python-qubesagent            ; qubes-vmexec for qubes.VMExec
            zenity                       ; SelectFile/SelectDirectory, dialogs
-           gtk))                        ; its GSettings schemas (see wrapper)
+           gtk                          ; its GSettings schemas (see wrapper)
+           python-pyxdg                 ; xdg-icon (qubes.GetImageRGBA)
+           graphicsmagick               ; gm in qubes.GetImageRGBA
+           librsvg))                    ; rsvg-convert in qubes.GetImageRGBA
     (home-page "https://github.com/QubesOS/qubes-core-agent-linux")
     (synopsis "Qubes OS guest agent: qrexec services and file-copy tools")
     (description

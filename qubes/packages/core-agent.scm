@@ -1,6 +1,6 @@
 ;;; qubes/packages/core-agent.scm — qubes-core-agent-linux, qubes-rpc/ half.
 ;;;
-;;; Scope: C helpers (qfile-*, tar2qfile, vm-log, vm-file-editor, ...),
+;;; Scope: C helpers (qfile-*, tar2qfile, vm-file-editor, ...),
 ;;; qvm-* user commands, /etc/qubes-rpc service scripts, /etc/qubes/rpc-config.
 ;;; Plus python-qubesagent (qubesagent module: qubes-vmexec, qubes-firewall).
 ;;; Out of scope (later): misc/, network/, systemd/init glue, selinux,
@@ -28,19 +28,20 @@
 (define-public qubes-core-agent
   (package
     (name "qubes-core-agent")
-    (version "4.4.2")                   ; version file at mm_47383334
+    (version "4.3.48")
     (source
      (origin
        (method git-fetch)
        (uri (git-reference
              (url "https://github.com/QubesOS/qubes-core-agent-linux")
-             ;; tag mm_47383334
-             (commit "4738333496c6b689207d8274d0f3425e796b6197")))
+             ;; v4.3.48 = head of release4.3, matching the R4.3 dom0
+             ;; (main is R4.4: sys-log/vm-log, qubes.PostUpdate).
+             (commit "e1cf5585c03149ec9e331983515b0431779f2da0")))
        (file-name (git-file-name name version))
        (sha256
         ;; Precomputed NAR hash of the checkout; if guix disagrees,
         ;; paste the hash it reports.
-        (base32 "1gl6kvpywa8g34q781yf0ysd5w7wrib5p5vyqpq6dv7cf3hmc7jd"))))
+        (base32 "1fvsgyxxya5nbaxrh3b40bq2v5b6rajsdmi513c047n6zfqa7ic3"))))
     (build-system gnu-build-system)
     (arguments
      (list
@@ -61,6 +62,15 @@
               (substitute* "qubes-rpc/gui-fatal.c"
                 (("/usr/bin/zenity")
                  (string-append #$output "/libexec/qubes-zenity")))))
+          ;; release4.3 creates suspend-pre.d, suspend-post.d and
+          ;; post-install.d as $(DESTDIR)/etc/qubes/... but installs into
+          ;; $(QUBESCONFDIR)/... -> "cannot create directory '/etc/qubes'".
+          ;; Backport of upstream main 8bc5d2d0.
+          (add-before 'build 'fix-qubesconfdir
+            (lambda _
+              (substitute* "qubes-rpc/Makefile"
+                (("\\$\\(DESTDIR\\)/etc/qubes/")
+                 "$(DESTDIR)$(QUBESCONFDIR)/"))))
           (replace 'build
             (lambda _
               (invoke "make" "-C" "qubes-rpc" "CC=gcc")))
@@ -109,7 +119,7 @@ exec ~a \"$@\"
                      (vmexec    (search-input-file inputs "/bin/qubes-vmexec"))
                      (zenity    (string-append #$output "/libexec/qubes-zenity"))
                      ;; Regular non-ELF files only: substitute* would turn
-                     ;; symlinks into copies (qubes.VMExecGUI, qubes.Log),
+                     ;; symlinks into copies (qubes.VMExecGUI),
                      ;; choke on the dangling /dev/tcp ones, and mangle
                      ;; binaries.
                      (scripts
@@ -143,17 +153,23 @@ exec ~a \"$@\"
                 ;; The stock patch-shebangs phase only covers bin/sbin/libexec;
                 ;; the service scripts live in etc/qubes-rpc and lib/qubes.
                 (for-each patch-shebang scripts))))
-          ;; qubes.WaitForSession is owned by qrexec (as upstream), but
-          ;; /etc/qubes-rpc is this package's directory. Link it in rather
+          ;; qubes.WaitForSession: on R4.3 core-agent installs its own
+          ;; (systemctl --user, and with gui it waits with no timeout for
+          ;; the qrexec-server socket). Replace it with the Guix version
+          ;; from our qrexec package. /etc/qubes-rpc is this package's
+          ;; directory, so link it in rather
           ;; than union the two dirs: the agent readlink()s services ONE
           ;; level to spot /dev/tcp targets, so a union (symlink->symlink)
           ;; would break qubes.ConnectTCP and qubes.UpdatesProxy.
           (add-after 'fix-script-paths 'link-wait-for-session
             (lambda* (#:key inputs #:allow-other-keys)
-              (symlink (search-input-file
-                        inputs "/etc/qubes-rpc/qubes.WaitForSession")
-                       (string-append #$output
-                                      "/etc/qubes-rpc/qubes.WaitForSession"))))
+              (let ((svc (string-append #$output
+                                        "/etc/qubes-rpc/qubes.WaitForSession")))
+                (when (file-exists? svc)
+                  (delete-file svc))
+                (symlink (search-input-file
+                          inputs "/etc/qubes-rpc/qubes.WaitForSession")
+                         svc))))
           ;; qubes.StartApp needs qubesagent + pyxdg + PyGObject + qubesdb on
           ;; its path; python-qubesagent ships it as a wrapped program.
           ;; (Symlink to a regular file: fine for the agent's readlink check.)
@@ -170,7 +186,8 @@ exec ~a \"$@\"
            python                       ; shebangs of qrun-in-vm, xdg-icon,
                                         ; qubes-sync-clock, qubes.StartApp
            qubes-linux-utils            ; libqubes-rpc-filecopy, libqubes-pure
-           qubes-core-qubesdb           ; libqubesdb (vm-log)
+           qubes-core-qubesdb           ; no C user on R4.3 (vm-log is R4.4);
+                                        ; kept until a build proves it unneeded
            qubes-core-qrexec            ; qrexec-client-vm path
            python-qubesagent            ; qubes-vmexec for qubes.VMExec
            zenity                       ; SelectFile/SelectDirectory, dialogs
@@ -181,7 +198,7 @@ exec ~a \"$@\"
      "The qubes-rpc part of the Qubes OS Linux guest agent: the
 @file{/etc/qubes-rpc} service scripts, their @file{rpc-config} flags, the
 file copy/open helpers (qfile-agent, qfile-unpacker, tar2qfile,
-vm-file-editor, vm-log) and the qvm-copy / qvm-open-in-vm / qvm-run-vm
+vm-file-editor) and the qvm-copy / qvm-open-in-vm / qvm-run-vm
 user commands.")
     (license license:gpl2+)))
 

@@ -708,3 +708,27 @@ The port is winning.
   `agent-program /run/current-system/profile/libexec/split-gpg2/gpg-agent-placeholder`
   (it refuses to start a local agent for ~/.gnupg while the
   split-gpg2-client service is on, and otherwise execs the real gpg-agent).
+
+## CORE-AGENT TO R4.3 (2026-10-08): drafted, NOT build-tested
+- Pinned qubes-core-agent-linux to v4.3.48 (e1cf558, head of release4.3)
+  instead of mm_47383334 (main, 4.4.2). Every other repo already tracks R4.3.
+  Hash computed with the NAR method that reproduces the old pin's hash.
+- Diff vs main is confined to qubes-rpc/ (setup.py and qubesagent/ are
+  identical, so python-qubesagent is unaffected). What changes:
+  - qubes.WaitForSession is installed by core-agent on R4.3 (main moved it
+    to qrexec). The link-wait-for-session phase now deletes upstream's
+    systemctl-based copy before linking ours; without that, symlink fails
+    with "File exists".
+  - vm-log / qubes.Log (sys-log) and qubes.PostUpdate are R4.4-only: gone.
+    qubesdb input has no C user now; kept until a build shows it's unneeded.
+  - qvm-open-in-vm requires an explicit vmname again (no @default fallback).
+  - qubes.Filecopy bookmark hook renamed qvm_nautilus_bookmark.sh (inert).
+  - release4.3 qubes-rpc/Makefile mkdirs $(DESTDIR)/etc/qubes/{suspend-pre,
+    suspend-post,post-install}.d but installs into $(QUBESCONFDIR): build died
+    "cannot create directory '/etc/qubes'". Phase fix-qubesconfdir backports
+    upstream main 8bc5d2d0.
+- All substitute* anchors still match. Hand-ported network/setup-ip and the
+  features script: no upstream change between the two commits.
+- Test: guix build -L . qubes-core-agent python-qubesagent; reconfigure;
+  qvm-run --pass-io guix 'ls -l /etc/qubes-rpc/qubes.WaitForSession'
+  (-> qrexec store path), qvm-copy both ways, app menu launch, GUI backup.

@@ -139,9 +139,9 @@ Keep the template's netvm until the updates proxy is known to work. To test:
 Only then, if you want the template offline:  qvm-prefs $name netvm ''
 
 Software belongs in the template's /etc/config.scm. 'guix install' in an
-AppVM lasts until it shuts down, like apt in a Debian AppVM. To pull without a
-netvm, in the template:
-  http_proxy=http://127.0.0.1:8082 https_proxy=http://127.0.0.1:8082 guix pull
+AppVM lasts until it shuts down, like apt in a Debian AppVM. To update the
+template (through the updates proxy, so no netvm needed), in the template:
+  qubes-guix-update -r          # guix pull, then sudo guix system reconfigure
 (Use the qube's name if it differs from the host name '$name'.)
 EOF
     exit 0

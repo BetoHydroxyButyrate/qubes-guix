@@ -23,6 +23,9 @@
   #:use-module (gnu packages base)           ; coreutils
   #:use-module (gnu packages bash)           ; bash-minimal
   #:use-module (guix gexp)
+  #:use-module (guix packages)              ; qubes-guix-update
+  #:use-module (guix build-system trivial)
+  #:use-module ((guix licenses) #:prefix license:)
   #:use-module (guix records)
   #:use-module (gnu packages compression)    ; gzip (zcat /proc/config.gz)
   #:use-module (gnu packages gnupg)          ; gpg for split-gpg2
@@ -641,10 +644,64 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
                                           "/etc/qubes-rpc"))
                        '()))))
 
+;; `qubes-guix-update`: guix pull, then optionally reconfigure, through the
+;; Qubes updates proxy when dom0 enabled updates-proxy-setup for this qube
+;; (templates). guix-daemon is pointed at the proxy by qubes-updates-proxy,
+;; but `guix pull` fetches the channels with libgit2 in the caller's own
+;; process, which only follows http_proxy/https_proxy.
+(define (qubes-guix-update-script config)
+  (mixed-text-file "qubes-guix-update" "#!" (file-append bash-minimal "/bin/sh") "
+# qubes-guix-update [-r|--reconfigure] [GUIX-PULL-ARGS...]
+#   guix pull, through the Qubes updates proxy when this qube has one (a
+#   template with updates-proxy-setup); with -r, then also
+#   sudo guix system reconfigure ${QUBES_GUIX_CONFIG:-/etc/config.scm}
+set -eu
+reconfigure=0
+case ${1:-} in
+    -r|--reconfigure) reconfigure=1; shift;;
+    -h|--help) sed -n '2,5p' "$0"; exit 0;;
+esac
+if [ "$(" (qubesdb-read-path config) " /qubes-service/updates-proxy-setup 2>/dev/null)" = 1 ]; then
+    http_proxy=http://127.0.0.1:8082
+    https_proxy=$http_proxy
+    export http_proxy https_proxy
+    echo "qubes-guix-update: through the Qubes updates proxy ($http_proxy)"
+fi
+guix pull "$@"
+if [ "$reconfigure" = 1 ]; then
+    guix=$HOME/.config/guix/current/bin/guix
+    [ -x "$guix" ] || guix=guix
+    # Builds and substitutes go through guix-daemon, which has the proxy.
+    sudo "$guix" system reconfigure "${QUBES_GUIX_CONFIG:-/etc/config.scm}"
+fi
+"))
+
+(define (qubes-guix-update config)
+  (package
+    (name "qubes-guix-update")
+    (version "0")
+    (source #f)
+    (build-system trivial-build-system)
+    (arguments
+     (list #:modules '((guix build utils))
+           #:builder
+           #~(begin
+               (use-modules (guix build utils))
+               (let ((bin (string-append #$output "/bin/qubes-guix-update")))
+                 (mkdir-p (dirname bin))
+                 (copy-file #$(qubes-guix-update-script config) bin)
+                 (chmod bin #o555)))))
+    (home-page "https://github.com/BetoHydroxyButyrate/qubes-guix")
+    (synopsis "guix pull (and reconfigure) through the Qubes updates proxy")
+    (description "Runs @command{guix pull}, through the Qubes updates proxy
+when the qube uses one, and optionally @command{guix system reconfigure}.")
+    (license license:gpl3+)))
+
 (define (qubes-packages config)
   (append (list (qubes-guest-qrexec config)
                 (qubes-guest-qubesdb config)
-                (qubes-guest-core-agent config))
+                (qubes-guest-core-agent config)
+                (qubes-guix-update config))
           (if (qubes-guest-gui? config)
               ;; pulseaudio: the agent starts it with the vchan sink; this
               ;; also puts pactl/paplay on PATH for checking audio.

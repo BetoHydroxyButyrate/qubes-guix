@@ -246,7 +246,7 @@ qvm-create --template guix-tmpl --label red \
 
 An AppVM needs `virt_mode hvm` (the default is PVH) and memory set. The default 400 MiB is too little for Guix.
 
-Keep the template's netvm until the updates proxy works. dom0 normally enables `updates-proxy-setup` for templates; if not, run `qvm-service guix-tmpl updates-proxy-setup on`. Start the template and check `herd status qubes-updates-proxy` in it. guix-daemon should then have the proxy in its environment: `sudo cat /proc/$(pgrep -o guix-daemon)/environ | tr '\0' '\n' | grep proxy`. Only then, if you want the template offline, run `qvm-prefs guix-tmpl netvm ''`. Substitutes then come through the proxy. `guix pull` fetches git in your own process, not through the daemon, so offline it needs `http_proxy` and `https_proxy` set to `http://127.0.0.1:8082` (tested: libgit2 honours them).
+Keep the template's netvm until the updates proxy works. dom0 normally enables `updates-proxy-setup` for templates; if not, run `qvm-service guix-tmpl updates-proxy-setup on`. Start the template and check `herd status qubes-updates-proxy` in it. guix-daemon should then have the proxy in its environment: `sudo cat /proc/$(pgrep -o guix-daemon)/environ | tr '\0' '\n' | grep proxy`. Only then, if you want the template offline, run `qvm-prefs guix-tmpl netvm ''`. Substitutes then come through the proxy. `guix pull` fetches git in your own process, not through the daemon, so offline it needs `http_proxy` and `https_proxy` set to `http://127.0.0.1:8082` (tested: libgit2 honours them). `qubes-guix-update` does that for you (see Updating).
 
 `#:template? #t` (in `qubes-operating-system`, or the `template?` field of `qubes-guest-configuration`) adds:
 - `qubes-rwdev`: formats a blank private volume, seeds `/rw/home`, then `/rw` and the `/home` bind mount before `user-homes` runs;
@@ -289,7 +289,7 @@ Keep the template's netvm until the updates proxy works. dom0 normally enables `
 ## Updating
 
 There are two cases:
-- **Updating the system:** run `guix pull` then `sudo guix system reconfigure /etc/config.scm`.
+- **Updating the system:** run `qubes-guix-update -r`. It runs `guix pull`, then `sudo guix system reconfigure /etc/config.scm` with the Guix just pulled. In a template with `updates-proxy-setup`, it pulls through the Qubes updates proxy, so the template needs no netvm. Without `-r` it only pulls. Other arguments go to `guix pull`, and `QUBES_GUIX_CONFIG` names another config file. Elsewhere it's the same as `guix pull` followed by `sudo guix system reconfigure /etc/config.scm`.
 - **Working on the channel itself:** use `sudo guix system reconfigure -L /path/to/checkout /etc/config.scm`. `-L` puts the checkout ahead of the pulled channel, so you can test before committing.
 
 ### Pinning Guix (or: why reconfigure rebuilds everything)

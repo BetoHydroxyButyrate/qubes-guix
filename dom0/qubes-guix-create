@@ -13,9 +13,12 @@ prog=${0##*/}
 # Defaults. MEMORY is what the qube gets for the whole install: there is no
 # memory balancing until the Qubes agent runs, and `guix system init`
 # needs more than a desktop does.
+# MAXMEM defaults to MEMORY, i.e. no memory balancing. An HVM with
+# MAXMEM > MEMORY boots in Xen populate-on-demand mode, which is slow:
+# measured 24 s with 8000/8000 against 83 s with 8000/32542.
 vcpus=2
 memory=4000
-maxmem=8000
+maxmem=
 label=purple
 root_size=60g
 netvm=
@@ -30,8 +33,9 @@ installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
 
   VCPUS    virtual CPUs                         (default $vcpus)
   MEMORY   initial memory, MiB                  (default $memory)
-  MAXMEM   memory-balancing maximum, MiB        (default $maxmem)
-           MAXMEM = MEMORY turns memory balancing off.
+  MAXMEM   memory-balancing maximum, MiB        (default: = MEMORY)
+           MAXMEM > MEMORY turns memory balancing on, but slows every
+           boot (Xen populate-on-demand); keep the gap small.
 
 Options:
   -l, --label COLOUR    window label            (default $label)
@@ -80,10 +84,7 @@ iso=${args[1]}
 [ ${#args[@]} -ge 3 ] && vcpus=${args[2]}
 [ ${#args[@]} -ge 4 ] && memory=${args[3]}
 [ ${#args[@]} -ge 5 ] && maxmem=${args[4]}
-# Only MEMORY given: keep MAXMEM at least MEMORY.
-if [ ${#args[@]} -eq 4 ] && is_uint "$memory" && [ "$memory" -gt "$maxmem" ]; then
-    maxmem=$memory
-fi
+[ -n "$maxmem" ] || maxmem=$memory
 
 # --- checks (nothing is changed until they all pass) --------------------
 
@@ -152,6 +153,10 @@ run qvm-prefs "$name" kernel ''
 run qvm-prefs "$name" vcpus "$vcpus"
 run qvm-prefs "$name" memory "$memory"
 run qvm-prefs "$name" maxmem "$maxmem"
+# With memory balancing on, a Guix boot can take over a minute to reach the
+# qrexec agent (83 s measured), past the 60 s default; on a timeout,
+# qvm-start kills the domain uncleanly. Without balancing it's ~25 s.
+run qvm-prefs "$name" qrexec_timeout 300
 [ -n "$netvm" ] && run qvm-prefs "$name" netvm "$netvm"
 run qvm-volume extend "$name:root" "$root_size"
 

@@ -138,10 +138,12 @@ chmod +x qubes-guix-create
 
 ```
 qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
-  defaults: 2 vCPUs, 4000 MiB, 8000 MiB max; -s root size (60g), -l label, -n netvm, --dry-run
+  defaults: 2 vCPUs, 4000 MiB, MAXMEM = MEMORY (no balancing); -s root size (60g), -l label, -n netvm, --dry-run
 ```
 
-It checks everything before changing anything, and removes the qube again if a step fails. It creates a StandaloneVM in HVM mode that boots its own kernel, grows the root volume, sets `skip-update` (the Qubes Update tool can't update Guix) and turns on memory balancing when MAXMEM > MEMORY. Then it boots the installer and prints the qube's network settings. Qubes networking is static, so you may need these in the installer and in your first `config.scm`. Until the agent runs, the qube has exactly MEMORY, which is why the default is 4000 MiB: `guix system init` needs it.
+It checks everything before changing anything, and removes the qube again if a step fails. It creates a StandaloneVM in HVM mode that boots its own kernel, grows the root volume, sets `skip-update` (the Qubes Update tool can't update Guix), raises `qrexec_timeout` to 300 s, and turns on memory balancing when MAXMEM > MEMORY. Then it boots the installer and prints the qube's network settings. Qubes networking is static, so you may need these in the installer and in your first `config.scm`. Until the agent runs, the qube has exactly MEMORY, which is why the default is 4000 MiB: `guix system init` needs it.
+
+**Memory balancing makes every boot slower.** An HVM whose MAXMEM is above MEMORY boots in Xen's populate-on-demand mode, and a Guix boot then takes much longer to reach the qrexec agent. Measured: 24 s at 8000/8000, 83 s at 8000/32542. Past the default 60 s `qrexec_timeout`, `qvm-start` gives up and kills the qube, uncleanly. So the script leaves balancing off by default and sets the timeout to 300 s either way. If you want balancing, keep the gap between MEMORY and MAXMEM small. You can change it later in the qube's settings ("Include in memory balancing").
 
 The installer needs three manual steps under Qubes, and the script prints them with this qube's values:
 1. **In GRUB:** pick the non-graphical install entry, press `e`, and add `nomodeset` to the `linux` line.

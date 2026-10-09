@@ -33,6 +33,18 @@ die() { echo "$prog: $*" >&2; exit 1; }
 [ -d /run/current-system ] || die "this isn't Guix System"
 [ "$(id -u)" -ne 0 ] || die "run as your normal user, not root (sudo is used where needed)"
 command -v sudo >/dev/null || die "sudo not found"
+
+# The password is needed only after the long guix pull, when nobody may be
+# watching, and a sudo prompt that times out ends the run. So ask now, while
+# someone is here, and keep sudo's timestamp fresh until the script exits.
+# (After the first reconfigure, (qubes system) makes sudo passwordless.)
+if ! sudo -n true 2>/dev/null; then
+    echo "$prog needs sudo later on; asking for the password now."
+    sudo -v || die "sudo failed"
+fi
+( while sleep 60; do kill -0 $$ 2>/dev/null && sudo -n -v 2>/dev/null || exit; done ) &
+keepalive=$!
+trap 'kill "$keepalive" 2>/dev/null' EXIT
 [ -f "$config" ] || die "no such file: $config"
 for f in wrap-config.guile channels.scm.txt; do
     [ -f "$here/$f" ] || die "$f missing next to $prog"
@@ -71,11 +83,12 @@ guix pull
 # --- 2. configuration --------------------------------------------------
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp"; kill "$keepalive" 2>/dev/null' EXIT
 new=$tmp/config.scm
 
 set +e
 QUBES_IN=$config QUBES_OUT=$new QUBES_TEMPLATE=$template \
+    QUBES_BRANCH=${QUBES_GUIX_BRANCH:-} \
     "$guix" repl -- "$here/wrap-config.guile"
 status=$?
 set -e

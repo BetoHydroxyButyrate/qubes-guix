@@ -6,6 +6,8 @@
 ;;;
 ;;; With QUBES_TEMPLATE=1 the wrap gets #:template? #t (a Qubes TemplateVM);
 ;;; an existing (qubes-operating-system ...) without it gets it added.
+;;; With QUBES_BRANCH=B (other than main), a new wrap gets
+;;; #:channel-branch "B": the branch of the system-wide qubes channel.
 ;;;
 ;;; The edit is textual (the file is never re-printed), so comments and
 ;;; layout survive. Exit status: 0 wrapped, 3 already a qube, 1 error.
@@ -54,6 +56,13 @@
           (else (memq x symbols)))))
 
 (define template? (equal? (getenv "QUBES_TEMPLATE") "1"))
+(define branch
+  (let ((b (getenv "QUBES_BRANCH")))
+    (and b (not (string-null? b)) (not (string=? b "main")) b)))
+(define new-keywords
+  ;; Appended inside a new (qubes-operating-system ...) wrap.
+  (string-append (if template? "\n #:template? #t" "")
+                 (if branch (format #f "\n #:channel-branch ~s" branch) "")))
 (define last-form (car (last forms+ends)))
 (define last-end  (cdr (last forms+ends)))
 
@@ -113,7 +122,8 @@ add #:template? #t to its (qubes-operating-system ...) form by hand" in))
 (qubes-operating-system
 ")
     (put-string port (substring text last-start last-end))
-    (put-string port (if template? "\n #:template? #t)" ")"))
+    (put-string port new-keywords)
+    (put-string port ")")
     (put-string port (substring text last-end))
     (unless (string-suffix? "\n" text) (newline port))))
 

@@ -1,0 +1,117 @@
+#!/bin/sh
+# qubes-guix-finish-install — run as root in the Guix INSTALLER, once it says
+# the installation is complete and BEFORE rebooting, while the new system is
+# still mounted at /mnt. Makes that system a qube before its first boot:
+#   1. wraps /mnt/etc/config.scm in (qubes-operating-system ...)
+#      (the original is kept as /mnt/etc/config.scm.pre-qubes);
+#   2. checks it, then rebuilds /mnt with 'guix system init', using a Guix
+#      that includes the qubes channel (guix time-machine).
+# The first boot then already has the Qubes agents, its network from QubesDB,
+# passwordless sudo, and the qubes channel in /etc/guix/channels.scm.
+#
+#   sh qubes-guix-finish-install [--template] [-b BRANCH] [TARGET]
+#
+# --template: the qube is a TemplateVM (qubes-guix-create --template).
+# -b BRANCH:  the channel branch to build from and to record (default main).
+# TARGET:     where the new system is mounted (default /mnt).
+#
+# qubes-guix-create --finish-install (dom0) fetches this repository into /tmp
+# on the installer and prints the command to run.
+
+set -eu
+
+prog=${0##*/}
+here=$(cd "$(dirname "$0")" && pwd)
+template=0
+branch=main
+target=/mnt
+
+say() { printf '\n==> %s\n' "$*"; }
+die() { echo "$prog: $*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --template) template=1; shift;;
+        -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
+        -*) die "unknown option $1";;
+        *) target=$1; shift;;
+    esac
+done
+
+[ "$(id -u)" -eq 0 ] || die "run as root (the installer's shell is)"
+config=$target/etc/config.scm
+
+# The installer may have unmounted the new system when it finished. If so,
+# mount it again: its root is the one ext4/btrfs/xfs partition on the disk
+# (and an EFI system partition, if any, goes on /boot/efi).
+if [ ! -f "$config" ]; then
+    roots=$(lsblk -lnpo NAME,FSTYPE,TYPE | awk '$3=="part" && ($2=="ext4"||$2=="btrfs"||$2=="xfs") {print $1}')
+    [ -n "$roots" ] || die "no $config, and no ext4/btrfs/xfs partition to mount.
+Has the installation finished? (An encrypted root: open and mount it on
+$target yourself, then rerun.)"
+    [ "$(echo "$roots" | wc -l)" -eq 1 ] ||
+        die "no $config, and several candidate root partitions:
+$roots
+Mount the right one on $target yourself, then rerun."
+    say "Mounting $roots on $target"
+    mkdir -p "$target"
+    mount "$roots" "$target"
+    esp=$(lsblk -lnpo NAME,FSTYPE,TYPE | awk '$3=="part" && $2=="vfat" {print $1}' | head -n1)
+    if [ -n "$esp" ] && [ -d "$target/boot/efi" ]; then
+        mount "$esp" "$target/boot/efi"
+    fi
+    [ -f "$config" ] || die "$roots has no etc/config.scm: not the new system?"
+fi
+for f in wrap-config.guile channels.scm.txt; do
+    [ -f "$here/$f" ] || die "$f missing next to $prog"
+done
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+channels=$tmp/channels.scm
+new=$tmp/config.scm
+sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$channels"
+
+# Builds must land on the target's disk, not in the installer's RAM. The
+# installer normally still has this running; starting it again is harmless.
+herd start cow-store "$target" >/dev/null 2>&1 || true
+
+say "Wrapping $config"
+set +e
+QUBES_IN=$config QUBES_OUT=$new QUBES_TEMPLATE=$template QUBES_BRANCH=$branch \
+    guix repl -- "$here/wrap-config.guile"
+status=$?
+set -e
+case $status in
+    0) ;;
+    3) cp "$config" "$new";;
+    *) die "couldn't wrap $config (unchanged)";;
+esac
+
+say "Checking it with the qubes channel ($branch). The first run builds a Guix: slow."
+if ! guix time-machine -C "$channels" -- system build --dry-run "$new" >/dev/null; then
+    cp "$new" /root/config.scm.qubes-failed
+    die "the wrapped configuration doesn't evaluate; $config is unchanged.
+The attempted version is in /root/config.scm.qubes-failed"
+fi
+
+[ -e "$config.pre-qubes" ] || cp "$config" "$config.pre-qubes"
+cp "$new" "$config"
+
+say "Rebuilding $target as a qube (guix system init; builds the Qubes agents)"
+guix time-machine -C "$channels" -- system init "$config" "$target"
+
+cat <<EOF
+
+Done: $target is now a Qubes qube. Reboot (back in the installer: Ctrl+Alt+F1,
+or 'reboot' here). From the first boot on:
+  - network, qrexec and the GUI agent come up by themselves;
+  - 'guix pull' includes the qubes channel ($branch), from /etc/guix/channels.scm;
+    pull before your first 'sudo guix system reconfigure /etc/config.scm'.
+EOF
+if [ "$template" = 1 ]; then
+    cat <<EOF
+  - as a template: its first start moves /home to the private volume.
+    Create AppVMs in dom0 as the README says (virt_mode hvm, memory set).
+EOF
+fi

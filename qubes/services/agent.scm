@@ -495,7 +495,11 @@ exit 0
       (documentation "Forward 127.0.0.1:8082 to the Qubes updates proxy and
 point guix-daemon at it.")
       (provision '(qubes-updates-proxy))
-      (requirement '(qubesdb-daemon qrexec-agent loopback guix-daemon))
+      ;; NOT guix-daemon: its set-http-proxy action restarts it, and a
+      ;; restart first stops everything that requires it. Required, this
+      ;; service would wait for itself (it's still starting): a deadlock
+      ;; that left the service 'starting' forever and hung every shutdown.
+      (requirement '(qubesdb-daemon qrexec-agent loopback))
       (start #~(lambda args
                  (if (zero? (system* #$sh "-c"
                                      (string-append
@@ -510,9 +514,15 @@ point guix-daemon at it.")
                                            (make-socket-address
                                             AF_INET INADDR_LOOPBACK 8082))))
                                    args)))
-                       (perform-service-action (lookup-service 'guix-daemon)
-                                               'set-http-proxy
-                                               "http://127.0.0.1:8082")
+                       (catch #t
+                         (lambda ()
+                           (let ((daemon (lookup-service 'guix-daemon)))
+                             (start-service daemon)
+                             (perform-service-action daemon 'set-http-proxy
+                                                     "http://127.0.0.1:8082")))
+                         (lambda (key . rest)
+                           (format #t "qubes-updates-proxy: couldn't point guix-daemon at the proxy: ~a ~s~%"
+                                   key rest)))
                        running)
                      (begin
                        (format #t "qubes-updates-proxy: updates-proxy-setup not enabled in dom0~%")

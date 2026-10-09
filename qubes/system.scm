@@ -23,6 +23,11 @@
 ;;;   user) get sudo without a password, as upstream's
 ;;;   qubes-core-agent-passwordless-root does. A qube is the isolation
 ;;;   boundary; root inside it guards nothing the user can't already reach.
+;;; - unless #:system-channels? is #f: the qubes channel (branch
+;;;   #:channel-branch, default "main") added to the channels guix-daemon's
+;;;   service installs as /etc/guix/channels.scm. 'guix pull' uses that file
+;;;   when a user has no ~/.config/guix/channels.scm, so every user's first
+;;;   pull already includes this channel.
 ;;; - with #:template? #t: template support (qubes-guest-configuration's
 ;;;   template? field): /home on the private volume, swap on the volatile
 ;;;   one, the host name from qubesdb, updates through qubes.UpdatesProxy.
@@ -34,6 +39,8 @@
   #:use-module (gnu system)
   #:use-module (gnu system accounts)
   #:use-module (gnu services)
+  #:use-module (gnu services base)          ; guix-service-type
+  #:use-module (guix channels)
   #:use-module (guix gexp)
   #:use-module (qubes services agent)
   #:use-module (srfi srfi-1)
@@ -75,6 +82,28 @@ Guix runs visudo on the result, so a syntax error fails the build."
 %qubes ALL=(ALL) NOPASSWD: ALL
 " port))))))
 
+(define (qubes-channel branch)
+  (channel
+   (name 'qubes)
+   (url "https://github.com/BetoHydroxyButyrate/qubes-guix")
+   (branch branch)
+   (introduction
+    (make-channel-introduction
+     "ea33fcb13bff41db38017f9ec385565f66f88fae"
+     (openpgp-fingerprint                ; the signing subkey
+      "1607 721B 3110 F370 9497  F436 B548 D5A5 665F D366")))))
+
+(define (with-qubes-channel config branch)
+  "CONFIG, a guix-configuration, with the qubes channel added to the
+system-wide channels (unless it already has one named qubes)."
+  (let* ((old (or (guix-configuration-channels config) %default-channels))
+         (new (if (any (lambda (c) (eq? (channel-name c) 'qubes)) old)
+                  old
+                  (append old (list (qubes-channel branch))))))
+    (guix-configuration
+     (inherit config)
+     (channels new))))
+
 (define (as-template config)
   ;; Top level: inside qubes-operating-system, the record's field binding
   ;; template? would shadow the keyword argument of the same name.
@@ -87,6 +116,8 @@ Guix runs visudo on the result, so a syntax error fails the build."
                                  (config (qubes-guest-configuration))
                                  (display-manager? #f)
                                  (passwordless-sudo? #t)
+                                 (system-channels? #t)
+                                 (channel-branch "main")
                                  (template? #f))
   "Return OS, with the Qubes guest agents added and CONFIG for them.
 Unless DISPLAY-MANAGER? is true, also remove the graphical login.  With
@@ -117,10 +148,20 @@ TEMPLATE?, configure it as a Qubes template (and its AppVMs)."
                         (qubes-sudoers (operating-system-sudoers-file os))
                         (operating-system-sudoers-file os)))
       (services
-       (let ((kept (if display-manager?
-                       old-services
-                       (remove-services-named %display-manager-service-names
-                                              old-services))))
+       (let* ((kept0 (if display-manager?
+                         old-services
+                         (remove-services-named %display-manager-service-names
+                                                old-services)))
+              (kept (if system-channels?
+                        (map (lambda (s)
+                               (if (eq? (service-kind s) guix-service-type)
+                                   (service guix-service-type
+                                            (with-qubes-channel
+                                             (service-value s)
+                                             channel-branch))
+                                   s))
+                             kept0)
+                        kept0)))
          (if (any qubes-service? kept)
              kept                       ; already a qube: keep its config
              (cons (service qubes-guest-service-type

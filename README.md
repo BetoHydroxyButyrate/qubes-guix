@@ -36,6 +36,7 @@ qubes/packages/split-gpg.scm    qubes-split-gpg2-client
 qubes/services/agent.scm        qubes-guest-service-type — the integration
 qubes/system.scm                qubes-operating-system — adds all of it to any operating-system
 dom0/qubes-guix-create          dom0: create the qube and boot the installer
+guest/qubes-guix-finish-install installer, before the first reboot: config.scm + guix system init
 guest/qubes-guix-setup          guest: channel, guix pull, config.scm, reconfigure
 PORT-NOTES.md                   the porting log: every problem hit and why things are the way they are
 ```
@@ -65,7 +66,7 @@ Add it to `~/.config/guix/channels.scm`:
        %default-channels)
 ```
 
-Then `guix pull`. Commits are signed. Guix verifies them against `.guix-authorizations` and the key on the `keyring` branch.
+Then `guix pull`. Once the system is built with `qubes-operating-system` (below), you can skip this: the channel is also in the system-wide `/etc/guix/channels.scm`, which `guix pull` uses when you have no `~/.config/guix/channels.scm`. Commits are signed. Guix verifies them against `.guix-authorizations` and the key on the `keyring` branch.
 
 ## System configuration
 
@@ -87,6 +88,7 @@ It adds what a qube needs and nothing else:
 - **No NetworkManager, connman or DHCP client,** because they provide `networking` too, and Shepherd refuses two providers. A `static-networking` service for `eth0` has to go as well; the setup leaves `static-networking` alone, since `%base-services` uses it for loopback.
 
 - **Passwordless `sudo` for the `qubes` group,** unless you pass `#:passwordless-sudo? #f`. This is the Qubes convention (upstream's `qubes-core-agent-passwordless-root`): the qube is the security boundary.
+- **The qubes channel in `/etc/guix/channels.scm`** (Guix's default channels plus this one), unless you pass `#:system-channels? #f`. `guix pull` uses it for root and for every user without a `~/.config/guix/channels.scm`. `#:channel-branch "BRANCH"` records a branch other than `main`. If the `guix-service-type` configuration already lists channels, the qubes one is added to them, unless one named `qubes` is already there.
 - **No graphical login (display manager),** unless you pass `#:display-manager? #t`. `%desktop-services` always includes GDM, whatever desktop you chose. In a qube, the Qubes GUI agent provides the windows, and GDM refuses a console login while the agent's session for that user is open ("Session Already Running"). The console becomes a text login, and your desktop's packages (XFCE etc.) stay installed. Services that extend the display manager, such as the installer's `set-xorg-configuration`, are removed with it.
 
 To pass options, use `(qubes-operating-system os #:config (qubes-guest-configuration ...))`. It is idempotent: applying it to an `operating-system` that already has the service changes nothing more.
@@ -163,17 +165,39 @@ The installer needs three manual steps under Qubes, and the script prints them w
 2. **Network:** Qubes has no DHCP, so the network is set by hand, in the root shell on VT3. In dom0, `./qubes-guix-create --type-network guix` does it: click the qube's console window, and it switches to VT3 (Ctrl+Alt+F3) and types the commands with this qube's address, gateway and DNS. By hand it's `ip addr add <ip>/8 dev eth0`, `ip link set eth0 up`, `ip route add default via <gateway>` and the DNS servers in `/etc/resolv.conf`. The **/8** puts the gateway on-link.
 3. **Back to the installer:** dom0's desktop grabs Alt+Fn, so switch consoles from dom0 with `xdotool key --window $(xdotool selectwindow) ctrl+alt+F1` and click the qube's window.
 
-Install as usual, then reboot into the new system. Its network isn't configured yet. `--bootstrap` (next section) sets it up along with everything else.
+Then install as usual, up to the **Installation complete** screen, and **don't reboot yet**: the next section makes the new system a qube before its first boot.
 
 ## Setting up the guest
 
-The quickest way is from dom0, once the new system is up and you're logged in as root on its console (VT3):
+### Before the first reboot (recommended)
+
+At the installer's **Installation complete** screen, with the installer's network still up from `--type-network`, run in dom0:
+
+```
+./qubes-guix-create --finish-install --run guix   # add --template for a template, -b BRANCH to test a branch
+```
+
+Click the qube's console window when asked. On VT3 this clones the repository into `/tmp/qubes-guix` (git comes from `guix shell`) and runs `guest/qubes-guix-finish-install` as root. That script wraps `/mnt/etc/config.scm` in `(qubes-operating-system ...)` (the original stays as `config.scm.pre-qubes`), checks it, and rebuilds `/mnt` with `guix system init` from a Guix that includes the qubes channel (`guix time-machine`). If the installer has already unmounted the new system, the script mounts it again; that works for a single unencrypted root partition. The first run builds a Guix and then the Qubes agents, so it takes a while, but nothing waits for a password. Without `--run` it only clones and shows the command, for you to review and type.
+
+When VT3 says **Done**, reboot. That's the last manual step. The first boot has:
+- the network from QubesDB;
+- qrexec and the GUI agent;
+- passwordless `sudo` for the `qubes` group;
+- the qubes channel in `/etc/guix/channels.scm`.
+
+Run `guix pull` before your first `sudo guix system reconfigure /etc/config.scm`.
+
+### After the first boot
+
+If you've already rebooted into the plain installed system, log in as root on its console (VT3) and run this in dom0:
 
 ```
 ./qubes-guix-create --bootstrap guix            # add --template for a template, -b BRANCH to test a branch
 ```
 
-This types a short script into `/tmp/qubes-guix-bootstrap.sh` on the qube and shows it there, without running it. Read it, then run `sh /tmp/qubes-guix-bootstrap.sh`. The script sets the network, then runs the steps below as the uid-1000 user. `sudo` asks that user's password once.
+This types a short script into `/tmp/qubes-guix-bootstrap.sh` on the qube and shows it there, without running it. Read it, then run `sh /tmp/qubes-guix-bootstrap.sh`. The script sets the network, then runs `qubes-guix-setup` as the uid-1000 user.
+
+`sudo` asks for that user's password **at the start**, before the long `guix pull`. A background loop then keeps sudo's timestamp fresh until the script ends. So you can walk away, and the `sudo` steps an hour later won't time out waiting for a password. From then on, passwordless sudo is part of the system.
 
 Or by hand, as your normal user in the new system:
 
@@ -200,7 +224,7 @@ qvm-run guix alacritty     # or anything installed
 
 ## A Guix template and its AppVMs
 
-*Written, not yet tested.* A template works like a Debian or Fedora one:
+*Partly tested:* on guix-tmpl, the private volume, `/home` on `/rw/home`, swap, passwordless sudo, and substitutes through the updates proxy with no netvm all work. AppVMs are not tested yet. A template works like a Debian or Fedora one:
 - **Root is the template's.** An AppVM's root (with `/gnu/store` and `/var/guix`) is a fresh copy of the template's at every start. `guix install` in an AppVM lasts until shutdown, like `apt install`. Software that should stay goes in the template's `config.scm`. A manifest kept in your home (`guix shell -m manifest.scm`) survives, because home is on the private volume; its packages come back from substitutes.
 - **`/home` is per qube,** on the private volume (`/rw/home`). On a qube's first start it's seeded from the template's `/home`.
 
@@ -208,10 +232,11 @@ Create it with `--template`, then set it up with `--template`:
 
 ```
 ./qubes-guix-create --template guix-tmpl untrusted:/path/to/guix-system-install.iso   # dom0
-qubes-guix/guest/qubes-guix-setup --template                                           # in the template
+./qubes-guix-create --finish-install --template --run guix-tmpl                        # dom0, at "Installation complete"
+qubes-guix/guest/qubes-guix-setup --template                                           # or: in the template, after its first boot
 ```
 
-Install with a single root partition: no separate `/home`, because the template mounts its own `/home`. The setup script prints the dom0 steps that follow. After a `sudo shutdown` and one test start:
+Install with a single root partition: no separate `/home`, because the template mounts its own `/home`. `qubes-guix-setup --template` also prints the dom0 steps that follow. After a `sudo shutdown` and one test start:
 
 ```
 qvm-create --template guix-tmpl --label red \
@@ -221,7 +246,7 @@ qvm-create --template guix-tmpl --label red \
 
 An AppVM needs `virt_mode hvm` (the default is PVH) and memory set. The default 400 MiB is too little for Guix.
 
-Keep the template's netvm until the updates proxy works: `qvm-service guix-tmpl updates-proxy-setup on`, start the template, and check `herd status qubes-updates-proxy` in it. Only then, if you want the template offline, run `qvm-prefs guix-tmpl netvm ''`.
+Keep the template's netvm until the updates proxy works. dom0 normally enables `updates-proxy-setup` for templates; if not, run `qvm-service guix-tmpl updates-proxy-setup on`. Start the template and check `herd status qubes-updates-proxy` in it. guix-daemon should then have the proxy in its environment: `sudo cat /proc/$(pgrep -o guix-daemon)/environ | tr '\0' '\n' | grep proxy`. Only then, if you want the template offline, run `qvm-prefs guix-tmpl netvm ''`. Substitutes then come through the proxy. `guix pull` fetches git in your own process, not through the daemon, so offline it needs `http_proxy` and `https_proxy` set to `http://127.0.0.1:8082` (tested: libgit2 honours them).
 
 `#:template? #t` (in `qubes-operating-system`, or the `template?` field of `qubes-guest-configuration`) adds:
 - `qubes-rwdev`: formats a blank private volume, seeds `/rw/home`, then `/rw` and the `/home` bind mount before `user-homes` runs;

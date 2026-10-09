@@ -25,6 +25,8 @@ netvm=
 template=0
 type_network=0
 bootstrap=0
+finish_install=0
+run_now=0
 branch=main
 repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
 dry_run=0
@@ -34,6 +36,7 @@ usage() {
 Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
        $prog --bootstrap [--template] [--branch B] NAME
+       $prog --finish-install [--template] [--branch B] [--run] NAME
 
 Create the StandaloneVM HVM qube NAME and boot it from the Guix System
 installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
@@ -60,7 +63,16 @@ Options:
                         shows it without running it: network, then clone
                         this repository and run its guest setup as the
                         uid-1000 user (with --template: for a template)
-  -b, --branch B        the branch --bootstrap uses        (default main)
+      --finish-install  at the installer's "Installation complete" screen,
+                        BEFORE rebooting: clones this repository into /tmp
+                        on the installer (VT3) and shows the command that
+                        makes the new system a qube before its first boot
+                        (guest/qubes-guix-finish-install). Needs the
+                        installer's network (--type-network) still up.
+      --run             with --finish-install: run that command too, rather
+                        than leaving it for you to review and type
+  -b, --branch B        the branch --bootstrap and --finish-install use
+                                                           (default main)
   -h, --help            this help
 
 Example:
@@ -91,6 +103,8 @@ while [ $# -gt 0 ]; do
         -t|--template) template=1; shift;;
         --type-network) type_network=1; shift;;
         --bootstrap) bootstrap=1; shift;;
+        --finish-install) finish_install=1; shift;;
+        --run)      run_now=1; shift;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
         --dry-run)  dry_run=1; shift;;
         -h|--help)  usage; exit 0;;
@@ -100,7 +114,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# --- typing into a qube's console (--type-network, --bootstrap) ----------
+# --- typing into a qube's console (--type-network, --bootstrap,
+#     --finish-install) --------------------------------------------------
 
 # The network settings dom0 has for qube $1: sets ip, gw, dns.
 qube_net() {
@@ -198,6 +213,40 @@ Read it on the console, then run:  sh $f
 (It sets the network, then runs the setup as the uid-1000 user, branch
 $branch$( [ "$template" = 1 ] && echo ', as a template'). sudo asks that user's password once.)
 EOF
+    exit 0
+fi
+
+if [ "$finish_install" = 1 ]; then
+    [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
+    name=${args[0]}
+    d=/tmp/qubes-guix
+    cmd="sh $d/guest/qubes-guix-finish-install"
+    [ "$template" = 1 ] && cmd="$cmd --template"
+    cmd="$cmd -b $branch"
+    # The installer's shell is root, and its network was set up by
+    # --type-network. git isn't in the installer image: guix shell fetches it.
+    if [ "$run_now" = 1 ]; then
+        next="$cmd"
+    else
+        next="{ clear; echo 'Cloned into $d. Review it, then run:'; echo '  $cmd'; }"
+    fi
+    type_into "$name" "set +H; rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $next"
+    if [ "$run_now" = 1 ]; then
+        cat <<EOF
+Typed into $name's console (VT3): clone $branch into $d and run
+  $cmd
+It wraps /mnt/etc/config.scm and rebuilds /mnt with the qubes channel: the
+first time it builds a Guix, which takes a while. Watch VT3 for 'Done', then
+reboot (Ctrl+Alt+F1 back to the installer, or 'reboot' on VT3).
+EOF
+    else
+        cat <<EOF
+Typed into $name's console (VT3): clone branch $branch into $d.
+Review it there, then run:
+  $cmd
+When it says Done, reboot.
+EOF
+    fi
     exit 0
 fi
 
@@ -369,12 +418,22 @@ cat <<EOF
 3. Switch to the installer screen. In dom0:
 $(vt_key ctrl+alt+F1)
 
-4. Install as usual and reboot into the new system. Log in as root on its
-   console (VT3: the 'xdotool key' above with ctrl+alt+F3), then in dom0:
+4. Install as usual, up to the 'Installation complete' screen. DON'T
+   reboot yet. In dom0:
+     $prog --finish-install$( [ "$template" = 1 ] && echo ' --template')$( [ "$branch" != main ] && echo " -b $branch") --run $name
+   (click the console window when asked). On VT3 it clones the channel
+   and makes the installed system a qube: config.scm wrapped in
+   (qubes-operating-system ...), then 'guix system init' with the qubes
+   channel. Without --run it only shows the command, for you to review
+   and type. When VT3 says Done, reboot. That's the last manual step:
+   the first boot has its network, qrexec, the GUI agent, passwordless
+   sudo for the qubes group, and the qubes channel for guix pull.
+
+   An already-installed and rebooted system: log in as root on VT3, then
      $prog --bootstrap$( [ "$template" = 1 ] && echo ' --template') $name
-   It types a script into /tmp on $name and shows it; read it, then run
-   'sh /tmp/qubes-guix-bootstrap.sh' there. It sets the network, clones the
-   channel and runs the setup. When that's done:  sudo shutdown
+   types /tmp/qubes-guix-bootstrap.sh there (network, clone, setup); read
+   it, then 'sh /tmp/qubes-guix-bootstrap.sh'.
+
    If the console window goes away once the Qubes GUI agent runs, get it
    back with:  qvm-start-daemon --force-stubdomain $name
 EOF

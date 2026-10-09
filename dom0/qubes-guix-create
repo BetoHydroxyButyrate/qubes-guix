@@ -23,11 +23,13 @@ label=purple
 root_size=60g
 netvm=
 template=0
+type_network=0
 dry_run=0
 
 usage() {
     cat <<EOF
 Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+       $prog --type-network NAME
 
 Create the StandaloneVM HVM qube NAME and boot it from the Guix System
 installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
@@ -45,6 +47,11 @@ Options:
   -t, --template        make a TemplateVM (AppVMs can be based on it)
                         instead of a StandaloneVM
       --dry-run         print the dom0 commands, change nothing
+      --type-network    for a running NAME without its Qubes agent (the
+                        installer, or the installed system before setup):
+                        click its console window, and this switches it to
+                        the root shell (Ctrl+Alt+F3) and types the network
+                        setup there, with NAME's address, gateway and DNS
   -h, --help            this help
 
 Example:
@@ -73,6 +80,7 @@ while [ $# -gt 0 ]; do
         -s|--size)  [ $# -ge 2 ] || die "$1 needs a value"; root_size=$2; shift 2;;
         -n|--netvm) [ $# -ge 2 ] || die "$1 needs a value"; netvm=$2; shift 2;;
         -t|--template) template=1; shift;;
+        --type-network) type_network=1; shift;;
         --dry-run)  dry_run=1; shift;;
         -h|--help)  usage; exit 0;;
         --)         shift; args+=("$@"); break;;
@@ -80,6 +88,49 @@ while [ $# -gt 0 ]; do
         *)          args+=("$1"); shift;;
     esac
 done
+
+# --- --type-network: type the network setup into the qube's console ------
+
+if [ "$type_network" = 1 ]; then
+    [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
+    name=${args[0]}
+    command -v xdotool >/dev/null 2>&1 || die "xdotool not found in dom0"
+    qvm-check -q --running "$name" 2>/dev/null || die "$name isn't running"
+    ip=$(qvm-prefs "$name" ip 2>/dev/null) || ip=
+    [ -n "$ip" ] || die "$name has no IP address (no netvm?)"
+    gw=$(qvm-prefs "$name" visible_gateway)
+    dns=$(qvm-prefs "$name" dns | xargs)
+    [ -n "$dns" ] || dns="10.139.1.1 10.139.1.2"
+    # The first non-loopback interface: eth0 in the installer, maybe not
+    # after it. NetworkManager (installed system) would fight a static setup.
+    cmds="herd stop NetworkManager 2>/dev/null; \
+IF=\$(ls /sys/class/net | grep -v '^lo\$' | head -n1); \
+ip addr add $ip/8 dev \$IF; ip link set \$IF up; \
+ip route add default via $gw; \
+printf 'nameserver %s\\n' $dns > /etc/resolv.conf; \
+ip -br addr show \$IF; ip route"
+    echo "Click $name's console window (the cursor is a cross)..."
+    win=$(xdotool selectwindow) || die "no window selected"
+    # The installer's shell is on VT3; it's a root shell. In the installed
+    # system, log in as root on that console first, then run this again.
+    # No --window for typing: that sends synthetic events, and the Qubes GUI
+    # daemon ignores their Shift state ($ arrives as 4, | as \). Focus the
+    # window and type real (XTEST) key presses instead.
+    # The VT switch, though, must stay synthetic: a real Ctrl+Alt+F3 would
+    # be caught by dom0's own X server and switch dom0's console.
+    xdotool key --window "$win" ctrl+alt+F3
+    sleep 1
+    xdotool windowactivate --sync "$win"
+    xdotool type --delay 20 "$cmds"
+    xdotool key Return
+    cat <<EOF
+Typed into $name's console (VT3):
+  $ip/8 via $gw, DNS $dns
+The last two lines on its screen show the result. Back to the installer:
+  xdotool key --window \$(xdotool selectwindow) ctrl+alt+F1
+EOF
+    exit 0
+fi
 
 [ ${#args[@]} -ge 2 ] && [ ${#args[@]} -le 5 ] || { usage >&2; exit 2; }
 
@@ -206,7 +257,7 @@ dns=$(pref dns | xargs)
 # The installer's console is the emulated VGA window. dom0's desktop grabs
 # Alt+Fn, so console switches go through xdotool (click the window when the
 # cursor turns into a cross).
-vt_key() { echo "     xdotool key --window \$(xdotool selectwindow) alt+$1"; }
+vt_key() { echo "     xdotool key --window \$(xdotool selectwindow) $1"; }
 
 cat <<EOF
 
@@ -225,7 +276,10 @@ EOF
 else
     cat <<EOF
 
-2. Qubes has no DHCP, so set the network by hand in the shell
+2. Qubes has no DHCP, so the network is set by hand. Easiest, in dom0:
+     $prog --type-network $name
+   (click the console window when asked; it switches to the shell on VT3
+   and types the commands). Or type them yourself after Ctrl+Alt+F3
    (check the interface name with 'ip -br link'):
      ip addr add $ip/8 dev eth0
      ip link set eth0 up
@@ -242,11 +296,11 @@ fi
 cat <<EOF
 
 3. Switch to the installer screen. In dom0:
-$(vt_key F2)
+$(vt_key ctrl+alt+F1)
 
-4. Install as usual and reboot into the new system. Set the network
-   again as root (the same ip commands; 'herd stop NetworkManager' first
-   if it's running). Then, as your user:
+4. Install as usual and reboot into the new system. Log in as root on
+   VT3 and set the network again ($prog --type-network $name
+   does it). Then, as your user:
      guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
      qubes-guix/guest/qubes-guix-setup$( [ "$template" = 1 ] && echo ' --template')
      sudo reboot

@@ -147,10 +147,10 @@ It checks everything before changing anything, and removes the qube again if a s
 
 The installer needs three manual steps under Qubes, and the script prints them with this qube's values:
 1. **In GRUB:** pick the non-graphical install entry, press `e`, and add `nomodeset` to the `linux` line.
-2. **In the shell:** set the network by hand (Qubes has no DHCP). Use a **/8** address so the gateway is on-link: `ip addr add <ip>/8 dev eth0`, then `ip link set eth0 up`, `ip route add default via <gateway>`, and the DNS servers in `/etc/resolv.conf`.
-3. **Back to the installer:** dom0's desktop grabs Alt+Fn, so switch consoles from dom0 with `xdotool key --window $(xdotool selectwindow) alt+F2` and click the qube's window.
+2. **Network:** Qubes has no DHCP, so the network is set by hand, in the root shell on VT3. In dom0, `./qubes-guix-create --type-network guix` does it: click the qube's console window, and it switches to VT3 (Ctrl+Alt+F3) and types the commands with this qube's address, gateway and DNS. By hand it's `ip addr add <ip>/8 dev eth0`, `ip link set eth0 up`, `ip route add default via <gateway>` and the DNS servers in `/etc/resolv.conf`. The **/8** puts the gateway on-link.
+3. **Back to the installer:** dom0's desktop grabs Alt+Fn, so switch consoles from dom0 with `xdotool key --window $(xdotool selectwindow) ctrl+alt+F1` and click the qube's window.
 
-Install as usual, then reboot into the new system. Its network isn't configured yet, so run the same `ip` commands as root once more (stop NetworkManager first if the installer added it: `sudo herd stop NetworkManager`).
+Install as usual, then reboot into the new system. Its network isn't configured yet: log in as root on VT3 and run `--type-network` again (it stops NetworkManager first).
 
 ## Setting up the guest
 

@@ -782,3 +782,15 @@ Goal: the Guix install is the only interactive part.
 - 2026-10-10, TESTED on guix-tmpl, and it hung: qubes-updates-proxy required guix-daemon and called its set-http-proxy action from its own start. That action restarts guix-daemon, and a restart first stops the dependents, including qubes-updates-proxy, which was still starting. The result was a deadlock: the service was stuck in "Starting" for good, and `herd stop root` (qvm-shutdown) waited on it forever, after it had already stopped the GUI agent. With no fork server left, qrexec requests ran without DISPLAY. FIX: guix-daemon is no longer a requirement; the start brings it up itself (start-service) and catches errors from the action. Also seen: dom0 does set updates-proxy-setup on templates.
 - 2026-10-10, VERIFIED on guix-tmpl with the deadlock fixed: qubes-updates-proxy runs, guix-daemon's environ has http_proxy and https_proxy set to 127.0.0.1:8082, and `guix shell fish` fetched its substitutes with no netvm (`ip -4 a`: lo only). Offline `guix pull` with http_proxy and https_proxy set: works (libgit2 honours them). Not yet tested: AppVMs, and a clean qvm-shutdown with the proxy running.
 - `qubes-guix-update [-r] [pull args]`: a small sh script in the system profile, from the qubes-guix-update package in agent.scm. It exports http_proxy and https_proxy when qubesdb has /qubes-service/updates-proxy-setup = 1, runs `guix pull`, and with -r runs `sudo ~/.config/guix/current/bin/guix system reconfigure`. The variables are deliberately not set globally: AppVMs share the root but have no proxy.
+
+## UNATTENDED INSTALL (2026-10-10): written, NOT tested
+- `guest/qubes-guix-install` runs in the installer's VT3 root shell and replaces the installer's dialogs. Qubes fixes or provides every answer:
+  - disk /dev/xvda;
+  - SeaBIOS, hence GPT with a bios_grub partition and grub-bootloader targeting /dev/xvda;
+  - no separate /home (needed for templates);
+  - the qube's name as host name, and dom0's timezone;
+  - the keyboard only matters on the console, because the GUI follows dom0.
+
+  It runs sfdisk, then mkfs.ext4 -L guix-root, mounts it on /mnt, writes config.scm (Xfce plus %desktop-services, the same as the tested installs), then runs qubes-guix-finish-install. Passwords are written like the installer does (gnu/installer/final.scm): first-boot activation keeps the shadow entries of accounts already in /mnt/etc/shadow. The hash comes from `openssl passwd -6` in dom0, so the clear password never reaches the qube or the screen.
+- With --poweroff it powers off. `qubes-guix-create --install` waits for that and then runs `qvm-start` without --cdrom, so it boots from disk. A guest-side reboot would have kept the ISO attached.
+- Still manual: the GRUB nomodeset edit. A candidate for xdotool, given the key sequence.

@@ -1,0 +1,182 @@
+#!/bin/sh
+# qubes-guix-install — run as root in the Guix INSTALLER's shell (VT3), with
+# its network up. A non-interactive replacement for the installer's dialogs,
+# for a Qubes HVM:
+#   1. partitions DISK (GPT: 1 MiB BIOS boot partition + ext4 root; Qubes HVMs
+#      boot with SeaBIOS) and mounts the root on /mnt;
+#   2. writes /mnt/etc/config.scm: Xfce, %desktop-services, one user;
+#   3. runs qubes-guix-finish-install, which wraps it in
+#      (qubes-operating-system ...) and runs 'guix system init' with the
+#      qubes channel;
+#   4. sets the passwords (if given), then optionally powers off.
+#
+#   sh qubes-guix-install [options] [DISK]          # DISK: default /dev/xvda
+#
+#   --template          a TemplateVM (qubes-guix-create --template)
+#   -b, --branch B      qubes channel branch (default main)
+#   --host-name NAME    default: guix
+#   --user NAME         default: user (as in other Qubes templates)
+#   --timezone TZ       default: UTC
+#   --locale L          default: en_US.utf8
+#   --password-hash H   crypt(3) hash (e.g. from 'openssl passwd -6') for the
+#                       user AND root. Without it the accounts are as after a
+#                       manual Guix install (set them later with passwd);
+#                       qvm-run works regardless, and the qubes group's sudo
+#                       needs no password.
+#   --force             DISK already has partitions: wipe it anyway
+#   --poweroff          power off when done (dom0 then starts it from disk)
+#
+# qubes-guix-create --install (dom0) types the network setup and this
+# command into VT3.
+
+set -eu
+
+prog=${0##*/}
+here=$(cd "$(dirname "$0")" && pwd)
+template=0
+branch=main
+host_name=guix
+user=user
+timezone=UTC
+locale=en_US.utf8
+hash=
+force=0
+poweroff=0
+disk=/dev/xvda
+target=/mnt
+
+say() { printf '\n==> %s\n' "$*"; }
+die() { echo "$prog: $*" >&2; exit 1; }
+need() { [ $# -ge 2 ] || die "$1 needs a value"; }
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --template) template=1; shift;;
+        -b|--branch) need "$@"; branch=$2; shift 2;;
+        --host-name) need "$@"; host_name=$2; shift 2;;
+        --user) need "$@"; user=$2; shift 2;;
+        --timezone) need "$@"; timezone=$2; shift 2;;
+        --locale) need "$@"; locale=$2; shift 2;;
+        --password-hash) need "$@"; hash=$2; shift 2;;
+        --force) force=1; shift;;
+        --poweroff) poweroff=1; shift;;
+        -*) die "unknown option $1";;
+        *) disk=$1; shift;;
+    esac
+done
+
+[ "$(id -u)" -eq 0 ] || die "run as root (the installer's shell is)"
+[ -b "$disk" ] || die "no such disk: $disk"
+[ -f "$here/qubes-guix-finish-install" ] ||
+    die "qubes-guix-finish-install missing next to $prog"
+case $user in
+    ''|*[!a-z0-9_-]*|[!a-z_]*) die "bad user name '$user'";;
+esac
+case $host_name in
+    ''|*[!A-Za-z0-9.-]*) die "bad host name '$host_name'";;
+esac
+case $hash in
+    ''|'$'*) ;;
+    *) die "--password-hash wants a crypt(3) hash (\$6\$...), not a password";;
+esac
+
+ping -c1 -W5 bordeaux.guix.gnu.org >/dev/null 2>&1 ||
+    getent hosts bordeaux.guix.gnu.org >/dev/null 2>&1 ||
+    echo "$prog: warning: no network? (guix needs it: substitutes, the channel)" >&2
+
+# --- 1. disk ----------------------------------------------------------------
+
+if mountpoint -q "$target"; then
+    die "$target is already mounted. If that's a finished install, run
+qubes-guix-finish-install instead; otherwise umount it first."
+fi
+parts=$(lsblk -lnpo NAME,TYPE "$disk" | awk '$2=="part"{print $1}')
+if [ -n "$parts" ] && [ "$force" = 0 ]; then
+    die "$disk already has partitions:
+$parts
+Use --force to wipe it."
+fi
+
+say "Partitioning $disk: BIOS boot (1 MiB) + ext4 root (the rest)"
+sfdisk --quiet --wipe always --wipe-partitions always "$disk" <<'EOF'
+label: gpt
+size=1MiB, type=21686148-6449-6E6F-744E-656564454649, name="bios-boot"
+type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="guix-root"
+EOF
+udevadm settle 2>/dev/null || sleep 2
+root=$(lsblk -lnpo NAME,TYPE "$disk" | awk '$2=="part"{p=$1} END{print p}')
+[ -b "$root" ] || die "can't find the new root partition on $disk"
+mkfs.ext4 -q -F -L guix-root "$root"
+mount LABEL=guix-root "$target" 2>/dev/null || mount "$root" "$target"
+mkdir -p "$target/etc"
+
+# --- 2. config.scm ----------------------------------------------------------
+
+say "Writing $target/etc/config.scm"
+cat > "$target/etc/config.scm" <<EOF
+;; Written by qubes-guix-install. This is the operating system
+;; configuration: edit it, then 'sudo guix system reconfigure /etc/config.scm'
+;; (or 'qubes-guix-update -r').
+
+(use-modules (gnu))
+(use-service-modules desktop xorg)
+
+(operating-system
+  (locale "$locale")
+  (timezone "$timezone")
+  (keyboard-layout (keyboard-layout "us"))   ; the console only: the Qubes
+                                             ; GUI follows dom0's layout
+  (host-name "$host_name")
+
+  (users (cons* (user-account
+                  (name "$user")
+                  (comment "Qubes user")
+                  (group "users")
+                  (home-directory "/home/$user")
+                  (supplementary-groups '("wheel" "netdev" "audio" "video")))
+                %base-user-accounts))
+
+  (services
+   (append (list (service xfce-desktop-service-type))
+           %desktop-services))
+
+  (bootloader (bootloader-configuration
+                (bootloader grub-bootloader)
+                (targets (list "$disk"))
+                (keyboard-layout keyboard-layout)))
+
+  (file-systems (cons* (file-system
+                         (mount-point "/")
+                         (device (file-system-label "guix-root"))
+                         (type "ext4"))
+                       %base-file-systems)))
+EOF
+
+# --- 3. qubes + guix system init -------------------------------------------
+
+set -- -b "$branch"
+[ "$template" = 1 ] && set -- --template "$@"
+sh "$here/qubes-guix-finish-install" "$@" "$target"
+
+# --- 4. passwords -----------------------------------------------------------
+
+# Like the Guix installer: first-boot activation keeps the password of any
+# account already in /etc/shadow.
+if [ -n "$hash" ]; then
+    say "Setting the password of root and $user"
+    days=$(( $(date +%s) / 86400 ))
+    umask 077
+    {
+        echo "root:$hash:$days:0:99999:7:::"
+        echo "$user:$hash:$days:0:99999:7:::"
+    } > "$target/etc/shadow"
+fi
+
+sync
+if [ "$poweroff" = 1 ]; then
+    say "Installed. Powering off."
+    herd stop cow-store "$target" >/dev/null 2>&1 || true
+    umount "$target" 2>/dev/null || true
+    poweroff
+fi
+say "Installed. Power off (poweroff), then start the qube from dom0."

@@ -36,6 +36,7 @@ qubes/packages/split-gpg.scm    qubes-split-gpg2-client
 qubes/services/agent.scm        qubes-guest-service-type — the integration
 qubes/system.scm                qubes-operating-system — adds all of it to any operating-system
 dom0/qubes-guix-create          dom0: create the qube and boot the installer
+guest/qubes-guix-install        installer shell: unattended install (disk, config.scm, then finish-install)
 guest/qubes-guix-finish-install installer, before the first reboot: config.scm + guix system init
 guest/qubes-guix-setup          guest: channel, guix pull, config.scm, reconfigure
 PORT-NOTES.md                   the porting log: every problem hit and why things are the way they are
@@ -166,6 +167,27 @@ The installer needs three manual steps under Qubes, and the script prints them w
 3. **Back to the installer:** dom0's desktop grabs Alt+Fn, so switch consoles from dom0 with `xdotool key --window $(xdotool selectwindow) ctrl+alt+F1` and click the qube's window.
 
 Then install as usual, up to the **Installation complete** screen, and **don't reboot yet**: the next section makes the new system a qube before its first boot.
+
+### Unattended install (instead of the installer's dialogs)
+
+*New, not yet tested.* After the GRUB step, at the installer's first screen, run in dom0:
+
+```
+./qubes-guix-create --install guix          # add --template for a template, -b BRANCH to test a branch
+```
+
+It asks for one password, used for both `user` and root. Only a hash of it is typed into the qube. With `--no-password`, both accounts are left as after a manual Guix install; `qvm-run` works either way. Then click the qube's console window. On VT3 it types:
+- the network setup;
+- a clone of this repository;
+- the command to run `guest/qubes-guix-install`.
+
+That script:
+1. **Disk:** partitions `/dev/xvda` as GPT, with a 1 MiB BIOS boot partition and an ext4 root labelled `guix-root`. It refuses a disk that already has partitions unless you pass `--force`.
+2. **Configuration:** writes `/etc/config.scm` with Xfce, `%desktop-services`, the user `user`, dom0's timezone, and the qube's name as host name.
+3. **Build:** runs `qubes-guix-finish-install`.
+4. **Power off:** sets the passwords and powers off.
+
+`qubes-guix-create` waits for the qube to stop, then starts it from its disk. Use `--no-wait` to skip that. The only manual steps left are the GRUB edit, the password and one click.
 
 ## Setting up the guest
 

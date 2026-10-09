@@ -67,6 +67,10 @@ done
 
 [ "$(id -u)" -eq 0 ] || die "run as root (the installer's shell is)"
 [ -b "$disk" ] || die "no such disk: $disk"
+case $here in
+    /tmp/*) die "this repository is under /tmp, which the installer's cow-store
+hides once it starts; clone it elsewhere (e.g. /root/qubes-guix)";;
+esac
 [ -f "$here/qubes-guix-finish-install" ] ||
     die "qubes-guix-finish-install missing next to $prog"
 case $user in

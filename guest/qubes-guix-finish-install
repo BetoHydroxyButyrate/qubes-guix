@@ -62,6 +62,17 @@ Mount the right one on $target yourself, then rerun."
     fi
     [ -f "$config" ] || die "$roots has no etc/config.scm: not the new system?"
 fi
+# Builds must land on the target's disk, not in the installer's RAM. The
+# installer normally still has this running; starting it again is harmless.
+# NB: cow-store also bind-mounts $target/tmp over /tmp, hiding whatever was
+# in /tmp before. So: start it first, and keep this repository out of /tmp
+# (qubes-guix-create clones it to /root).
+case $here in
+    /tmp/*) die "this repository is under /tmp, which cow-store hides; clone it
+elsewhere (e.g. /root/qubes-guix) and run it from there";;
+esac
+herd start cow-store "$target" >/dev/null 2>&1 || true
+
 for f in wrap-config.guile channels.scm.txt; do
     [ -f "$here/$f" ] || die "$f missing next to $prog"
 done
@@ -71,10 +82,6 @@ trap 'rm -rf "$tmp"' EXIT
 channels=$tmp/channels.scm
 new=$tmp/config.scm
 sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$channels"
-
-# Builds must land on the target's disk, not in the installer's RAM. The
-# installer normally still has this running; starting it again is harmless.
-herd start cow-store "$target" >/dev/null 2>&1 || true
 
 say "Wrapping $config"
 set +e

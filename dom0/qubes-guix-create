@@ -71,7 +71,7 @@ Options:
                         this repository and run its guest setup as the
                         uid-1000 user (with --template: for a template)
       --finish-install  at the installer's "Installation complete" screen,
-                        BEFORE rebooting: clones this repository into /tmp
+                        BEFORE rebooting: clones this repository into /root
                         on the installer (VT3) and shows the command that
                         makes the new system a qube before its first boot
                         (guest/qubes-guix-finish-install). Needs the
@@ -267,7 +267,8 @@ if [ "$install" = 1 ]; then
         hash=$(printf '%s\n' "$pw1" | openssl passwd -6 -stdin)
         unset pw1 pw2
     fi
-    d=/tmp/qubes-guix
+    # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
+    d=/root/qubes-guix
     cmd="sh $d/guest/qubes-guix-install --host-name $(echo "$name" | tr '_' '-') --timezone $tz --locale $locale -b $branch --poweroff"
     [ "$template" = 1 ] && cmd="$cmd --template"
     [ "$force" = 1 ] && cmd="$cmd --force"
@@ -297,7 +298,8 @@ fi
 if [ "$finish_install" = 1 ]; then
     [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
     name=${args[0]}
-    d=/tmp/qubes-guix
+    # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
+    d=/root/qubes-guix
     cmd="sh $d/guest/qubes-guix-finish-install"
     [ "$template" = 1 ] && cmd="$cmd --template"
     cmd="$cmd -b $branch"

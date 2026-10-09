@@ -423,7 +423,7 @@ PATH=" (file-append util-linux "/bin") ":" (file-append util-linux "/sbin") ":"
 DEV=/dev/xvdc
 [ -b $DEV ] || exit 0
 grep -q '^/dev/xvdc1 ' /proc/swaps && exit 0
-if [ "$(blockdev --getsz $DEV)" -lt $(( (1024 + 2) * 2048 )) ]; then
+if [ \"$(blockdev --getsz $DEV)\" -lt $(( (1024 + 2) * 2048 )) ]; then
     echo \"qubes-volatile-swap: $DEV is smaller than 1 GiB; no swap\"
     exit 0
 fi

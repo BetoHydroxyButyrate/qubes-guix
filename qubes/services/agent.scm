@@ -18,7 +18,8 @@
   #:use-module (gnu system privilege)       ; privileged-program
   #:use-module (gnu system shadow)          ; user-group
   #:use-module (gnu packages pulseaudio)     ; pactl/paplay for the vchan sink
-  #:use-module (gnu packages linux)          ; iproute
+  #:use-module (gnu packages linux)          ; iproute, util-linux, e2fsprogs
+  #:use-module (gnu system file-systems)     ; /rw and /home (template?)
   #:use-module (gnu packages base)           ; coreutils
   #:use-module (gnu packages bash)           ; bash-minimal
   #:use-module (guix gexp)
@@ -35,6 +36,7 @@
   #:export (qubes-guest-configuration
             qubes-guest-configuration?
             qubes-guest-network?
+            qubes-guest-template?
             qubes-guest-service-type
             %qubes-kernel-arguments))
 
@@ -63,7 +65,13 @@
   (ctap-backend qubes-guest-ctap-backend (default "sys-usb"))
   ;; split-gpg2 client (qubes.Gpg2), or #f. Runs in the user's Qubes session
   ;; only when dom0 enables the qube's split-gpg2-client service.
-  (split-gpg2 qubes-guest-split-gpg2 (default qubes-split-gpg2-client)))
+  (split-gpg2 qubes-guest-split-gpg2 (default qubes-split-gpg2-client))
+  ;; #t: this system is a Qubes TemplateVM, or an AppVM based on one (they
+  ;; share this configuration). Adds what upstream's mount-dirs.sh and
+  ;; initramfs do: /home on the private volume (/rw/home), swap on the
+  ;; volatile volume, the hostname from qubesdb, and updates through
+  ;; qubes.UpdatesProxy. Needs a single-partition root (no separate /home).
+  (template? qubes-guest-template? (default #f)))
 
 (define %xen-modules
   ;; xen-privcmd is the critical one (libxenctrl's xencall).
@@ -203,7 +211,7 @@ DNS).")
     (mixed-text-file "qubes-features-request" "
 set -u
 req() { " qwrite " \"/features-request/$1\" \"$2\"; }
-req qubes-agent-version 4.4
+req qubes-agent-version 4.3
 req os Linux
 req os-distribution guix
 req qrexec 1
@@ -333,6 +341,187 @@ balancer (qmemman).")
                    (apply (make-kill-destructor) running args))))
      (respawn? #t))))
 
+
+;;;
+;;; Template support (template? #t).
+;;;
+
+;; Private volume (xvdb). Port of upstream setup-rwdev.sh + setup-rw.sh: a
+;; virgin volume (first 10 MiB zero, no signature) gets ext4; then fsck, and
+;; /rw/config + /rw/home are created. A new /rw/home is seeded from the
+;; root's /home (so the template keeps the home the installer made, and a new
+;; AppVM starts from the template's). It runs BEFORE /rw is mounted (on a
+;; scratch mount point) because the /home bind mount must stay inside the
+;; 'file-systems target that user-homes waits for, and file systems with
+;; shepherd-requirements are left out of that target. Always exits 0: a
+;; failure here must leave the qube booting with /home on root, not hang it.
+(define %qubes-rwdev-script
+  (mixed-text-file "qubes-rwdev" "
+set -u
+PATH=" (file-append util-linux "/bin") ":" (file-append util-linux "/sbin") ":"
+  (file-append e2fsprogs "/sbin") ":" (file-append diffutils "/bin") ":"
+  (file-append coreutils "/bin") "
+DEV=/dev/xvdb
+M=/run/qubes-rw-init
+if [ ! -b $DEV ]; then
+    echo \"qubes-rwdev: no $DEV; /home stays on the root volume\"
+    exit 0
+fi
+size=$(( $(blockdev --getsz $DEV) * 512 ))
+[ $size -gt 10485760 ] && size=10485760
+blkid -p $DEV >/dev/null 2>&1; sig=$?
+if [ $sig -eq 2 ] && cmp -s -n $size $DEV /dev/zero; then
+    echo \"qubes-rwdev: virgin private volume, creating ext4 on $DEV\"
+    mkfs.ext4 -q -m 0 $DEV || { echo \"qubes-rwdev: mkfs.ext4 failed\"; exit 0; }
+fi
+fsck.ext4 -p $DEV || echo \"qubes-rwdev: fsck.ext4 -p $DEV returned $?\"
+mkdir -p $M
+mount -t ext4 $DEV $M || { echo \"qubes-rwdev: cannot mount $DEV\"; exit 0; }
+mkdir -p $M/config
+if [ ! -d $M/home ]; then
+    echo \"qubes-rwdev: populating /rw/home from /home\"
+    mkdir $M/home && cp -a /home/. $M/home/
+fi
+umount $M
+exit 0
+"))
+
+(define %qubes-rw-file-system
+  (file-system
+    (device "/dev/xvdb")
+    (mount-point "/rw")
+    (type "ext4")
+    (check? #f)                         ; qubes-rwdev already did
+    (create-mount-point? #t)
+    (mount-may-fail? #t)
+    (shepherd-requirements '(qubes-rwdev))))
+
+(define %qubes-home-file-system
+  ;; No shepherd-requirements: it must be part of 'file-systems (above).
+  ;; The dependency on /rw orders it after qubes-rwdev all the same.
+  (file-system
+    (device "/rw/home")
+    (mount-point "/home")
+    (type "none")
+    (flags '(bind-mount))
+    (check? #f)
+    (mount-may-fail? #t)
+    (dependencies (list %qubes-rw-file-system))))
+
+(define (qubes-template-file-systems config)
+  (if (qubes-guest-template? config)
+      (list %qubes-rw-file-system %qubes-home-file-system)
+      '()))
+
+;; Volatile volume (xvdc): blank on every boot. Upstream's initramfs gives it
+;; a 1 GiB swap partition (xvdc1); Guix's initramfs doesn't, so do it here.
+(define %qubes-swap-script
+  (mixed-text-file "qubes-volatile-swap" "
+set -u
+PATH=" (file-append util-linux "/bin") ":" (file-append util-linux "/sbin") ":"
+  (file-append coreutils "/bin") ":" (file-append grep "/bin") "
+DEV=/dev/xvdc
+[ -b $DEV ] || exit 0
+grep -q '^/dev/xvdc1 ' /proc/swaps && exit 0
+if [ "$(blockdev --getsz $DEV)" -lt $(( (1024 + 2) * 2048 )) ]; then
+    echo \"qubes-volatile-swap: $DEV is smaller than 1 GiB; no swap\"
+    exit 0
+fi
+printf 'xvdc1: type=82,start=1MiB,size=1GiB\\nxvdc3: type=83\\n' | sfdisk -q $DEV \\
+    || { echo \"qubes-volatile-swap: sfdisk failed\"; exit 0; }
+i=0
+while [ ! -b /dev/xvdc1 ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+mkswap /dev/xvdc1 >/dev/null && swapon /dev/xvdc1 \\
+    && echo \"qubes-volatile-swap: swap on /dev/xvdc1\"
+exit 0
+"))
+
+(define (qubes-hostname-script config)
+  ;; AppVMs share the template's configuration, hence its host-name: take
+  ;; the qube's own name from qubesdb instead.
+  (mixed-text-file "qubes-hostname" "
+n=$(" (file-append coreutils "/bin/timeout") " 30 " (qubesdb-read-path config) " -w /name) || exit 0
+[ -n \"$n\" ] && echo \"$n\" > /proc/sys/kernel/hostname
+exit 0
+"))
+
+(define (qubes-template-shepherd-services config)
+  (let ((sh (file-append bash-minimal "/bin/sh"))
+        (qdb (qubesdb-read-path config))
+        (client (file-append (qubes-guest-qrexec config)
+                             "/usr/bin/qrexec-client-vm")))
+    (list
+     (shepherd-service
+      (documentation "Prepare the Qubes private volume for /rw and /home.")
+      (provision '(qubes-rwdev))
+      (requirement '(root-file-system udev))
+      (one-shot? #t)
+      (start #~(lambda _
+                 (system* #$sh #$%qubes-rwdev-script)
+                 #t)))
+     (shepherd-service
+      (documentation "Grow /rw to the private volume's size (online).")
+      (provision '(qubes-rw-resize))
+      (requirement '(file-system-/rw))
+      (one-shot? #t)
+      (start #~(lambda _
+                 (when (zero? (system* #$(file-append util-linux "/bin/mountpoint")
+                                       "-q" "/rw"))
+                   (system* #$(file-append e2fsprogs "/sbin/resize2fs")
+                            "/dev/xvdb"))
+                 #t)))
+     (shepherd-service
+      (documentation "Swap on the Qubes volatile volume.")
+      (provision '(qubes-volatile-swap))
+      (requirement '(udev))
+      (one-shot? #t)
+      (start #~(lambda _
+                 (system* #$sh #$%qubes-swap-script)
+                 #t)))
+     (shepherd-service
+      (documentation "Set the host name to the qube's name.")
+      (provision '(qubes-hostname))
+      (requirement '(qubesdb-daemon))
+      (one-shot? #t)
+      (start #~(lambda _
+                 (system* #$sh #$(qubes-hostname-script config))
+                 #t)))
+     ;; Upstream qubes-updates-proxy-forwarder.socket: templates have no
+     ;; netvm; each connection to 127.0.0.1:8082 becomes a qubes.UpdatesProxy
+     ;; call to the updates VM. Only where dom0 enabled updates-proxy-setup
+     ;; (templates); then guix-daemon is pointed at it (its set-http-proxy
+     ;; action), so AppVMs keep their direct network.
+     (shepherd-service
+      (documentation "Forward 127.0.0.1:8082 to the Qubes updates proxy and
+point guix-daemon at it.")
+      (provision '(qubes-updates-proxy))
+      (requirement '(qubesdb-daemon qrexec-agent loopback guix-daemon))
+      (start #~(lambda args
+                 (if (zero? (system* #$sh "-c"
+                                     (string-append
+                                      #$(file-append coreutils "/bin/timeout")
+                                      " 30 " #$qdb " -w /name >/dev/null && [ \"$("
+                                      #$qdb " /qubes-service/updates-proxy-setup 2>/dev/null)\" = 1 ]")))
+                     (let ((running
+                            (apply (make-inetd-constructor
+                                    (list #$client "--use-stdin-socket" ""
+                                          "qubes.UpdatesProxy")
+                                    (list (endpoint
+                                           (make-socket-address
+                                            AF_INET INADDR_LOOPBACK 8082))))
+                                   args)))
+                       (perform-service-action (lookup-service 'guix-daemon)
+                                               'set-http-proxy
+                                               "http://127.0.0.1:8082")
+                       running)
+                     (begin
+                       (format #t "qubes-updates-proxy: updates-proxy-setup not enabled in dom0~%")
+                       #t))))
+      (stop #~(lambda (running . args)
+                (if (eq? running #t)
+                    #f
+                    (apply (make-inetd-destructor) running args))))))))
+
 (define (qubes-shepherd-services config)
   (let ((qrexec  (qubes-guest-qrexec config))
         (qubesdb (qubes-guest-qubesdb config))
@@ -381,7 +570,10 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
      (if (qubes-guest-ctap-backend config)
          (list (qubes-ctap-shepherd-service config))
          '())
-     (qubes-extra-shepherd-services config))))
+     (qubes-extra-shepherd-services config)
+     (if (qubes-guest-template? config)
+         (qubes-template-shepherd-services config)
+         '()))))
 
 (define (qubes-etc-files config)
   (let ((core (qubes-guest-core-agent config)))
@@ -465,6 +657,8 @@ qrexec services, file copy, and (optionally) the seamless GUI agent.")
           (service-extension etc-service-type qubes-etc-files)
           (service-extension privileged-program-service-type qubes-setuid-programs)
           (service-extension activation-service-type qubes-activation)
+          (service-extension file-system-service-type
+                             qubes-template-file-systems)
           (service-extension profile-service-type qubes-packages)
           (service-extension kernel-module-loader-service-type
                              (lambda (config)

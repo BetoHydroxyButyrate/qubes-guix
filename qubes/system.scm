@@ -19,6 +19,10 @@
 ;;;   GDM refuses a console login while the agent's session for that user
 ;;;   is open ("Session Already Running"). The console stays a text login;
 ;;;   the desktop packages (XFCE etc.) are untouched.
+;;; - with #:template? #t: template support (qubes-guest-configuration's
+;;;   template? field): /home on the private volume, swap on the volatile
+;;;   one, the host name from qubesdb, updates through qubes.UpdatesProxy.
+;;;   For a TemplateVM and the AppVMs based on it.
 ;;;
 ;;; Applying it twice changes nothing.
 
@@ -51,12 +55,21 @@ gdm, and Guix refuses an extension whose target is gone."
             (or (named? (service-kind service)) (extends-removed? service)))
           services))
 
+(define (as-template config)
+  ;; Top level: inside qubes-operating-system, the record's field binding
+  ;; template? would shadow the keyword argument of the same name.
+  (qubes-guest-configuration
+   (inherit config)
+   (template? #t)))
+
 (define* (qubes-operating-system os
                                  #:key
                                  (config (qubes-guest-configuration))
-                                 (display-manager? #f))
+                                 (display-manager? #f)
+                                 (template? #f))
   "Return OS, with the Qubes guest agents added and CONFIG for them.
-Unless DISPLAY-MANAGER? is true, also remove the graphical login."
+Unless DISPLAY-MANAGER? is true, also remove the graphical login.  With
+TEMPLATE?, configure it as a Qubes template (and its AppVMs)."
   (define (qubes-service? service)
     (eq? (service-kind service) qubes-guest-service-type))
 
@@ -86,7 +99,8 @@ Unless DISPLAY-MANAGER? is true, also remove the graphical login."
                                               old-services))))
          (if (any qubes-service? kept)
              kept                       ; already a qube: keep its config
-             (cons (service qubes-guest-service-type config)
+             (cons (service qubes-guest-service-type
+                            (if template? (as-template config) config))
                    (if (qubes-guest-network? config)
                        (remove-services-named %networking-service-names kept)
                        kept))))))))

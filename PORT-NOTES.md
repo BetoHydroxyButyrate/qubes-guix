@@ -732,3 +732,30 @@ The port is winning.
 - Test: guix build -L . qubes-core-agent python-qubesagent; reconfigure;
   qvm-run --pass-io guix 'ls -l /etc/qubes-rpc/qubes.WaitForSession'
   (-> qrexec store path), qvm-copy both ways, app menu launch, GUI backup.
+
+## TEMPLATES (2026-10-09): written, NOT tested
+- Decisions (Damon): create the template directly (qubes-guix-create
+  --template), not by converting a StandaloneVM; updates via
+  qubes.UpdatesProxy; AppVM installs are throwaway like apt (root resets).
+- agent.scm `template?` field (system.scm #:template?). Services: qubes-rwdev
+  (port of setup-rwdev.sh + setup-rw.sh: mkfs a virgin xvdb, fsck, seed
+  /rw/home from root /home on a scratch mount, always exit 0),
+  file-system /rw (shepherd-requirements qubes-rwdev) + /home bind
+  (dependencies /rw), qubes-rw-resize, qubes-volatile-swap (sfdisk xvdc:
+  1 GiB xvdc1 swap, as upstream's initramfs), qubes-hostname (from
+  qubesdb /name), qubes-updates-proxy (inetd 127.0.0.1:8082 ->
+  qrexec-client-vm --use-stdin-socket '' qubes.UpdatesProxy, gated on
+  qubes-service/updates-proxy-setup, then guix-daemon set-http-proxy).
+- GUIX GOTCHA (gnu/services/base.scm): file systems WITH
+  shepherd-requirements are left out of the 'file-systems target, which
+  user-homes and user-processes wait on. So /home has none; it reaches
+  qubes-rwdev only through its dependency on /rw. That's also why the
+  /rw/home seeding runs before /rw is mounted (scratch mount point).
+- Loop-device tested here: rwdev (virgin -> mkfs + seed, uid kept;
+  existing -> fsck only; non-ext4 junk -> refused, exit 0), the swap
+  partition table. Guile: wrap-config #:template? cases. NOT built.
+- To verify on real Qubes: AppVM root (xvda) writable as a snapshot under
+  HVM; dom0 sets updates-proxy-setup for templates by itself; guix pull's
+  git (libgit2) honours http(s)_proxy; virt_mode/kernel inheritance for
+  AppVMs; DisposableVMs (persistence none) not handled yet.
+- Also: qubes-agent-version now advertised as 4.3 (was 4.4).

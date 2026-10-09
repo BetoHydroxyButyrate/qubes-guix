@@ -22,6 +22,7 @@ maxmem=
 label=purple
 root_size=60g
 netvm=
+template=0
 dry_run=0
 
 usage() {
@@ -41,6 +42,8 @@ Options:
   -l, --label COLOUR    window label            (default $label)
   -s, --size SIZE       root volume size        (default $root_size)
   -n, --netvm QUBE      network qube            (default: the system default)
+  -t, --template        make a TemplateVM (AppVMs can be based on it)
+                        instead of a StandaloneVM
       --dry-run         print the dom0 commands, change nothing
   -h, --help            this help
 
@@ -69,6 +72,7 @@ while [ $# -gt 0 ]; do
         -l|--label) [ $# -ge 2 ] || die "$1 needs a value"; label=$2; shift 2;;
         -s|--size)  [ $# -ge 2 ] || die "$1 needs a value"; root_size=$2; shift 2;;
         -n|--netvm) [ $# -ge 2 ] || die "$1 needs a value"; netvm=$2; shift 2;;
+        -t|--template) template=1; shift;;
         --dry-run)  dry_run=1; shift;;
         -h|--help)  usage; exit 0;;
         --)         shift; args+=("$@"); break;;
@@ -142,9 +146,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Creating $name: HVM, $vcpus vCPU, $memory-$maxmem MiB, root $root_size"
+if [ "$template" = 1 ]; then
+    class=TemplateVM
+    # Templates get no netvm by default, but the installer and the first
+    # guix pull need one. Afterwards it can go (updates via the proxy).
+    [ -n "$netvm" ] || netvm=$(qubes-prefs default_netvm)
+    [ -n "$netvm" ] || die "no default netvm; give one with --netvm"
+else
+    class=StandaloneVM
+fi
 
-run qvm-create --class StandaloneVM --label "$label" \
+echo "Creating $name: $class, HVM, $vcpus vCPU, $memory-$maxmem MiB, root $root_size"
+
+run qvm-create --class "$class" --label "$label" \
     --property virt_mode=hvm "$name"
 created=1
 
@@ -234,7 +248,7 @@ $(vt_key F2)
    again as root (the same ip commands; 'herd stop NetworkManager' first
    if it's running). Then, as your user:
      guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
-     qubes-guix/guest/qubes-guix-setup
+     qubes-guix/guest/qubes-guix-setup$( [ "$template" = 1 ] && echo ' --template')
      sudo reboot
    If the console window goes away once the Qubes GUI agent runs, get it
    back with:  qvm-start-daemon --force-stubdomain $name

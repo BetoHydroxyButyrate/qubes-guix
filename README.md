@@ -18,7 +18,7 @@ Status: a daily-driven StandaloneVM (HVM) on Qubes R4.3. Everything below has be
 | Feature advertisement (`qvm-features`, Services tab) | ✅ |
 | U2F **and** FIDO2/passkeys via the CTAP proxy (sys-usb) | ✅ |
 | split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube) | ✅ |
-| TemplateVM / AppVM based on a Guix template | ❌ not yet |
+| TemplateVM / AppVM based on a Guix template | 🚧 written, not yet tested |
 | PVH | ❌ not yet |
 | Qubes Update tool | ❌ by design (use `guix pull` + reconfigure; see below) |
 
@@ -176,6 +176,37 @@ qvm-run --pass-io guix 'ip -br addr'
 qvm-features guix          # qrexec, gui, os-distribution=guix, ...
 qvm-run guix alacritty     # or anything installed
 ```
+
+## A Guix template and its AppVMs
+
+*Written, not yet tested.* A template works like a Debian or Fedora one:
+- **Root is the template's.** An AppVM's root (with `/gnu/store` and `/var/guix`) is a fresh copy of the template's at every start. `guix install` in an AppVM lasts until shutdown, like `apt install`. Software that should stay goes in the template's `config.scm`. A manifest kept in your home (`guix shell -m manifest.scm`) survives, because home is on the private volume; its packages come back from substitutes.
+- **`/home` is per qube,** on the private volume (`/rw/home`). On a qube's first start it's seeded from the template's `/home`.
+
+Create it with `--template`, then set it up with `--template`:
+
+```
+./qubes-guix-create --template guix-tmpl untrusted:/path/to/guix-system-install.iso   # dom0
+qubes-guix/guest/qubes-guix-setup --template                                           # in the template
+```
+
+Install with a single root partition: no separate `/home`, because the template mounts its own `/home`. The setup script prints the dom0 steps that follow. After a `sudo shutdown` and one test start:
+
+```
+qvm-prefs guix-tmpl netvm ''                          # optional
+qvm-service guix-tmpl updates-proxy-setup on
+qvm-create --template guix-tmpl --label red \
+    --property virt_mode=hvm --property kernel='' \
+    --property memory=4000 --property maxmem=4000 work
+```
+
+An AppVM needs `virt_mode hvm` (the default is PVH) and memory set. The default 400 MiB is too little for Guix.
+
+`#:template? #t` (in `qubes-operating-system`, or the `template?` field of `qubes-guest-configuration`) adds:
+- `qubes-rwdev`: formats a blank private volume, seeds `/rw/home`, then `/rw` and the `/home` bind mount before `user-homes` runs;
+- `qubes-volatile-swap`: 1 GiB of swap on the volatile volume, made at every boot;
+- `qubes-hostname`: the host name from the qube's name, since AppVMs share the template's `config.scm`;
+- `qubes-updates-proxy`: when dom0 enables `updates-proxy-setup` (templates), `127.0.0.1:8082` is forwarded over `qubes.UpdatesProxy` and guix-daemon uses it for substitutes. AppVMs keep their direct network. For `guix pull` without a netvm, set `http_proxy` and `https_proxy` to `http://127.0.0.1:8082`.
 
 ## Feature setup
 

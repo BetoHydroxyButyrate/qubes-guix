@@ -86,7 +86,9 @@ It adds what a qube needs and nothing else:
 - **`qubes-guest-service-type`,** which provides `networking` itself, from QubesDB.
 - **No NetworkManager, connman or DHCP client,** because they provide `networking` too, and Shepherd refuses two providers. A `static-networking` service for `eth0` has to go as well; the setup leaves `static-networking` alone, since `%base-services` uses it for loopback.
 
-To pass options, use `(qubes-operating-system os #:config (qubes-guest-configuration ...))`. It is idempotent: an `operating-system` that already has the service is returned unchanged.
+- **No graphical login (display manager),** unless you pass `#:display-manager? #t`. `%desktop-services` always includes GDM, whatever desktop you chose. In a qube, the Qubes GUI agent provides the windows, and GDM refuses a console login while the agent's session for that user is open ("Session Already Running"). The console becomes a text login, and your desktop's packages (XFCE etc.) stay installed. Services that extend the display manager, such as the installer's `set-xorg-configuration`, are removed with it.
+
+To pass options, use `(qubes-operating-system os #:config (qubes-guest-configuration ...))`. It is idempotent: applying it to an `operating-system` that already has the service changes nothing more.
 
 To write it out by hand instead:
 
@@ -210,6 +212,39 @@ qvm-run guix alacritty     # or anything installed
 There are two cases:
 - **Updating the system:** run `guix pull` then `sudo guix system reconfigure /etc/config.scm`.
 - **Working on the channel itself:** use `sudo guix system reconfigure -L /path/to/checkout /etc/config.scm`. `-L` puts the checkout ahead of the pulled channel, so you can test before committing.
+
+### Pinning Guix (or: why reconfigure rebuilds everything)
+
+There are no substitutes for this channel's packages, so they're built from source on your machine. They are built against whatever Guix provides (gcc, glibc, python, Xorg…). Each `guix pull` that moves the Guix channel changes those inputs, and the next reconfigure rebuilds every Qubes package, which takes a long time.
+
+Pinning the Guix channel to a commit keeps those inputs fixed. A reconfigure then only rebuilds when this channel itself changes. The cost is that you get Guix updates (including security fixes) only when you move the pin, so do that deliberately and often enough.
+
+The easy way is to record what you have now and pin everything except this channel:
+
+```
+guix describe -f channels > ~/.config/guix/channels.scm
+```
+
+Then delete the `(commit "…")` line from the `qubes` channel entry, so that one keeps following `main`. Keep the `(commit …)` lines for `guix` (and `nonguix`, if you use it). To move the pin later, edit the commit, or rerun the command above after an unpinned `guix pull`.
+
+### Firefox ESR (nonguix)
+
+GNU IceCat is the browser Guix ships. If you'd rather have Firefox ESR, it's in the [nonguix](https://gitlab.com/nonguix/nonguix) channel, which carries non-free software. Add it next to the qubes channel in `~/.config/guix/channels.scm`. Take the `introduction` from the nonguix README rather than from here, so you check it at its source:
+
+```scheme
+(channel
+ (name 'nonguix)
+ (url "https://gitlab.com/nonguix/nonguix")
+ (introduction
+  (make-channel-introduction
+   "897c1a470da759236cc11798f4e0a5f7d4d59fbc"
+   (openpgp-fingerprint
+    "2A39 3FFF 68F4 EF7A 3D29  12AF 6F51 20A0 22FB B2D5"))))
+```
+
+- **Use its substitute server.** Building Firefox yourself takes hours. The nonguix README explains how to authorize it: in `config.scm`, modify `guix-service-type` to add the server to `substitute-urls` and its key to `authorized-keys`.
+- **Install it system-wide**, in `config.scm`'s `packages` field with `(use-modules (nongnu packages mozilla))`. Then its `.desktop` file is in the system profile, where `qubes.GetAppmenus` finds it. After reconfiguring, run `qvm-appmenus --update guix` in dom0 and Firefox ESR appears in the qube's menu.
+- **If you pin Guix, pin nonguix too.** nonguix follows current Guix, so an old Guix commit with the newest nonguix may not build. Move the two pins together.
 
 ## Upstream bugs found (patched here)
 

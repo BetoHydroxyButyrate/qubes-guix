@@ -293,7 +293,11 @@ balancer (qmemman).")
                    (begin
                      (format #t "meminfo-writer: memory balancing disabled in dom0~%")
                      #t))))
-    (stop #~(make-kill-destructor))
+    ;; Started as plain #t (no process) when balancing is off.
+    (stop #~(lambda (running . args)
+              (if (eq? running #t)
+                  #f
+                  (apply (make-kill-destructor) running args))))
     (respawn? #t))))
 
 (define (qubes-ctap-shepherd-service config)
@@ -322,7 +326,11 @@ balancer (qmemman).")
                     (begin
                       (format #t "qctap-proxy: qubes-ctap-proxy service not enabled in dom0~%")
                       #t))))
-     (stop #~(make-kill-destructor))
+     ;; Started as plain #t (no process) when disabled in dom0.
+     (stop #~(lambda (running . args)
+               (if (eq? running #t)
+                   #f
+                   (apply (make-kill-destructor) running args))))
      (respawn? #t))))
 
 (define (qubes-shepherd-services config)

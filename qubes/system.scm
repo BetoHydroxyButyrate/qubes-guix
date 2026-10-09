@@ -13,6 +13,12 @@
 ;;;   connman, the DHCP clients). Shepherd refuses two providers of one name.
 ;;;   static-networking is left alone: %base-services uses it for loopback.
 ;;;   If you configured eth0 with it yourself, remove that by hand.
+;;; - unless #:display-manager? is #t: removes the graphical login (GDM,
+;;;   which %desktop-services always includes, and the other display
+;;;   managers). In a qube the Qubes GUI agent provides the windows, and
+;;;   GDM refuses a console login while the agent's session for that user
+;;;   is open ("Session Already Running"). The console stays a text login;
+;;;   the desktop packages (XFCE etc.) are untouched.
 ;;;
 ;;; Applying it twice changes nothing.
 
@@ -30,15 +36,29 @@
   ;; By name rather than by value, so this module needn't import them all.
   '(network-manager connman dhcp-client dhcpcd wicd))
 
+(define %display-manager-service-names
+  '(gdm slim sddm lightdm))
+
+(define (remove-services-named names services)
+  "Remove from SERVICES those whose type is named in NAMES, and the services
+that extend them: e.g. the installer's (set-xorg-configuration ...) extends
+gdm, and Guix refuses an extension whose target is gone."
+  (define (named? type) (memq (service-type-name type) names))
+  (define (extends-removed? service)
+    (any (lambda (extension) (named? (service-extension-target extension)))
+         (service-type-extensions (service-kind service))))
+  (remove (lambda (service)
+            (or (named? (service-kind service)) (extends-removed? service)))
+          services))
+
 (define* (qubes-operating-system os
-                                 #:key (config (qubes-guest-configuration)))
-  "Return OS, with the Qubes guest agents added and CONFIG for them."
+                                 #:key
+                                 (config (qubes-guest-configuration))
+                                 (display-manager? #f))
+  "Return OS, with the Qubes guest agents added and CONFIG for them.
+Unless DISPLAY-MANAGER? is true, also remove the graphical login."
   (define (qubes-service? service)
     (eq? (service-kind service) qubes-guest-service-type))
-
-  (define (provides-networking? service)
-    (memq (service-type-name (service-kind service))
-          %networking-service-names))
 
   (define (add-qubes-group account)
     (if (or (user-account-system? account)
@@ -60,9 +80,13 @@
                %qubes-kernel-arguments))
       (users (map add-qubes-group (operating-system-users os)))
       (services
-       (if (any qubes-service? old-services)
-           old-services                 ; already a qube: keep its config
-           (cons (service qubes-guest-service-type config)
-                 (if (qubes-guest-network? config)
-                     (remove provides-networking? old-services)
-                     old-services)))))))
+       (let ((kept (if display-manager?
+                       old-services
+                       (remove-services-named %display-manager-service-names
+                                              old-services))))
+         (if (any qubes-service? kept)
+             kept                       ; already a qube: keep its config
+             (cons (service qubes-guest-service-type config)
+                   (if (qubes-guest-network? config)
+                       (remove-services-named %networking-service-names kept)
+                       kept))))))))

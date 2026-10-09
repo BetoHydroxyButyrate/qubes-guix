@@ -127,7 +127,14 @@ type_into() {
     xdotool key --window "$win" ctrl+alt+F3
     sleep 1
     xdotool windowactivate --sync "$win"
-    xdotool type --delay 12 "$text"
+    # One line at a time, each ended by a Return key press: a newline inside
+    # 'xdotool type' doesn't reach the console as Enter.
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] && xdotool type --delay 12 -- "$line"
+        xdotool key Return
+        sleep 0.2
+    done <<< "$text"
 }
 
 if [ "$type_network" = 1 ]; then
@@ -172,7 +179,7 @@ ip addr replace \$IP/8 dev \$IF
 ip link set \$IF up
 ip route replace default via \$GW
 printf 'nameserver %s\\n' \$DNS > /etc/resolv.conf
-U=\$(getent passwd 1000 | cut -d: -f1)
+U=\$(id -un 1000 2>/dev/null)
 [ -n \"\$U\" ] || { echo 'no user with uid 1000'; exit 1; }
 echo \"network up on \$IF; running the setup as \$U\"
 su - \"\$U\" -c \"set -e; cd; [ -d qubes-guix ] || guix shell git -- git clone -b \$BRANCH $repo_url; QUBES_GUIX_BRANCH=\$BRANCH qubes-guix/guest/qubes-guix-setup \$SETUP_ARGS\"
@@ -354,12 +361,12 @@ cat <<EOF
 3. Switch to the installer screen. In dom0:
 $(vt_key ctrl+alt+F1)
 
-4. Install as usual and reboot into the new system. Log in as root on
-   VT3 and set the network again ($prog --type-network $name
-   does it). Then, as your user:
-     guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
-     qubes-guix/guest/qubes-guix-setup$( [ "$template" = 1 ] && echo ' --template')
-     sudo reboot
+4. Install as usual and reboot into the new system. Log in as root on its
+   console (VT3: the 'xdotool key' above with ctrl+alt+F3), then in dom0:
+     $prog --bootstrap$( [ "$template" = 1 ] && echo ' --template') $name
+   It types a script into /tmp on $name and shows it; read it, then run
+   'sh /tmp/qubes-guix-bootstrap.sh' there. It sets the network, clones the
+   channel and runs the setup. When that's done:  sudo shutdown
    If the console window goes away once the Qubes GUI agent runs, get it
    back with:  qvm-start-daemon --force-stubdomain $name
 EOF

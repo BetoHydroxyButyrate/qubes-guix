@@ -109,12 +109,15 @@ Done. Shut it down so dom0 sees the new root:  sudo shutdown
 Then in dom0 (as your normal dom0 user):
   qvm-start $name                      # first boot as a template; check it works
   qvm-shutdown --wait $name
-  qvm-prefs $name netvm ''             # optional: updates then go through
-  qvm-service $name updates-proxy-setup on   # the Qubes updates proxy
   qvm-create --template $name --label red \\
       --property virt_mode=hvm --property kernel='' \\
       --property memory=4000 --property maxmem=4000 work
   qvm-start work
+
+Keep the template's netvm until the updates proxy is known to work. To test:
+  qvm-service $name updates-proxy-setup on
+  qvm-start $name; then in it: herd status qubes-updates-proxy
+Only then, if you want the template offline:  qvm-prefs $name netvm ''
 
 Software belongs in the template's /etc/config.scm. 'guix install' in an
 AppVM lasts until it shuts down, like apt in a Debian AppVM. To pull without a

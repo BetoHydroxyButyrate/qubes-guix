@@ -202,14 +202,14 @@ qubes-guix/guest/qubes-guix-setup --template                                    
 Install with a single root partition: no separate `/home`, because the template mounts its own `/home`. The setup script prints the dom0 steps that follow. After a `sudo shutdown` and one test start:
 
 ```
-qvm-prefs guix-tmpl netvm ''                          # optional
-qvm-service guix-tmpl updates-proxy-setup on
 qvm-create --template guix-tmpl --label red \
     --property virt_mode=hvm --property kernel='' \
     --property memory=4000 --property maxmem=4000 work
 ```
 
 An AppVM needs `virt_mode hvm` (the default is PVH) and memory set. The default 400 MiB is too little for Guix.
+
+Keep the template's netvm until the updates proxy works: `qvm-service guix-tmpl updates-proxy-setup on`, start the template, and check `herd status qubes-updates-proxy` in it. Only then, if you want the template offline, run `qvm-prefs guix-tmpl netvm ''`.
 
 `#:template? #t` (in `qubes-operating-system`, or the `template?` field of `qubes-guest-configuration`) adds:
 - `qubes-rwdev`: formats a blank private volume, seeds `/rw/home`, then `/rw` and the `/home` bind mount before `user-homes` runs;

@@ -759,3 +759,15 @@ The port is winning.
   git (libgit2) honours http(s)_proxy; virt_mode/kernel inheritance for
   AppVMs; DisposableVMs (persistence none) not handled yet.
 - Also: qubes-agent-version now advertised as 4.3 (was 4.4).
+- 2026-10-09: dom0 typing helpers. xdotool `type --window` sends synthetic
+  events whose Shift state the Qubes GUI daemon ignores ($ -> 4, | -> \,
+  > -> .). Fix: VT switch synthetic (`key --window W ctrl+alt+F3`; a REAL
+  Ctrl+Alt+Fn would switch dom0's own console), then `windowactivate
+  --sync W` and plain `xdotool type` (XTEST). Installer: shell VT3
+  (ctrl+alt+F3), installer UI back on ctrl+alt+F1. --bootstrap types a
+  heredoc into /tmp/qubes-guix-bootstrap.sh (no tabs, no '!', `set +H`),
+  shows it, doesn't run it.
+- Setup belongs in the TEMPLATE: an AppVM boots the template's root, so
+  an AppVM of a not-yet-set-up template is plain Guix (no agent, no net).
+- qubes-operating-system: #:passwordless-sudo? (default #t), %qubes
+  NOPASSWD appended to the sudoers file (Guix visudo-checks it at build).

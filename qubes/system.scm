@@ -19,6 +19,10 @@
 ;;;   GDM refuses a console login while the agent's session for that user
 ;;;   is open ("Session Already Running"). The console stays a text login;
 ;;;   the desktop packages (XFCE etc.) are untouched.
+;;; - unless #:passwordless-sudo? is #f: members of "qubes" (every regular
+;;;   user) get sudo without a password, as upstream's
+;;;   qubes-core-agent-passwordless-root does. A qube is the isolation
+;;;   boundary; root inside it guards nothing the user can't already reach.
 ;;; - with #:template? #t: template support (qubes-guest-configuration's
 ;;;   template? field): /home on the private volume, swap on the volatile
 ;;;   one, the host name from qubesdb, updates through qubes.UpdatesProxy.
@@ -30,6 +34,7 @@
   #:use-module (gnu system)
   #:use-module (gnu system accounts)
   #:use-module (gnu services)
+  #:use-module (guix gexp)
   #:use-module (qubes services agent)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-26)
@@ -55,6 +60,21 @@ gdm, and Guix refuses an extension whose target is gone."
             (or (named? (service-kind service)) (extends-removed? service)))
           services))
 
+(define (qubes-sudoers base)
+  "BASE, a sudoers file, plus passwordless sudo for the \"qubes\" group.
+Guix runs visudo on the result, so a syntax error fails the build."
+  (computed-file "sudoers"
+                 #~(begin
+                     (use-modules (ice-9 textual-ports))
+                     (call-with-output-file #$output
+                       (lambda (port)
+                         (display (call-with-input-file #$base get-string-all)
+                                  port)
+                         (display "
+# Added by (qubes system): passwordless root, as in Qubes' own templates.
+%qubes ALL=(ALL) NOPASSWD: ALL
+" port))))))
+
 (define (as-template config)
   ;; Top level: inside qubes-operating-system, the record's field binding
   ;; template? would shadow the keyword argument of the same name.
@@ -66,6 +86,7 @@ gdm, and Guix refuses an extension whose target is gone."
                                  #:key
                                  (config (qubes-guest-configuration))
                                  (display-manager? #f)
+                                 (passwordless-sudo? #t)
                                  (template? #f))
   "Return OS, with the Qubes guest agents added and CONFIG for them.
 Unless DISPLAY-MANAGER? is true, also remove the graphical login.  With
@@ -92,6 +113,9 @@ TEMPLATE?, configure it as a Qubes template (and its AppVMs)."
                        (operating-system-user-kernel-arguments os))
                %qubes-kernel-arguments))
       (users (map add-qubes-group (operating-system-users os)))
+      (sudoers-file (if passwordless-sudo?
+                        (qubes-sudoers (operating-system-sudoers-file os))
+                        (operating-system-sudoers-file os)))
       (services
        (let ((kept (if display-manager?
                        old-services

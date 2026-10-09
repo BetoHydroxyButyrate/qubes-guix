@@ -24,12 +24,16 @@ root_size=60g
 netvm=
 template=0
 type_network=0
+bootstrap=0
+branch=main
+repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
 dry_run=0
 
 usage() {
     cat <<EOF
 Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
+       $prog --bootstrap [--template] [--branch B] NAME
 
 Create the StandaloneVM HVM qube NAME and boot it from the Guix System
 installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
@@ -52,6 +56,11 @@ Options:
                         click its console window, and this switches it to
                         the root shell (Ctrl+Alt+F3) and types the network
                         setup there, with NAME's address, gateway and DNS
+      --bootstrap       likewise, but types a script into /tmp on NAME and
+                        shows it without running it: network, then clone
+                        this repository and run its guest setup as the
+                        uid-1000 user (with --template: for a template)
+  -b, --branch B        the branch --bootstrap uses        (default main)
   -h, --help            this help
 
 Example:
@@ -81,6 +90,8 @@ while [ $# -gt 0 ]; do
         -n|--netvm) [ $# -ge 2 ] || die "$1 needs a value"; netvm=$2; shift 2;;
         -t|--template) template=1; shift;;
         --type-network) type_network=1; shift;;
+        --bootstrap) bootstrap=1; shift;;
+        -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
         --dry-run)  dry_run=1; shift;;
         -h|--help)  usage; exit 0;;
         --)         shift; args+=("$@"); break;;
@@ -89,45 +100,90 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# --- --type-network: type the network setup into the qube's console ------
+# --- typing into a qube's console (--type-network, --bootstrap) ----------
+
+# The network settings dom0 has for qube $1: sets ip, gw, dns.
+qube_net() {
+    ip=$(qvm-prefs "$1" ip 2>/dev/null) || ip=
+    [ -n "$ip" ] || die "$1 has no IP address (no netvm?)"
+    gw=$(qvm-prefs "$1" visible_gateway)
+    dns=$(qvm-prefs "$1" dns | xargs)
+    [ -n "$dns" ] || dns="10.139.1.1 10.139.1.2"
+}
+
+# Type TEXT into the root shell on VT3 of qube NAME's console window.
+# The VT switch is a synthetic event (--window): a real Ctrl+Alt+F3 would be
+# caught by dom0's own X server and switch dom0's console. The text is real
+# (XTEST) key presses to the focused window: synthetic ones lose Shift in the
+# Qubes GUI daemon ($ arrives as 4, | as \). Keep TEXT free of tabs (they'd
+# trigger completion) and of '!' (bash history expansion).
+type_into() {
+    local name=$1 text=$2 win
+    command -v xdotool >/dev/null 2>&1 || die "xdotool not found in dom0"
+    qvm-check -q --running "$name" 2>/dev/null || die "$name isn't running"
+    echo "Click $name's console window (the cursor is a cross); then hands off"
+    echo "keyboard and mouse until the typing stops."
+    win=$(xdotool selectwindow) || die "no window selected"
+    xdotool key --window "$win" ctrl+alt+F3
+    sleep 1
+    xdotool windowactivate --sync "$win"
+    xdotool type --delay 12 "$text"
+}
 
 if [ "$type_network" = 1 ]; then
     [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
     name=${args[0]}
-    command -v xdotool >/dev/null 2>&1 || die "xdotool not found in dom0"
-    qvm-check -q --running "$name" 2>/dev/null || die "$name isn't running"
-    ip=$(qvm-prefs "$name" ip 2>/dev/null) || ip=
-    [ -n "$ip" ] || die "$name has no IP address (no netvm?)"
-    gw=$(qvm-prefs "$name" visible_gateway)
-    dns=$(qvm-prefs "$name" dns | xargs)
-    [ -n "$dns" ] || dns="10.139.1.1 10.139.1.2"
+    qube_net "$name"
     # The first non-loopback interface: eth0 in the installer, maybe not
     # after it. NetworkManager (installed system) would fight a static setup.
-    cmds="herd stop NetworkManager 2>/dev/null; \
+    type_into "$name" "herd stop NetworkManager 2>/dev/null; \
 IF=\$(ls /sys/class/net | grep -v '^lo\$' | head -n1); \
-ip addr add $ip/8 dev \$IF; ip link set \$IF up; \
-ip route add default via $gw; \
+ip addr replace $ip/8 dev \$IF; ip link set \$IF up; \
+ip route replace default via $gw; \
 printf 'nameserver %s\\n' $dns > /etc/resolv.conf; \
-ip -br addr show \$IF; ip route"
-    echo "Click $name's console window (the cursor is a cross)..."
-    win=$(xdotool selectwindow) || die "no window selected"
-    # The installer's shell is on VT3; it's a root shell. In the installed
-    # system, log in as root on that console first, then run this again.
-    # No --window for typing: that sends synthetic events, and the Qubes GUI
-    # daemon ignores their Shift state ($ arrives as 4, | as \). Focus the
-    # window and type real (XTEST) key presses instead.
-    # The VT switch, though, must stay synthetic: a real Ctrl+Alt+F3 would
-    # be caught by dom0's own X server and switch dom0's console.
-    xdotool key --window "$win" ctrl+alt+F3
-    sleep 1
-    xdotool windowactivate --sync "$win"
-    xdotool type --delay 20 "$cmds"
-    xdotool key Return
+ip -br addr show \$IF; ip route
+"
     cat <<EOF
-Typed into $name's console (VT3):
-  $ip/8 via $gw, DNS $dns
-The last two lines on its screen show the result. Back to the installer:
+Typed into $name's console (VT3): $ip/8 via $gw, DNS $dns
+The last lines on its screen show the result. Back to the installer:
   xdotool key --window \$(xdotool selectwindow) ctrl+alt+F1
+EOF
+    exit 0
+fi
+
+if [ "$bootstrap" = 1 ]; then
+    [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
+    name=${args[0]}
+    qube_net "$name"
+    setup_args=
+    [ "$template" = 1 ] && setup_args=--template
+    f=/tmp/qubes-guix-bootstrap.sh
+    # Written to a file on the qube and shown, NOT run: read it, then run it.
+    # As root: the network (Qubes has no DHCP); then as the first regular
+    # user: clone this repository and run guest/qubes-guix-setup.
+    type_into "$name" "set +H; cat > $f <<'QGEOF'
+# qubes-guix bootstrap, typed in by qubes-guix-create (dom0). Review, then:
+#   sh $f
+set -eu
+IP=$ip GW=$gw DNS='$dns' BRANCH=$branch SETUP_ARGS='$setup_args'
+herd stop NetworkManager 2>/dev/null || true
+IF=\$(ls /sys/class/net | grep -v '^lo\$' | head -n1)
+ip addr replace \$IP/8 dev \$IF
+ip link set \$IF up
+ip route replace default via \$GW
+printf 'nameserver %s\\n' \$DNS > /etc/resolv.conf
+U=\$(getent passwd 1000 | cut -d: -f1)
+[ -n \"\$U\" ] || { echo 'no user with uid 1000'; exit 1; }
+echo \"network up on \$IF; running the setup as \$U\"
+su - \"\$U\" -c \"set -e; cd; [ -d qubes-guix ] || guix shell git -- git clone -b \$BRANCH $repo_url; QUBES_GUIX_BRANCH=\$BRANCH qubes-guix/guest/qubes-guix-setup \$SETUP_ARGS\"
+QGEOF
+clear; cat $f; echo; echo 'Review the above, then run:  sh $f'
+"
+    cat <<EOF
+Typed into $name's console (VT3): $f, shown there but not run.
+Read it on the console, then run:  sh $f
+(It sets the network, then runs the setup as the uid-1000 user, branch
+$branch$( [ "$template" = 1 ] && echo ', as a template'). sudo asks that user's password once.)
 EOF
     exit 0
 fi

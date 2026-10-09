@@ -86,6 +86,7 @@ It adds what a qube needs and nothing else:
 - **`qubes-guest-service-type`,** which provides `networking` itself, from QubesDB.
 - **No NetworkManager, connman or DHCP client,** because they provide `networking` too, and Shepherd refuses two providers. A `static-networking` service for `eth0` has to go as well; the setup leaves `static-networking` alone, since `%base-services` uses it for loopback.
 
+- **Passwordless `sudo` for the `qubes` group,** unless you pass `#:passwordless-sudo? #f`. This is the Qubes convention (upstream's `qubes-core-agent-passwordless-root`): the qube is the security boundary.
 - **No graphical login (display manager),** unless you pass `#:display-manager? #t`. `%desktop-services` always includes GDM, whatever desktop you chose. In a qube, the Qubes GUI agent provides the windows, and GDM refuses a console login while the agent's session for that user is open ("Session Already Running"). The console becomes a text login, and your desktop's packages (XFCE etc.) stay installed. Services that extend the display manager, such as the installer's `set-xorg-configuration`, are removed with it.
 
 To pass options, use `(qubes-operating-system os #:config (qubes-guest-configuration ...))`. It is idempotent: applying it to an `operating-system` that already has the service changes nothing more.
@@ -154,7 +155,15 @@ Install as usual, then reboot into the new system. Its network isn't configured 
 
 ## Setting up the guest
 
-As your normal user in the new system:
+The quickest way is from dom0, once the new system is up and you're logged in as root on its console (VT3):
+
+```
+./qubes-guix-create --bootstrap guix            # add --template for a template, -b BRANCH to test a branch
+```
+
+This types a short script into `/tmp/qubes-guix-bootstrap.sh` on the qube and shows it there, without running it. Read it, then run `sh /tmp/qubes-guix-bootstrap.sh`. The script sets the network, then runs the steps below as the uid-1000 user. `sudo` asks that user's password once.
+
+Or by hand, as your normal user in the new system:
 
 ```
 guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix

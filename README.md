@@ -147,11 +147,23 @@ It checks everything before changing anything, and removes the qube again if a s
 **Memory balancing makes every boot slower.** An HVM whose MAXMEM is above MEMORY boots in Xen's populate-on-demand mode, and a Guix boot then takes much longer to reach the qrexec agent. Measured: 24 s at 8000/8000, 83 s at 8000/32542. Past the default 60 s `qrexec_timeout`, `qvm-start` gives up and kills the qube, uncleanly. So the script leaves balancing off by default and sets the timeout to 300 s either way. If you want balancing, keep the gap between MEMORY and MAXMEM small. You can change it later in the qube's settings ("Include in memory balancing").
 
 The installer needs three manual steps under Qubes, and the script prints them with this qube's values:
-1. **In GRUB:** pick the non-graphical install entry, press `e`, and add `nomodeset` to the `linux` line.
+1. **In GRUB:** with **GNU Guix installation** highlighted, press `e`:
+
+   ![The installer's GRUB menu, one entry: GNU Guix installation 1.5.0](doc/grub-menu.png)
+
+   This shows the boot commands. Move to the end of the `linux` line (it wraps; it ends with `modprobe.blacklist=radeon,amdgpu`):
+
+   ![The boot commands before the edit](doc/grub-edit.png)
+
+   Add ` nomodeset` there, then press Ctrl+X to boot:
+
+   ![The linux line ending in nomodeset](doc/grub-nomodeset.png)
+
+   Without `nomodeset`, the console on VT3 doesn't work. Only the installer needs it: the installed system boots fine without it.
 2. **Network:** Qubes has no DHCP, so the network is set by hand, in the root shell on VT3. In dom0, `./qubes-guix-create --type-network guix` does it: click the qube's console window, and it switches to VT3 (Ctrl+Alt+F3) and types the commands with this qube's address, gateway and DNS. By hand it's `ip addr add <ip>/8 dev eth0`, `ip link set eth0 up`, `ip route add default via <gateway>` and the DNS servers in `/etc/resolv.conf`. The **/8** puts the gateway on-link.
 3. **Back to the installer:** dom0's desktop grabs Alt+Fn, so switch consoles from dom0 with `xdotool key --window $(xdotool selectwindow) ctrl+alt+F1` and click the qube's window.
 
-Install as usual, then reboot into the new system. Its network isn't configured yet: log in as root on VT3 and run `--type-network` again (it stops NetworkManager first).
+Install as usual, then reboot into the new system. Its network isn't configured yet. `--bootstrap` (next section) sets it up along with everything else.
 
 ## Setting up the guest
 

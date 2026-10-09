@@ -326,8 +326,10 @@ cat <<EOF
 
 $name is booting the Guix installer in its console window. To install:
 
-1. At the GRUB menu, highlight the non-graphical install entry, press 'e',
-   add  nomodeset  to the end of the 'linux' line, and boot it (Ctrl+X).
+1. At the GRUB menu, with 'GNU Guix installation' highlighted, press 'e'.
+   Go to the end of the 'linux' line (it ends 'modprobe.blacklist=radeon,
+   amdgpu'), add  nomodeset  and boot it (Ctrl+X). Without it the console
+   on VT3 doesn't work. The installed system doesn't need it.
 EOF
 
 if [ -z "$ip" ]; then

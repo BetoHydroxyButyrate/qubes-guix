@@ -127,6 +127,10 @@ type_into() {
     xdotool key --window "$win" ctrl+alt+F3
     sleep 1
     xdotool windowactivate --sync "$win"
+    # The installer's VT3 first says "[press ENTER to login]"; in a shell
+    # that's already open, an empty line does nothing.
+    xdotool key Return
+    sleep 1
     # One line at a time, each ended by a Return key press: a newline inside
     # 'xdotool type' doesn't reach the console as Enter.
     local line

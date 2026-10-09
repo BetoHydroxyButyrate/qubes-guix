@@ -46,14 +46,14 @@ else
         "$here/channels.scm.txt" > "$channels"
 fi
 
-if [ -x "$guix" ] && "$guix" describe 2>/dev/null | grep -q '^  qubes '; then
+if [ -x "$guix" ] && "$guix" describe 2>/dev/null | grep '^  qubes ' >/dev/null; then
     say "guix already includes the qubes channel; pulling for updates"
 else
     say "guix pull (the first one takes a while)"
 fi
 guix pull
 [ -x "$guix" ] || die "guix pull didn't produce $guix"
-"$guix" describe | grep -q '^  qubes ' ||
+"$guix" describe | grep '^  qubes ' >/dev/null ||
     die "the pulled guix doesn't include the qubes channel (see: $guix describe)"
 
 # --- 2. configuration --------------------------------------------------

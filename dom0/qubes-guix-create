@@ -186,7 +186,9 @@ printf 'nameserver %s\\n' \$DNS > /etc/resolv.conf
 U=\$(id -un 1000 2>/dev/null)
 [ -n \"\$U\" ] || { echo 'no user with uid 1000'; exit 1; }
 echo \"network up on \$IF; running the setup as \$U\"
-su - \"\$U\" -c \"set -e; cd; [ -d qubes-guix ] || guix shell git -- git clone -b \$BRANCH $repo_url; QUBES_GUIX_BRANCH=\$BRANCH qubes-guix/guest/qubes-guix-setup \$SETUP_ARGS\"
+# su -c gives no controlling terminal, and sudo (in the setup) needs one
+# for its password prompt: 'script' supplies a pty.
+su - \"\$U\" -c \"script -qec 'set -e; cd; if [ -d qubes-guix ]; then guix shell git -- git -C qubes-guix fetch -q origin \$BRANCH; guix shell git -- git -C qubes-guix checkout -q -B \$BRANCH FETCH_HEAD; else guix shell git -- git clone -b \$BRANCH $repo_url; fi; QUBES_GUIX_BRANCH=\$BRANCH qubes-guix/guest/qubes-guix-setup \$SETUP_ARGS' /dev/null\"
 QGEOF
 clear; cat $f; echo; echo 'Review the above, then run:  sh $f'
 "

@@ -42,6 +42,12 @@ done
 
 if [ -f "$channels" ] && grep -q "(name 'qubes)" "$channels"; then
     say "The qubes channel is already in $channels"
+    # The branch is only applied when this script writes the file.
+    if [ -n "${QUBES_GUIX_BRANCH:-}" ] &&
+       ! grep -q "(branch \"$QUBES_GUIX_BRANCH\")" "$channels"; then
+        die "QUBES_GUIX_BRANCH=$QUBES_GUIX_BRANCH, but $channels doesn't
+pull that branch. Set (branch \"$QUBES_GUIX_BRANCH\") in its qubes entry, then rerun."
+    fi
 elif [ -f "$channels" ]; then
     die "$channels exists but has no qubes channel. Add the (channel (name 'qubes) ...)
 entry from $here/channels.scm.txt to it, then rerun."

@@ -23,6 +23,10 @@
 #                       manual Guix install (set them later with passwd);
 #                       qvm-run works regardless, and the qubes group's sudo
 #                       needs no password.
+#   --packages "A B"    extra packages for config.scm (default: git), by
+#                       name or name@version. Ones this Guix doesn't have are
+#                       skipped with a warning (available-packages in
+#                       qubes/system.scm), now and at every reconfigure.
 #   --force             DISK already has partitions: wipe it anyway
 #   --poweroff          power off when done (dom0 then starts it from disk)
 #
@@ -40,6 +44,7 @@ user=user
 timezone=UTC
 locale=en_US.utf8
 hash=
+packages=git
 force=0
 poweroff=0
 disk=/dev/xvda
@@ -58,6 +63,7 @@ while [ $# -gt 0 ]; do
         --timezone) need "$@"; timezone=$2; shift 2;;
         --locale) need "$@"; locale=$2; shift 2;;
         --password-hash) need "$@"; hash=$2; shift 2;;
+        --packages) need "$@"; packages=$2; shift 2;;
         --force) force=1; shift;;
         --poweroff) poweroff=1; shift;;
         -*) die "unknown option $1";;
@@ -79,6 +85,13 @@ esac
 case $host_name in
     ''|*[!A-Za-z0-9.-]*) die "bad host name '$host_name'";;
 esac
+for p in $packages; do
+    case $p in
+        *[!A-Za-z0-9@._+-]*|[!A-Za-z0-9]*) die "bad package name '$p'";;
+    esac
+done
+pkg_list=
+for p in $packages; do pkg_list="$pkg_list \"$p\""; done
 case $hash in
     ''|'$'*) ;;
     *) die "--password-hash wants a crypt(3) hash (\$6\$...), not a password";;
@@ -159,6 +172,12 @@ EOF
                   (home-directory "/home/$user")
                   (supplementary-groups '("wheel" "netdev" "audio" "video")))
                 %base-user-accounts))
+
+  ;; Extra packages: edit the list, then reconfigure. Names this Guix
+  ;; doesn't know are skipped with a warning (available-packages, from the
+  ;; qubes channel's (qubes system)).
+  (packages (append (available-packages '($pkg_list))
+                    %base-packages))
 
   (services
    (append (list (service xfce-desktop-service-type))

@@ -31,6 +31,7 @@ force=0
 no_password=0
 locale=en_US.utf8
 wait_start=1
+packages_file=
 run_now=0
 branch=main
 repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
@@ -43,7 +44,8 @@ Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --bootstrap [--template] [--branch B] NAME
        $prog --finish-install [--template] [--branch B] [--run] NAME
        $prog --unattended [--template] [--branch B] [--no-password]
-                          [--force] [--locale L] [--no-wait] NAME
+                          [--force] [--locale L] [--packages FILE]
+                          [--no-wait] NAME
 
 Create the StandaloneVM HVM qube NAME and boot it from the Guix System
 installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
@@ -91,6 +93,13 @@ Options:
                         Then waits for NAME to stop and starts it from its
                         disk (--no-wait: don't). --force: wipe a disk that
                         already has partitions. --locale: default en_US.utf8
+                        A template is left without a netvm afterwards: it
+                        updates through the Qubes updates proxy.
+      --packages FILE   with --unattended: extra packages for config.scm,
+                        one or more per line, # starts a comment (default:
+                        qubes-guix-packages next to this script, if there;
+                        else just git). Names Guix doesn't have are skipped
+                        with a warning, not an error.
   -b, --branch B        the qubes-guix branch that --bootstrap,
                         --finish-install and --unattended clone and build
                         from                               (default main)
@@ -131,6 +140,7 @@ while [ $# -gt 0 ]; do
         --no-password) no_password=1; shift;;
         --locale)   [ $# -ge 2 ] || die "$1 needs a value"; locale=$2; shift 2;;
         --no-wait)  wait_start=0; shift;;
+        --packages) [ $# -ge 2 ] || die "$1 needs a value"; packages_file=$2; shift 2;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
         --dry-run)  dry_run=1; shift;;
         -h|--help)  usage; exit 0;;
@@ -290,12 +300,29 @@ if [ "$install" = 1 ]; then
         hash=$(printf '%s\n' "$pw1" | openssl passwd -6 -stdin)
         unset pw1 pw2
     fi
+    # Extra packages: from --packages FILE, or qubes-guix-packages next to
+    # this script. Checked here too: they're typed into a root shell.
+    if [ -z "$packages_file" ] && [ -f "$(dirname "$0")/qubes-guix-packages" ]; then
+        packages_file=$(dirname "$0")/qubes-guix-packages
+    fi
+    packages=
+    if [ -n "$packages_file" ]; then
+        [ -r "$packages_file" ] || die "can't read $packages_file"
+        packages=$(sed 's/#.*//' "$packages_file" | xargs)
+        for p in $packages; do
+            case $p in
+                *[!A-Za-z0-9@._+-]*|[!A-Za-z0-9]*) die "bad package name '$p' in $packages_file";;
+            esac
+        done
+        echo "Extra packages (from $packages_file): ${packages:-none}"
+    fi
     # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
     d=/root/qubes-guix
     cmd="sh $d/guest/qubes-guix-install --host-name $(echo "$name" | tr '_' '-') --timezone $tz --locale $locale -b $branch --poweroff"
     [ "$template" = 1 ] && cmd="$cmd --template"
     [ "$force" = 1 ] && cmd="$cmd --force"
     [ -n "$hash" ] && cmd="$cmd --password-hash '$hash'"
+    [ -n "$packages_file" ] && cmd="$cmd --packages '$packages'"
     type_into "$name" "set +H
 $(net_cmds)
 rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $cmd"
@@ -306,12 +333,19 @@ It partitions /dev/xvda, builds a Guix with the qubes channel and the system
 (an hour or more), then powers $name off. Watch VT3 for errors.
 EOF
     if [ "$dry_run" = 1 ]; then
-        echo "(dry run: would then wait for $name to power off and run: qvm-start $name)"
+        echo "(dry run: would then wait for $name to power off$( [ "$template" = 1 ] && echo ", remove its netvm") and run: qvm-start $name)"
     elif [ "$wait_start" = 1 ]; then
         echo "Waiting for $name to power off, to start it from its disk (Ctrl+C: stop"
         echo "waiting; then start it yourself with: qvm-start $name)."
         while qvm-check -q --running "$name" 2>/dev/null; do sleep 15; done
-        echo "$name is off; starting it."
+        if [ "$template" = 1 ]; then
+            # Like other templates: no network; updates (guix pull,
+            # substitutes) go through the Qubes updates proxy.
+            echo "$name is off. As a template it now gets no netvm (updates go through"
+            echo "the updates proxy). To give it one back:  qvm-prefs $name netvm <qube>"
+            qvm-prefs "$name" netvm ''
+        fi
+        echo "Starting $name."
         qvm-start "$name"
         echo "Started. Check from dom0:  qvm-run -u root --pass-io $name 'herd status qrexec-agent'"
     else
@@ -451,6 +485,10 @@ run qvm-volume extend "$name:root" "$root_size"
 
 # The Qubes Update tool can't update Guix (guix pull + reconfigure does).
 run qvm-features "$name" skip-update 1
+
+# A template's updates go through the Qubes updates proxy (qubes.UpdatesProxy),
+# so it can do without a netvm once installed. The guest reads this at boot.
+[ "$template" = 1 ] && run qvm-service "$name" updates-proxy-setup on
 
 # Memory balancing. It only takes effect once the agent runs
 # meminfo-writer; until then the qube simply has MEMORY.

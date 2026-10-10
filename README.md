@@ -184,6 +184,10 @@ It asks for one password, used for both `user` and root. Only a hash of it is ty
 - a clone of this repository;
 - the command to run `guest/qubes-guix-install`.
 
+**Extra packages:** list them in `dom0/qubes-guix-packages`, one or more per line, with `#` for comments. Copy it into dom0 next to `qubes-guix-create` and edit it, or pass another file with `--packages FILE`. Without one you get `git`. They go into the qube's `config.scm` through `available-packages` from `(qubes system)`. A name Guix doesn't have is skipped with a warning, never an error, both at install time and at every later reconfigure. To change the set, edit the list in `/etc/config.scm`, then run `qubes-guix-update -r`.
+
+A TemplateVM is detected even without `--template`. It gets `updates-proxy-setup` when it's created, and loses its netvm after the install. From then on, it updates through the Qubes updates proxy like other templates. `qubes-guix-update` handles `guix pull`, and guix-daemon handles substitutes.
+
 That script:
 1. **Disk:** partitions `/dev/xvda` as GPT, with a 1 MiB BIOS boot partition and an ext4 root labelled `guix-root`. It refuses a disk that already has partitions unless you pass `--force`.
 2. **Configuration:** writes `/etc/config.scm` with Xfce, `%desktop-services`, the user `user`, dom0's timezone, and the qube's name as host name.
@@ -271,7 +275,7 @@ qvm-create --template guix-tmpl --label red \
 
 An AppVM needs `virt_mode hvm` (the default is PVH) and memory set. The default 400 MiB is too little for Guix.
 
-Keep the template's netvm until the updates proxy works. dom0 normally enables `updates-proxy-setup` for templates; if not, run `qvm-service guix-tmpl updates-proxy-setup on`. Start the template and check `herd status qubes-updates-proxy` in it. guix-daemon should then have the proxy in its environment: `sudo cat /proc/$(pgrep -o guix-daemon)/environ | tr '\0' '\n' | grep proxy`. Only then, if you want the template offline, run `qvm-prefs guix-tmpl netvm ''`. Substitutes then come through the proxy. `guix pull` fetches git in your own process, not through the daemon, so offline it needs `http_proxy` and `https_proxy` set to `http://127.0.0.1:8082` (tested: libgit2 honours them). `qubes-guix-update` does that for you (see Updating).
+Keep the template's netvm until the updates proxy works. dom0 normally enables `updates-proxy-setup` for templates; if not, run `qvm-service guix-tmpl updates-proxy-setup on`. Start the template and check `herd status qubes-updates-proxy` in it. guix-daemon should then have the proxy in its environment: `sudo cat /proc/$(pgrep -o guix-daemon)/environ | tr '\0' '\n' | grep proxy`. Only then, if you want the template offline, run `qvm-prefs guix-tmpl netvm ''`. Substitutes then come through the proxy. `guix pull` fetches git in your own process, not through the daemon, so offline it needs `http_proxy` and `https_proxy` set to `http://127.0.0.1:8082` (tested: libgit2 honours them). `qubes-guix-update` does that for you (see Updating), and so does `pguix`: `pguix pull`, `pguix time-machine …` and so on run `guix` with the proxy set whenever the qube has `updates-proxy-setup`, and run plain `guix` otherwise. Commands that go through guix-daemon, such as `guix install`, `guix shell` and `guix build`, need nothing: the daemon already uses the proxy.
 
 `#:template? #t` (in `qubes-operating-system`, or the `template?` field of `qubes-guest-configuration`) adds:
 - `qubes-rwdev`: formats a blank private volume, seeds `/rw/home`, then `/rw` and the `/home` bind mount before `user-homes` runs;

@@ -34,6 +34,9 @@
 ;;;   For a TemplateVM and the AppVMs based on it.
 ;;;
 ;;; Applying it twice changes nothing.
+;;;
+;;; Also: (available-packages '("git" "emacs" ...)) for the packages field:
+;;; the named packages that exist, skipping (with a warning) those that don't.
 
 (define-module (qubes system)
   #:use-module (gnu system)
@@ -42,10 +45,30 @@
   #:use-module (gnu services base)          ; guix-service-type
   #:use-module (guix channels)
   #:use-module (guix gexp)
+  #:use-module (ice-9 match)
+  #:use-module ((gnu packages) #:select (find-best-packages-by-name))
+  #:use-module ((guix utils) #:select (package-name->name+version))
   #:use-module (qubes services agent)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-26)
-  #:export (qubes-operating-system))
+  #:export (qubes-operating-system
+            available-packages))
+
+(define (available-packages specs)
+  "Return the packages named by SPECS (\"git\", \"emacs@29\"), skipping,
+with a warning, any that this Guix doesn't have: a list of wanted extras in
+config.scm never stops a reconfigure."
+  (filter-map
+   (lambda (spec)
+     (call-with-values (lambda () (package-name->name+version spec))
+       (lambda (name version)
+         (match (find-best-packages-by-name name version)
+           ((package . _) package)
+           (()
+            (format (current-error-port)
+                    "warning: package '~a' not found; skipped~%" spec)
+            #f)))))
+   specs))
 
 (define %networking-service-names
   ;; service-type-name of the stock services that provision 'networking.

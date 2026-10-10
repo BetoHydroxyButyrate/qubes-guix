@@ -676,19 +676,32 @@ case ${1:-} in
     -r|--reconfigure) reconfigure=1; shift;;
     -h|--help) sed -n '2,5p' \"$0\"; exit 0;;
 esac
-if [ \"$(" (qubesdb-read-path config) " /qubes-service/updates-proxy-setup 2>/dev/null)\" = 1 ]; then
-    http_proxy=http://127.0.0.1:8082
-    https_proxy=$http_proxy
-    export http_proxy https_proxy
-    echo \"qubes-guix-update: through the Qubes updates proxy ($http_proxy)\"
-fi
-guix pull \"$@\"
+pguix pull \"$@\"
 if [ \"$reconfigure\" = 1 ]; then
     guix=$HOME/.config/guix/current/bin/guix
     [ -x \"$guix\" ] || guix=guix
     # Builds and substitutes go through guix-daemon, which has the proxy.
     sudo \"$guix\" system reconfigure \"${QUBES_GUIX_CONFIG:-/etc/config.scm}\"
 fi
+"))
+
+;; `pguix`: guix, through the Qubes updates proxy when this qube has one.
+;; Only the commands that fetch in the caller's own process need it: pull
+;; and time-machine (channels, via libgit2), download, refresh. Builds and
+;; substitutes go through guix-daemon, which qubes-updates-proxy already
+;; points at the proxy. Not set globally: AppVMs share this root but have no
+;; proxy (and don't need one).
+(define (pguix-script config)
+  (mixed-text-file "pguix" "#!" (file-append bash-minimal "/bin/sh") "
+# pguix ARGS...: guix ARGS, through the Qubes updates proxy when this qube
+# uses one (updates-proxy-setup, i.e. a template); plain guix otherwise.
+if [ \"$(" (qubesdb-read-path config) " /qubes-service/updates-proxy-setup 2>/dev/null)\" = 1 ]; then
+    http_proxy=http://127.0.0.1:8082
+    https_proxy=$http_proxy
+    export http_proxy https_proxy
+    echo \"pguix: through the Qubes updates proxy ($http_proxy)\" >&2
+fi
+exec guix \"$@\"
 "))
 
 (define (qubes-guix-update config)
@@ -702,14 +715,19 @@ fi
            #:builder
            #~(begin
                (use-modules (guix build utils))
-               (let ((bin (string-append #$output "/bin/qubes-guix-update")))
-                 (mkdir-p (dirname bin))
-                 (copy-file #$(qubes-guix-update-script config) bin)
-                 (chmod bin #o555)))))
+               (let ((bin (string-append #$output "/bin")))
+                 (mkdir-p bin)
+                 (copy-file #$(qubes-guix-update-script config)
+                            (string-append bin "/qubes-guix-update"))
+                 (copy-file #$(pguix-script config)
+                            (string-append bin "/pguix"))
+                 (for-each (lambda (f) (chmod (string-append bin "/" f) #o555))
+                           '("qubes-guix-update" "pguix"))))))
     (home-page "https://github.com/BetoHydroxyButyrate/qubes-guix")
-    (synopsis "guix pull (and reconfigure) through the Qubes updates proxy")
-    (description "Runs @command{guix pull}, through the Qubes updates proxy
-when the qube uses one, and optionally @command{guix system reconfigure}.")
+    (synopsis "guix (pull, reconfigure) through the Qubes updates proxy")
+    (description "@command{pguix} runs @command{guix} through the Qubes updates
+proxy when the qube uses one; @command{qubes-guix-update} runs @command{pguix
+pull}, and optionally @command{guix system reconfigure}.")
     (license license:gpl3+)))
 
 (define (qubes-packages config)

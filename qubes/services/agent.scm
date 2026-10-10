@@ -681,7 +681,14 @@ if [ \"$reconfigure\" = 1 ]; then
     guix=$HOME/.config/guix/current/bin/guix
     [ -x \"$guix\" ] || guix=guix
     # Builds and substitutes go through guix-daemon, which has the proxy.
-    sudo \"$guix\" system reconfigure \"${QUBES_GUIX_CONFIG:-/etc/config.scm}\"
+    # But (qubes system) builds the system's own guix from the channels
+    # (guix-for-channels), which makes root fetch them into its own cache:
+    # in a template, through the proxy, which sudo would otherwise drop.
+    set --
+    if [ \"$(" (qubesdb-read-path config) " /qubes-service/updates-proxy-setup 2>/dev/null)\" = 1 ]; then
+        set -- http_proxy=http://127.0.0.1:8082 https_proxy=http://127.0.0.1:8082
+    fi
+    sudo env \"$@\" \"$guix\" system reconfigure \"${QUBES_GUIX_CONFIG:-/etc/config.scm}\"
 fi
 "))
 

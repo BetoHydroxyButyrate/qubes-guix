@@ -13,6 +13,9 @@
 #
 # --template: the qube is a TemplateVM (qubes-guix-create --template).
 # -b BRANCH:  the channel branch to build from and to record (default main).
+# --guix-commit C: build with Guix at commit C; "installer" (default) is the
+#             installer's own commit (substitutes for nearly everything),
+#             "latest" the current master.
 # --packages: extra packages, as #:extra-packages (missing ones are skipped).
 # TARGET:     where the new system is mounted (default /mnt).
 #
@@ -25,6 +28,7 @@ prog=${0##*/}
 here=$(cd "$(dirname "$0")" && pwd)
 template=0
 branch=main
+guix_commit=installer
 target=/mnt
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -35,6 +39,7 @@ while [ $# -gt 0 ]; do
         --template) template=1; shift;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
         --packages) [ $# -ge 2 ] || die "$1 needs a value"; QUBES_PACKAGES=$2; export QUBES_PACKAGES; shift 2;;
+        --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
         -*) die "unknown option $1";;
         *) target=$1; shift;;
     esac
@@ -84,6 +89,31 @@ trap 'rm -rf "$tmp"' EXIT
 channels=$tmp/channels.scm
 new=$tmp/config.scm
 sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$channels"
+
+# Build with the Guix the installer itself runs (its commit), unless told
+# otherwise: CI has built that commit, so the system's packages, and Guix
+# itself, come as substitutes rather than local builds. Only the qubes
+# channel's packages are built here. (/etc/guix/channels.scm, what later
+# pulls follow, stays unpinned.)
+case $guix_commit in
+    installer) guix_commit=$(guix describe 2>/dev/null | sed -n 's/^ *commit: //p' | head -n1);;
+    latest) guix_commit=;;
+esac
+if [ -n "$guix_commit" ]; then
+    case $guix_commit in
+        *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash";;
+    esac
+    say "Building with Guix at commit $guix_commit"
+    sed "s/^       %default-channels)\$/       (map (lambda (c)\\
+              (if (eq? (channel-name c) 'guix)\\
+                  (channel (inherit c) (commit \"$guix_commit\"))\\
+                  c))\\
+            %default-channels))/" "$channels" > "$channels.pinned"
+    grep -q "$guix_commit" "$channels.pinned" || die "couldn't pin Guix in $channels"
+    mv "$channels.pinned" "$channels"
+else
+    say "Building with the latest Guix (unpinned): slow, it builds Guix itself"
+fi
 
 say "Wrapping $config"
 set +e

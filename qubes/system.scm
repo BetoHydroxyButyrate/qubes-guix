@@ -28,6 +28,9 @@
 ;;;   service installs as /etc/guix/channels.scm. 'guix pull' uses that file
 ;;;   when a user has no ~/.config/guix/channels.scm, so every user's first
 ;;;   pull already includes this channel.
+;;; - unless #:system-guix? is #f (and with system channels): the system's
+;;;   own guix is built from the channels of the Guix doing the build, so it
+;;;   includes qubes: 'guix describe' shows it from the first boot.
 ;;; - with #:template? #t: template support (qubes-guest-configuration's
 ;;;   template? field): /home on the private volume, swap on the volatile
 ;;;   one, the host name from qubesdb, updates through qubes.UpdatesProxy.
@@ -45,8 +48,10 @@
   #:use-module (gnu services)
   #:use-module (gnu services base)          ; guix-service-type
   #:use-module (guix channels)
+  #:use-module ((guix describe) #:select (current-channels))
   #:use-module (guix gexp)
   #:use-module (ice-9 match)
+  #:use-module (ice-9 pretty-print)
   #:use-module ((gnu packages) #:select (find-best-packages-by-name))
   #:use-module ((guix utils) #:select (package-name->name+version))
   #:use-module (qubes services agent)
@@ -128,6 +133,55 @@ system-wide channels (unless it already has one named qubes)."
      (inherit config)
      (channels new))))
 
+;; guix pull warns "channel 'qubes' is not trusted" when it evaluates a
+;; channels file listing a channel that isn't among the user's trusted ones:
+;; those of ~/.config/guix/trusted-channels.scm, or else those of the Guix
+;; doing the pull. On a new system that's the system's Guix, without the
+;; qubes channel, so the first pull from /etc/guix/channels.scm warns (for a
+;; local file it's only a warning). New home directories get a
+;; trusted-channels.scm that trusts what /etc/guix/channels.scm lists.
+;; A directory, not a single file: skeletons are copied with
+;; copy-recursively, which creates the parents (.config) only for
+;; directories. The channels are written out literally (channel->code).
+(define (guix-config-skeleton branch)
+  (let ((text (string-append
+               ";; The channels 'guix pull' trusts. Written by (qubes system) from the
+;; system's channels; add others (e.g. nonguix) to trust them too.
+"
+               (with-output-to-string
+                 (lambda ()
+                   (pretty-print
+                    `(list ,@(map channel->code
+                                  (append %default-channels
+                                          (list (qubes-channel branch)))))))))))
+    (computed-file "guix-config-skeleton"
+                   #~(begin
+                       (mkdir #$output)
+                       (call-with-output-file
+                           (string-append #$output "/trusted-channels.scm")
+                         (lambda (port) (display #$text port)))))))
+
+(define (with-trusted-channels skeletons branch)
+  (if (assoc ".config/guix" skeletons)
+      skeletons
+      (cons (list ".config/guix" (guix-config-skeleton branch)) skeletons)))
+
+;; The system's own guix (/run/current-system/profile/bin/guix, the one a
+;; user has before their first 'guix pull') built from the channels of the
+;; Guix doing this build, when those include qubes: so 'guix describe' lists
+;; qubes from the first boot, and 'sudo guix system reconfigure' works
+;; without a user pull. guix-for-channels needs root's channel checkouts
+;; (~root/.cache/guix/checkouts): the install has them (time-machine); a
+;; later reconfigure fetches them, through the updates proxy in a template
+;; (qubes-guix-update -r passes it to sudo).
+(define (with-system-guix config)
+  (let ((chans (current-channels)))
+    (if (any (lambda (c) (eq? (channel-name c) 'qubes)) chans)
+        (guix-configuration
+         (inherit config)
+         (guix (guix-for-channels chans)))
+        config)))
+
 (define (as-template config)
   ;; Top level: inside qubes-operating-system, the record's field binding
   ;; template? would shadow the keyword argument of the same name.
@@ -141,6 +195,7 @@ system-wide channels (unless it already has one named qubes)."
                                  (display-manager? #f)
                                  (passwordless-sudo? #t)
                                  (system-channels? #t)
+                                 (system-guix? #t)
                                  (channel-branch "main")
                                  (template? #f)
                                  (extra-packages '()))
@@ -171,6 +226,10 @@ with a warning."
                        (operating-system-user-kernel-arguments os))
                %qubes-kernel-arguments))
       (users (map add-qubes-group (operating-system-users os)))
+      (skeletons (if system-channels?
+                     (with-trusted-channels (operating-system-skeletons os)
+                                            channel-branch)
+                     (operating-system-skeletons os)))
       (packages (append (operating-system-packages os)
                         (available-packages extra-packages)))
       (sudoers-file (if passwordless-sudo?
@@ -185,9 +244,12 @@ with a warning."
                         (map (lambda (s)
                                (if (eq? (service-kind s) guix-service-type)
                                    (service guix-service-type
-                                            (with-qubes-channel
-                                             (service-value s)
-                                             channel-branch))
+                                            (let ((c (with-qubes-channel
+                                                      (service-value s)
+                                                      channel-branch)))
+                                              (if system-guix?
+                                                  (with-system-guix c)
+                                                  c)))
                                    s))
                              kept0)
                         kept0)))

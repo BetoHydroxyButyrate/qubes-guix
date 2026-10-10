@@ -203,6 +203,6 @@ if [ "$poweroff" = 1 ]; then
     say "Installed. Powering off."
     herd stop cow-store "$target" >/dev/null 2>&1 || true
     umount "$target" 2>/dev/null || true
-    poweroff
+    halt                # Guix has no poweroff command: halt powers off
 fi
-say "Installed. Power off (poweroff), then start the qube from dom0."
+say "Installed. Power off (halt), then start the qube from dom0."

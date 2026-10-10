@@ -74,7 +74,17 @@
   ;; initramfs do: /home on the private volume (/rw/home), swap on the
   ;; volatile volume, the hostname from qubesdb, and updates through
   ;; qubes.UpdatesProxy. Needs a single-partition root (no separate /home).
-  (template? qubes-guest-template? (default #f)))
+  (template? qubes-guest-template? (default #f))
+  ;; Desktop files (basenames) dom0 puts in the Qubes menu by default for
+  ;; this qube and the AppVMs based on it (feature default-menu-items).
+  ;; Only those present in the system profile are requested. Without it,
+  ;; dom0 lists every application (e.g. all of Xfce's settings dialogs).
+  (default-menu-items qubes-guest-default-menu-items
+                      (default '("xfce4-terminal.desktop" "thunar.desktop"
+                                 "Thunar.desktop" "Alacritty.desktop"
+                                 "firefox.desktop" "icecat.desktop"
+                                 "emacs.desktop" "mousepad.desktop"
+                                 "org.xfce.mousepad.desktop"))))
 
 (define %xen-modules
   ;; xen-privcmd is the critical one (libxenctrl's xencall).
@@ -226,7 +236,12 @@ req supported-service.meminfo-writer 1
        "req supported-service.qubes-ctap-proxy 1\nreq supported-service.qubes-u2f-proxy 1\n"
        "") (if (qubes-guest-split-gpg2 config)
        "req supported-service.split-gpg2-client 1\n"
-       "") "hp=
+       "") "menu=
+for d in " (string-join (qubes-guest-default-menu-items config) " ") "; do
+    [ -e /run/current-system/profile/share/applications/$d ] && menu=\"$menu${menu:+ }$d\"
+done
+[ -n \"$menu\" ] && req default-menu-items \"$menu\"
+hp=
 if [ -r /proc/config.gz ] && " zcat " /proc/config.gz | " grep* " -q '^CONFIG_XEN_BALLOON_MEMORY_HOTPLUG=y'; then
     hp=1
 fi

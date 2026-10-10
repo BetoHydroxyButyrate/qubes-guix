@@ -124,7 +124,10 @@ A local desktop (e.g. XFCE on `:0`) can coexist: the Qubes GUI agent runs its ow
           (network? #t)                ; configure the uplink from QubesDB
           (network-interface "eth0")
           (ctap-backend "sys-usb")     ; #f: no U2F/FIDO2 proxy
-          (split-gpg2 qubes-split-gpg2-client)))  ; #f: no split-gpg2 client
+          (split-gpg2 qubes-split-gpg2-client)  ; #f: no split-gpg2 client
+          (default-menu-items '("xfce4-terminal.desktop" "thunar.desktop"))))
+                                       ; what dom0 shows in the Qubes menu by
+                                       ; default (only the installed ones)
 ```
 
 Package fields (`qrexec`, `qubesdb`, `core-agent`, `gui-agent`, `ctap`) can be overridden too.

@@ -187,6 +187,15 @@ type_into() {
     done <<< "$text"
 }
 
+# A TemplateVM gets the template setup whether or not --template was given:
+# forgetting it gives a template without /rw, /home or the updates proxy.
+detect_template() {
+    if [ "$(qvm-prefs "$1" klass 2>/dev/null)" = TemplateVM ] && [ "$template" = 0 ]; then
+        echo "$1 is a TemplateVM: setting it up as a template (--template)."
+        template=1
+    fi
+}
+
 typed=Typed
 [ "$dry_run" = 1 ] && typed="Dry run, not typed"
 
@@ -221,6 +230,7 @@ fi
 if [ "$bootstrap" = 1 ]; then
     [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
     name=${args[0]}
+    detect_template "$name"
     qube_net "$name"
     setup_args=
     [ "$template" = 1 ] && setup_args=--template
@@ -260,6 +270,7 @@ fi
 if [ "$install" = 1 ]; then
     [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
     name=${args[0]}
+    detect_template "$name"
     qube_net "$name"
     tz=$(timedatectl show -p Timezone --value 2>/dev/null) || tz=
     [ -n "$tz" ] || tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
@@ -302,7 +313,7 @@ EOF
         while qvm-check -q --running "$name" 2>/dev/null; do sleep 15; done
         echo "$name is off; starting it."
         qvm-start "$name"
-        echo "Started. Check from dom0:  qvm-run --pass-io $name 'herd status qrexec-agent'"
+        echo "Started. Check from dom0:  qvm-run -u root --pass-io $name 'herd status qrexec-agent'"
     else
         echo "When it's off:  qvm-start $name"
     fi
@@ -312,6 +323,7 @@ fi
 if [ "$finish_install" = 1 ]; then
     [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
     name=${args[0]}
+    detect_template "$name"
     # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
     d=/root/qubes-guix
     cmd="sh $d/guest/qubes-guix-finish-install"

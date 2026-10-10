@@ -174,12 +174,21 @@ system-wide channels (unless it already has one named qubes)."
 ;; (~root/.cache/guix/checkouts): the install has them (time-machine); a
 ;; later reconfigure fetches them, through the updates proxy in a template
 ;; (qubes-guix-update -r passes it to sudo).
+;; guix-for-channels lives in (gnu packages package-management), not in
+;; (gnu services base); looked up at run time so that a Guix without it
+;; just keeps its stock system guix instead of failing to load this module.
+(define guix-for-channels*
+  (false-if-exception
+   (module-ref (resolve-interface '(gnu packages package-management))
+               'guix-for-channels)))
+
 (define (with-system-guix config)
   (let ((chans (current-channels)))
-    (if (any (lambda (c) (eq? (channel-name c) 'qubes)) chans)
+    (if (and guix-for-channels*
+             (any (lambda (c) (eq? (channel-name c) 'qubes)) chans))
         (guix-configuration
          (inherit config)
-         (guix (guix-for-channels chans)))
+         (guix (guix-for-channels* chans)))
         config)))
 
 (define (as-template config)

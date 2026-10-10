@@ -26,6 +26,7 @@
   #:use-module (gnu packages virtualization)  ; xen (xengnttab)
   #:use-module (gnu packages xdisorg)         ; libdrm, pixman
   #:use-module (gnu packages xorg)            ; also python-xcffib
+  #:use-module ((gnu packages) #:select (specification->package))
   #:use-module (qubes packages vchan)
   #:use-module (qubes packages qubesdb)
   #:use-module (qubes packages qrexec))
@@ -370,7 +371,7 @@ exec " sleep " infinity
            qubes-core-qrexec
            qubes-gui-common
            python                       ; icon-sender
-           python-xcffib))
+           (specification->package "python-xcffib")))
     (home-page "https://github.com/QubesOS/qubes-gui-agent-linux")
     (synopsis "Qubes OS GUI agent (seamless windows) for Guix System")
     (description

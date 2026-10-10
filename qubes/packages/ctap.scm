@@ -8,6 +8,7 @@
 
 (define-module (qubes packages ctap)
   #:use-module (guix packages)
+  #:use-module ((gnu packages) #:select (specification->package))
   #:use-module (guix gexp)
   #:use-module (guix git-download)
   #:use-module (guix build-system pyproject)
@@ -95,9 +96,13 @@ if __name__ == '__main__':
                 (invoke "python3" "-m" "pytest" "-q"
                         "--basetemp=/tmp/qctap" "qubesctap/tests")))))))
     (native-inputs
-     (list python-setuptools python-wheel python-pytest python-pytest-asyncio))
+     (list python-setuptools python-wheel python-pytest
+           ;; By name: these have moved between modules across Guix
+           ;; versions (e.g. the installer's 1.5.0 vs master).
+           (specification->package "python-pytest-asyncio")))
     (inputs (list qubes-core-qrexec))
-    (propagated-inputs (list python-fido2 python-packaging))
+    (propagated-inputs (list (specification->package "python-fido2")
+                             (specification->package "python-packaging")))
     (home-page "https://github.com/QubesOS/qubes-app-u2f")
     (synopsis "Qubes OS CTAP/U2F proxy (frontend)")
     (description

@@ -35,8 +35,9 @@
 ;;;
 ;;; Applying it twice changes nothing.
 ;;;
-;;; Also: (available-packages '("git" "emacs" ...)) for the packages field:
-;;; the named packages that exist, skipping (with a warning) those that don't.
+;;; - #:extra-packages '("git" "emacs" ...): added to the system's packages;
+;;;   names this Guix doesn't have are skipped with a warning, so the list
+;;;   never stops a reconfigure (available-packages, also exported).
 
 (define-module (qubes system)
   #:use-module (gnu system)
@@ -141,10 +142,13 @@ system-wide channels (unless it already has one named qubes)."
                                  (passwordless-sudo? #t)
                                  (system-channels? #t)
                                  (channel-branch "main")
-                                 (template? #f))
+                                 (template? #f)
+                                 (extra-packages '()))
   "Return OS, with the Qubes guest agents added and CONFIG for them.
 Unless DISPLAY-MANAGER? is true, also remove the graphical login.  With
-TEMPLATE?, configure it as a Qubes template (and its AppVMs)."
+TEMPLATE?, configure it as a Qubes template (and its AppVMs).  EXTRA-PACKAGES
+names packages to add (\"git\" \"emacs@29\"); those this Guix lacks are skipped
+with a warning."
   (define (qubes-service? service)
     (eq? (service-kind service) qubes-guest-service-type))
 
@@ -167,6 +171,8 @@ TEMPLATE?, configure it as a Qubes template (and its AppVMs)."
                        (operating-system-user-kernel-arguments os))
                %qubes-kernel-arguments))
       (users (map add-qubes-group (operating-system-users os)))
+      (packages (append (operating-system-packages os)
+                        (available-packages extra-packages)))
       (sudoers-file (if passwordless-sudo?
                         (qubes-sudoers (operating-system-sudoers-file os))
                         (operating-system-sudoers-file os)))

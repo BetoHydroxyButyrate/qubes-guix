@@ -8,11 +8,16 @@
 # Then reboot. Safe to rerun: steps already done are skipped.
 #
 #   guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
-#   qubes-guix/guest/qubes-guix-setup [--template] [CONFIG]   # default /etc/config.scm
+#   qubes-guix/guest/qubes-guix-setup [--template] [--packages "A B"] [CONFIG]
+#                                                   # CONFIG: default /etc/config.scm
 #
 # --template: this qube is a Qubes TemplateVM (made with qubes-guix-create
 # --template). Its configuration gets #:template? #t, which also serves the
 # AppVMs based on it.
+#
+# --packages "git emacs" (or QUBES_PACKAGES=...): extra packages, added as
+# #:extra-packages to the (qubes-operating-system ...) form if it has none.
+# Names this Guix doesn't have are skipped with a warning, not an error.
 #
 # QUBES_GUIX_BRANCH=test qubes-guix/guest/qubes-guix-setup   pulls the channel
 # from that branch instead of main (for testing; commits must still be signed).
@@ -22,7 +27,14 @@ set -eu
 prog=${0##*/}
 here=$(cd "$(dirname "$0")" && pwd)
 template=0
-if [ "${1:-}" = --template ]; then template=1; shift; fi
+while [ $# -gt 0 ]; do
+    case $1 in
+        --template) template=1; shift;;
+        --packages) [ $# -ge 2 ] || { echo "${0##*/}: $1 needs a value" >&2; exit 1; }
+                    QUBES_PACKAGES=$2; export QUBES_PACKAGES; shift 2;;
+        *) break;;
+    esac
+done
 config=${1:-/etc/config.scm}
 channels=${XDG_CONFIG_HOME:-$HOME/.config}/guix/channels.scm
 guix=$HOME/.config/guix/current/bin/guix

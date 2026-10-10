@@ -8,6 +8,8 @@
 ;;; an existing (qubes-operating-system ...) without it gets it added.
 ;;; With QUBES_BRANCH=B (other than main), a new wrap gets
 ;;; #:channel-branch "B": the branch of the system-wide qubes channel.
+;;; With QUBES_PACKAGES="git emacs", it gets #:extra-packages '("git" "emacs")
+;;; (also added to an existing wrap that has none).
 ;;;
 ;;; The edit is textual (the file is never re-printed), so comments and
 ;;; layout survive. Exit status: 0 wrapped, 3 already a qube, 1 error.
@@ -59,10 +61,16 @@
 (define branch
   (let ((b (getenv "QUBES_BRANCH")))
     (and b (not (string-null? b)) (not (string=? b "main")) b)))
+(define packages                        ; QUBES_PACKAGES="git emacs"
+  (let ((p (getenv "QUBES_PACKAGES")))
+    (if p (filter (lambda (x) (not (string-null? x))) (string-split p #\space)) '())))
+(define packages-keyword
+  (format #f "\n #:extra-packages '~s" packages))
 (define new-keywords
   ;; Appended inside a new (qubes-operating-system ...) wrap.
   (string-append (if template? "\n #:template? #t" "")
-                 (if branch (format #f "\n #:channel-branch ~s" branch) "")))
+                 (if branch (format #f "\n #:channel-branch ~s" branch) "")
+                 (if (null? packages) "" packages-keyword)))
 (define last-form (car (last forms+ends)))
 (define last-end  (cdr (last forms+ends)))
 
@@ -71,19 +79,30 @@
                                   (car f)))
            forms+ends)
   (match last-form
-    ;; Already wrapped, now asked for a template: add the keyword just
-    ;; inside the wrap's closing paren.
+    ;; Already wrapped: add what was asked for and isn't there yet
+    ;; (#:template? #t, #:extra-packages) just inside the wrap's closing
+    ;; paren. An existing #:extra-packages list is left as it is: edit it.
     (('qubes-operating-system . rest)
      (=> next)
-     (unless (and template? (not (memq #:template? rest))) (next))
-     (call-with-output-file out
-       (lambda (port)
-         (put-string port (substring text 0 (- last-end 1)))
-         (put-string port "\n #:template? #t)")
-         (put-string port (substring text last-end))
-         (unless (string-suffix? "\n" text) (newline port))))
-     (format #t "Added #:template? #t to ~a -> ~a~%" in out)
-     (exit 0))
+     (let ((additions
+            (string-append
+             (if (and template? (not (memq #:template? rest)))
+                 "\n #:template? #t" "")
+             (if (and (pair? packages) (not (memq #:extra-packages rest)))
+                 packages-keyword ""))))
+       (when (string-null? additions) (next))
+       (call-with-output-file out
+         (lambda (port)
+           (put-string port (substring text 0 (- last-end 1)))
+           (put-string port additions)
+           (put-string port ")")
+           (put-string port (substring text last-end))
+           (unless (string-suffix? "\n" text) (newline port))))
+       (format #t "Added~a to ~a -> ~a~%"
+               (string-map (lambda (c) (if (char=? c #\newline) #\space c))
+                           additions)
+               in out)
+       (exit 0)))
     (_
      (when (and template? (not (mentions? '(#:template?) last-form)))
        (fail "~a already uses the Qubes service, but not as a template;

@@ -41,8 +41,9 @@ usage() {
     cat <<EOF
 Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
-       $prog --bootstrap [--template] [--branch B] NAME
-       $prog --finish-install [--template] [--branch B] [--run] NAME
+       $prog --bootstrap [--template] [--branch B] [--packages FILE] NAME
+       $prog --finish-install [--template] [--branch B] [--packages FILE]
+                              [--run] NAME
        $prog --unattended [--template] [--branch B] [--no-password]
                           [--force] [--locale L] [--packages FILE]
                           [--no-wait] NAME
@@ -95,7 +96,8 @@ Options:
                         already has partitions. --locale: default en_US.utf8
                         A template is left without a netvm afterwards: it
                         updates through the Qubes updates proxy.
-      --packages FILE   with --unattended: extra packages for config.scm,
+      --packages FILE   with --unattended, --finish-install, --bootstrap:
+                        extra packages for config.scm (#:extra-packages),
                         one or more per line, # starts a comment (default:
                         qubes-guix-packages next to this script, if there;
                         else just git). Names Guix doesn't have are skipped
@@ -206,6 +208,25 @@ detect_template() {
     fi
 }
 
+# Extra packages, into $packages: from --packages FILE, or qubes-guix-packages
+# next to this script. Checked here: they're typed into a root shell.
+read_packages() {
+    if [ -z "$packages_file" ] && [ -f "$(dirname "$0")/qubes-guix-packages" ]; then
+        packages_file=$(dirname "$0")/qubes-guix-packages
+    fi
+    packages=
+    if [ -n "$packages_file" ]; then
+        [ -r "$packages_file" ] || die "can't read $packages_file"
+        packages=$(sed 's/#.*//' "$packages_file" | xargs)
+        for p in $packages; do
+            case $p in
+                *[!A-Za-z0-9@._+-]*|[!A-Za-z0-9]*) die "bad package name '$p' in $packages_file";;
+            esac
+        done
+        echo "Extra packages (from $packages_file): ${packages:-none}"
+    fi
+}
+
 typed=Typed
 [ "$dry_run" = 1 ] && typed="Dry run, not typed"
 
@@ -244,6 +265,7 @@ if [ "$bootstrap" = 1 ]; then
     qube_net "$name"
     setup_args=
     [ "$template" = 1 ] && setup_args=--template
+    read_packages
     f=/tmp/qubes-guix-bootstrap.sh
     # Written to a file on the qube and shown, NOT run: read it, then run it.
     # As root: the network (Qubes has no DHCP); then as the first regular
@@ -253,6 +275,7 @@ if [ "$bootstrap" = 1 ]; then
 #   sh $f
 set -eu
 IP=$ip GW=$gw DNS='$dns' BRANCH=$branch SETUP_ARGS='$setup_args'
+PKGS='$packages'
 herd stop NetworkManager 2>/dev/null || true
 IF=\$(ls /sys/class/net | grep -v '^lo\$' | head -n1)
 ip addr replace \$IP/8 dev \$IF
@@ -264,9 +287,9 @@ U=\$(id -un 1000 2>/dev/null)
 echo \"network up on \$IF; running the setup as \$U\"
 # su -c gives no controlling terminal, and sudo (in the setup) needs one
 # for its password prompt: 'script' supplies a pty.
-su - \"\$U\" -c \"script -qec 'set -e; cd; if [ -d qubes-guix ]; then guix shell git -- git -C qubes-guix fetch -q origin \$BRANCH; guix shell git -- git -C qubes-guix checkout -q -B \$BRANCH FETCH_HEAD; else guix shell git -- git clone -b \$BRANCH $repo_url; fi; QUBES_GUIX_BRANCH=\$BRANCH qubes-guix/guest/qubes-guix-setup \$SETUP_ARGS' /dev/null\"
+su - \"\$U\" -c \"script -qec 'set -e; cd; if [ -d qubes-guix ]; then guix shell git -- git -C qubes-guix fetch -q origin \$BRANCH; guix shell git -- git -C qubes-guix checkout -q -B \$BRANCH FETCH_HEAD; else guix shell git -- git clone -b \$BRANCH $repo_url; fi; QUBES_GUIX_BRANCH=\$BRANCH QUBES_PACKAGES=\\\"\$PKGS\\\" qubes-guix/guest/qubes-guix-setup \$SETUP_ARGS' /dev/null\"
 QGEOF
-clear; cat $f; echo; echo 'Review the above, then run:  sh $f'
+printf '\\033c'; cat $f; echo; echo 'Review the above, then run:  sh $f'
 "
     cat <<EOF
 $typed into $name's console (VT3): $f, shown there but not run.
@@ -300,29 +323,14 @@ if [ "$install" = 1 ]; then
         hash=$(printf '%s\n' "$pw1" | openssl passwd -6 -stdin)
         unset pw1 pw2
     fi
-    # Extra packages: from --packages FILE, or qubes-guix-packages next to
-    # this script. Checked here too: they're typed into a root shell.
-    if [ -z "$packages_file" ] && [ -f "$(dirname "$0")/qubes-guix-packages" ]; then
-        packages_file=$(dirname "$0")/qubes-guix-packages
-    fi
-    packages=
-    if [ -n "$packages_file" ]; then
-        [ -r "$packages_file" ] || die "can't read $packages_file"
-        packages=$(sed 's/#.*//' "$packages_file" | xargs)
-        for p in $packages; do
-            case $p in
-                *[!A-Za-z0-9@._+-]*|[!A-Za-z0-9]*) die "bad package name '$p' in $packages_file";;
-            esac
-        done
-        echo "Extra packages (from $packages_file): ${packages:-none}"
-    fi
+    read_packages
     # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
     d=/root/qubes-guix
     cmd="sh $d/guest/qubes-guix-install --host-name $(echo "$name" | tr '_' '-') --timezone $tz --locale $locale -b $branch --poweroff"
     [ "$template" = 1 ] && cmd="$cmd --template"
     [ "$force" = 1 ] && cmd="$cmd --force"
     [ -n "$hash" ] && cmd="$cmd --password-hash '$hash'"
-    [ -n "$packages_file" ] && cmd="$cmd --packages '$packages'"
+    [ -n "$packages" ] && cmd="$cmd --packages '$packages'"
     type_into "$name" "set +H
 $(net_cmds)
 rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $cmd"
@@ -363,12 +371,14 @@ if [ "$finish_install" = 1 ]; then
     cmd="sh $d/guest/qubes-guix-finish-install"
     [ "$template" = 1 ] && cmd="$cmd --template"
     cmd="$cmd -b $branch"
+    read_packages
+    [ -n "$packages" ] && cmd="$cmd --packages '$packages'"
     # The installer's shell is root, and its network was set up by
     # --type-network. git isn't in the installer image: guix shell fetches it.
     if [ "$run_now" = 1 ]; then
         next="$cmd"
     else
-        next="{ clear; echo 'Cloned into $d. Review it, then run:'; echo '  $cmd'; }"
+        next="{ printf '\\033c'; echo 'Cloned into $d. Review it, then run:'; echo '  $cmd'; }"
     fi
     type_into "$name" "set +H; rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $next"
     if [ "$run_now" = 1 ]; then

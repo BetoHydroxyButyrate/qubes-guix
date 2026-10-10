@@ -9,10 +9,11 @@
 # The first boot then already has the Qubes agents, its network from QubesDB,
 # passwordless sudo, and the qubes channel in /etc/guix/channels.scm.
 #
-#   sh qubes-guix-finish-install [--template] [-b BRANCH] [TARGET]
+#   sh qubes-guix-finish-install [--template] [-b BRANCH] [--packages "A B"] [TARGET]
 #
 # --template: the qube is a TemplateVM (qubes-guix-create --template).
 # -b BRANCH:  the channel branch to build from and to record (default main).
+# --packages: extra packages, as #:extra-packages (missing ones are skipped).
 # TARGET:     where the new system is mounted (default /mnt).
 #
 # qubes-guix-create --finish-install (dom0) fetches this repository into /tmp
@@ -33,6 +34,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --template) template=1; shift;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
+        --packages) [ $# -ge 2 ] || die "$1 needs a value"; QUBES_PACKAGES=$2; export QUBES_PACKAGES; shift 2;;
         -*) die "unknown option $1";;
         *) target=$1; shift;;
     esac

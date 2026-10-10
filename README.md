@@ -184,7 +184,7 @@ It asks for one password, used for both `user` and root. Only a hash of it is ty
 - a clone of this repository;
 - the command to run `guest/qubes-guix-install`.
 
-**Extra packages:** list them in `dom0/qubes-guix-packages`, one or more per line, with `#` for comments. Copy it into dom0 next to `qubes-guix-create` and edit it, or pass another file with `--packages FILE`. Without one you get `git`. They go into the qube's `config.scm` through `available-packages` from `(qubes system)`. A name Guix doesn't have is skipped with a warning, never an error, both at install time and at every later reconfigure. To change the set, edit the list in `/etc/config.scm`, then run `qubes-guix-update -r`.
+**Extra packages:** list them in `dom0/qubes-guix-packages`, one or more per line, with `#` for comments. Copy it into dom0 next to `qubes-guix-create` and edit it, or pass another file with `--packages FILE`. Without one you get `git`. They go into the qube's `config.scm` as `#:extra-packages '("git" …)` in the `(qubes-operating-system …)` form. A name Guix doesn't have is skipped with a warning, never an error, both at install time and at every later reconfigure. To change the set, edit that list in `/etc/config.scm`, then run `qubes-guix-update -r`. `--finish-install` and `--bootstrap` read the same file.
 
 A TemplateVM is detected even without `--template`. It gets `updates-proxy-setup` when it's created, and loses its netvm after the install. From then on, it updates through the Qubes updates proxy like other templates. `qubes-guix-update` handles `guix pull`, and guix-daemon handles substitutes.
 

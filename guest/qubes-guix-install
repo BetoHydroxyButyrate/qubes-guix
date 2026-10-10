@@ -90,34 +90,54 @@ ping -c1 -W5 bordeaux.guix.gnu.org >/dev/null 2>&1 ||
 
 # --- 1. disk ----------------------------------------------------------------
 
+# A previous run that got this far but failed later (e.g. in 'guix system
+# init') left the new root mounted, with cow-store's overlay on /gnu/store
+# using it: it can't be unmounted short of rebooting the installer. Resume
+# from step 3 instead.
+resume=0
 if mountpoint -q "$target"; then
-    die "$target is already mounted. If that's a finished install, run
+    if grep -q 'Written by qubes-guix-install' "$target/etc/config.scm" 2>/dev/null; then
+        say "$target already holds a partly installed system from an earlier run: resuming"
+        resume=1
+    else
+        die "$target is already mounted. If that's a finished install, run
 qubes-guix-finish-install instead; otherwise umount it first."
-fi
-parts=$(lsblk -lnpo NAME,TYPE "$disk" | awk '$2=="part"{print $1}')
-if [ -n "$parts" ] && [ "$force" = 0 ]; then
-    die "$disk already has partitions:
-$parts
-Use --force to wipe it."
+    fi
 fi
 
-say "Partitioning $disk: BIOS boot (1 MiB) + ext4 root (the rest)"
-sfdisk --quiet --wipe always --wipe-partitions always "$disk" <<'EOF'
+if [ "$resume" = 0 ]; then
+    parts=$(lsblk -lnpo NAME,TYPE "$disk" | awk '$2=="part"{print $1}')
+    if [ -n "$parts" ] && [ "$force" = 0 ]; then
+        die "$disk already has partitions:
+$parts
+Use --force to wipe it."
+    fi
+
+    # sfdisk can't repartition a disk whose partitions are in use.
+    if lsblk -lnpo MOUNTPOINTS "$disk" 2>/dev/null | grep -q . ||
+       lsblk -lnpo MOUNTPOINT "$disk" 2>/dev/null | grep -q .; then
+        die "partitions of $disk are mounted (an earlier run? see 'findmnt'). Mount
+its root on $target and rerun without --force to resume, or reboot the
+installer to start afresh."
+    fi
+
+    say "Partitioning $disk: BIOS boot (1 MiB) + ext4 root (the rest)"
+    sfdisk --quiet --wipe always --wipe-partitions always "$disk" <<'EOF'
 label: gpt
 size=1MiB, type=21686148-6449-6E6F-744E-656564454649, name="bios-boot"
 type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="guix-root"
 EOF
-udevadm settle 2>/dev/null || sleep 2
-root=$(lsblk -lnpo NAME,TYPE "$disk" | awk '$2=="part"{p=$1} END{print p}')
-[ -b "$root" ] || die "can't find the new root partition on $disk"
-mkfs.ext4 -q -F -L guix-root "$root"
-mount LABEL=guix-root "$target" 2>/dev/null || mount "$root" "$target"
-mkdir -p "$target/etc"
+    udevadm settle 2>/dev/null || sleep 2
+    root=$(lsblk -lnpo NAME,TYPE "$disk" | awk '$2=="part"{p=$1} END{print p}')
+    [ -b "$root" ] || die "can't find the new root partition on $disk"
+    mkfs.ext4 -q -F -L guix-root "$root"
+    mount LABEL=guix-root "$target" 2>/dev/null || mount "$root" "$target"
+    mkdir -p "$target/etc"
 
-# --- 2. config.scm ----------------------------------------------------------
+    # --- 2. config.scm ------------------------------------------------------
 
-say "Writing $target/etc/config.scm"
-cat > "$target/etc/config.scm" <<EOF
+    say "Writing $target/etc/config.scm"
+    cat > "$target/etc/config.scm" <<EOF
 ;; Written by qubes-guix-install. This is the operating system
 ;; configuration: edit it, then 'sudo guix system reconfigure /etc/config.scm'
 ;; (or 'qubes-guix-update -r').
@@ -155,6 +175,8 @@ cat > "$target/etc/config.scm" <<EOF
                          (type "ext4"))
                        %base-file-systems)))
 EOF
+
+fi
 
 # --- 3. qubes + guix system init -------------------------------------------
 

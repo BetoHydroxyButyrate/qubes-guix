@@ -173,7 +173,7 @@ Then install as usual, up to the **Installation complete** screen, and **don't r
 *New, not yet tested.* After the GRUB step, at the installer's first screen, run in dom0:
 
 ```
-./qubes-guix-create --install guix          # add --template for a template, -b BRANCH to test a branch
+./qubes-guix-create --unattended guix          # add --template for a template, -b BRANCH to test a branch
 ```
 
 It asks for one password, used for both `user` and root. Only a hash of it is typed into the qube. With `--no-password`, both accounts are left as after a manual Guix install; `qvm-run` works either way. Then click the qube's console window. On VT3 it types:

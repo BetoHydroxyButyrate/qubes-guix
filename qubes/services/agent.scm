@@ -659,20 +659,20 @@ set -eu
 reconfigure=0
 case ${1:-} in
     -r|--reconfigure) reconfigure=1; shift;;
-    -h|--help) sed -n '2,5p' "$0"; exit 0;;
+    -h|--help) sed -n '2,5p' \"$0\"; exit 0;;
 esac
-if [ "$(" (qubesdb-read-path config) " /qubes-service/updates-proxy-setup 2>/dev/null)" = 1 ]; then
+if [ \"$(" (qubesdb-read-path config) " /qubes-service/updates-proxy-setup 2>/dev/null)\" = 1 ]; then
     http_proxy=http://127.0.0.1:8082
     https_proxy=$http_proxy
     export http_proxy https_proxy
-    echo "qubes-guix-update: through the Qubes updates proxy ($http_proxy)"
+    echo \"qubes-guix-update: through the Qubes updates proxy ($http_proxy)\"
 fi
-guix pull "$@"
-if [ "$reconfigure" = 1 ]; then
+guix pull \"$@\"
+if [ \"$reconfigure\" = 1 ]; then
     guix=$HOME/.config/guix/current/bin/guix
-    [ -x "$guix" ] || guix=guix
+    [ -x \"$guix\" ] || guix=guix
     # Builds and substitutes go through guix-daemon, which has the proxy.
-    sudo "$guix" system reconfigure "${QUBES_GUIX_CONFIG:-/etc/config.scm}"
+    sudo \"$guix\" system reconfigure \"${QUBES_GUIX_CONFIG:-/etc/config.scm}\"
 fi
 "))
 

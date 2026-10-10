@@ -42,8 +42,8 @@ Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
        $prog --bootstrap [--template] [--branch B] NAME
        $prog --finish-install [--template] [--branch B] [--run] NAME
-       $prog --install [--template] [--branch B] [--no-password] [--force]
-                       [--locale L] [--no-wait] NAME
+       $prog --unattended [--template] [--branch B] [--no-password]
+                          [--force] [--locale L] [--no-wait] NAME
 
 Create the StandaloneVM HVM qube NAME and boot it from the Guix System
 installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
@@ -60,7 +60,8 @@ Options:
   -n, --netvm QUBE      network qube            (default: the system default)
   -t, --template        make a TemplateVM (AppVMs can be based on it)
                         instead of a StandaloneVM
-      --dry-run         print the dom0 commands, change nothing
+      --dry-run         print the dom0 commands, change nothing; with the
+                        typing modes below, print what would be typed
       --type-network    for a running NAME without its Qubes agent (the
                         installer, or the installed system before setup):
                         click its console window, and this switches it to
@@ -78,7 +79,7 @@ Options:
                         installer's network (--type-network) still up.
       --run             with --finish-install: run that command too, rather
                         than leaving it for you to review and type
-      --install         the whole install, unattended, instead of the
+      --unattended      the whole install, unattended, instead of the
                         installer's dialogs: run it at the installer's first
                         screen (after the GRUB 'nomodeset' step). Asks here
                         for a password for the user and root (stored as a
@@ -90,8 +91,9 @@ Options:
                         Then waits for NAME to stop and starts it from its
                         disk (--no-wait: don't). --force: wipe a disk that
                         already has partitions. --locale: default en_US.utf8
-  -b, --branch B        the branch --bootstrap and --finish-install use
-                                                           (default main)
+  -b, --branch B        the qubes-guix branch that --bootstrap,
+                        --finish-install and --unattended clone and build
+                        from                               (default main)
   -h, --help            this help
 
 Example:
@@ -124,7 +126,7 @@ while [ $# -gt 0 ]; do
         --bootstrap) bootstrap=1; shift;;
         --finish-install) finish_install=1; shift;;
         --run)      run_now=1; shift;;
-        --install)  install=1; shift;;
+        --unattended|--install) install=1; shift;;
         --force)    force=1; shift;;
         --no-password) no_password=1; shift;;
         --locale)   [ $# -ge 2 ] || die "$1 needs a value"; locale=$2; shift 2;;
@@ -158,6 +160,11 @@ qube_net() {
 # trigger completion) and of '!' (bash history expansion).
 type_into() {
     local name=$1 text=$2 win
+    if [ "$dry_run" = 1 ]; then
+        echo "Dry run: would type into $name's console, after Ctrl+Alt+F3 and Enter:"
+        printf '%s\n' "$text" | sed 's/^/  | /'
+        return 0
+    fi
     command -v xdotool >/dev/null 2>&1 || die "xdotool not found in dom0"
     qvm-check -q --running "$name" 2>/dev/null || die "$name isn't running"
     echo "Click $name's console window (the cursor is a cross); then hands off"
@@ -180,6 +187,9 @@ type_into() {
     done <<< "$text"
 }
 
+typed=Typed
+[ "$dry_run" = 1 ] && typed="Dry run, not typed"
+
 # Root-shell commands that bring up the first non-loopback interface with
 # the address, gateway and DNS from qube_net: eth0 in the installer, maybe
 # not after it. NetworkManager (installed system) would fight a static setup.
@@ -201,7 +211,7 @@ if [ "$type_network" = 1 ]; then
     type_into "$name" "$(net_cmds)
 "
     cat <<EOF
-Typed into $name's console (VT3): $ip/8 via $gw, DNS $dns
+$typed into $name's console (VT3): $ip/8 via $gw, DNS $dns
 The last lines on its screen show the result. Back to the installer:
   xdotool key --window \$(xdotool selectwindow) ctrl+alt+F1
 EOF
@@ -239,7 +249,7 @@ QGEOF
 clear; cat $f; echo; echo 'Review the above, then run:  sh $f'
 "
     cat <<EOF
-Typed into $name's console (VT3): $f, shown there but not run.
+$typed into $name's console (VT3): $f, shown there but not run.
 Read it on the console, then run:  sh $f
 (It sets the network, then runs the setup as the uid-1000 user, branch
 $branch$( [ "$template" = 1 ] && echo ', as a template'). sudo asks that user's password once.)
@@ -255,7 +265,9 @@ if [ "$install" = 1 ]; then
     [ -n "$tz" ] || tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
     [ -n "$tz" ] || tz=UTC
     hash=
-    if [ "$no_password" = 0 ]; then
+    if [ "$no_password" = 0 ] && [ "$dry_run" = 1 ]; then
+        hash='<hash of the password you would be asked for>'
+    elif [ "$no_password" = 0 ]; then
         command -v openssl >/dev/null 2>&1 ||
             die "openssl not found in dom0 (needed to hash the password); or use --no-password"
         while :; do
@@ -277,12 +289,14 @@ if [ "$install" = 1 ]; then
 $(net_cmds)
 rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $cmd"
     cat <<EOF
-Typed into $name's console (VT3): the network setup, then a clone of branch
+$typed into $name's console (VT3): the network setup, then a clone of branch
 $branch and guest/qubes-guix-install ($( [ "$template" = 1 ] && echo 'template, ')timezone $tz, user 'user'$( [ -n "$hash" ] || echo ', no password')).
 It partitions /dev/xvda, builds a Guix with the qubes channel and the system
 (an hour or more), then powers $name off. Watch VT3 for errors.
 EOF
-    if [ "$wait_start" = 1 ]; then
+    if [ "$dry_run" = 1 ]; then
+        echo "(dry run: would then wait for $name to power off and run: qvm-start $name)"
+    elif [ "$wait_start" = 1 ]; then
         echo "Waiting for $name to power off, to start it from its disk (Ctrl+C: stop"
         echo "waiting; then start it yourself with: qvm-start $name)."
         while qvm-check -q --running "$name" 2>/dev/null; do sleep 15; done
@@ -313,7 +327,7 @@ if [ "$finish_install" = 1 ]; then
     type_into "$name" "set +H; rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $next"
     if [ "$run_now" = 1 ]; then
         cat <<EOF
-Typed into $name's console (VT3): clone $branch into $d and run
+$typed into $name's console (VT3): clone $branch into $d and run
   $cmd
 It wraps /mnt/etc/config.scm and rebuilds /mnt with the qubes channel: the
 first time it builds a Guix, which takes a while. Watch VT3 for 'Done', then
@@ -321,7 +335,7 @@ reboot (Ctrl+Alt+F1 back to the installer, or 'reboot' on VT3).
 EOF
     else
         cat <<EOF
-Typed into $name's console (VT3): clone branch $branch into $d.
+$typed into $name's console (VT3): clone branch $branch into $d.
 Review it there, then run:
   $cmd
 When it says Done, reboot.
@@ -499,7 +513,7 @@ cat <<EOF
 $(vt_key ctrl+alt+F1)
 
 4. Unattended: at the installer's first screen, in dom0:
-     $prog --install$( [ "$template" = 1 ] && echo ' --template')$( [ "$branch" != main ] && echo " -b $branch") $name
+     $prog --unattended$( [ "$template" = 1 ] && echo ' --template')$( [ "$branch" != main ] && echo " -b $branch") $name
    (skip steps 2 and 3: it sets the network itself). It asks for a password,
    then types the rest: partition, config.scm (Xfce, user 'user'), the
    qubes channel, guix system init, power off; then starts $name again.

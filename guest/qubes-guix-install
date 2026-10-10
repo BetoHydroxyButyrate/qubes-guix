@@ -26,7 +26,7 @@
 #   --force             DISK already has partitions: wipe it anyway
 #   --poweroff          power off when done (dom0 then starts it from disk)
 #
-# qubes-guix-create --install (dom0) types the network setup and this
+# qubes-guix-create --unattended (dom0) types the network setup and this
 # command into VT3.
 
 set -eu

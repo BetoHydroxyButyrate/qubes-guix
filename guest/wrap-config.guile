@@ -10,6 +10,9 @@
 ;;; #:channel-branch "B": the branch of the system-wide qubes channel.
 ;;; With QUBES_PACKAGES="git emacs", it gets #:extra-packages '("git" "emacs")
 ;;; (also added to an existing wrap that has none).
+;;; With QUBES_GUIX_COMMIT=C, #:guix-commit "C" (likewise): the commit the
+;;; system's channels pin Guix at. An existing #:guix-commit is left alone;
+;;; qubes-guix-update --guix-commit changes it.
 ;;;
 ;;; The edit is textual (the file is never re-printed), so comments and
 ;;; layout survive. Exit status: 0 wrapped, 3 already a qube, 1 error.
@@ -66,10 +69,16 @@
     (if p (filter (lambda (x) (not (string-null? x))) (string-split p #\space)) '())))
 (define packages-keyword
   (format #f "\n #:extra-packages '~s" packages))
+(define guix-commit                     ; QUBES_GUIX_COMMIT=<hash>
+  (let ((c (getenv "QUBES_GUIX_COMMIT")))
+    (and c (not (string-null? c)) c)))
+(define guix-commit-keyword
+  (format #f "\n #:guix-commit ~s" guix-commit))
 (define new-keywords
   ;; Appended inside a new (qubes-operating-system ...) wrap.
   (string-append (if template? "\n #:template? #t" "")
                  (if branch (format #f "\n #:channel-branch ~s" branch) "")
+                 (if guix-commit guix-commit-keyword "")
                  (if (null? packages) "" packages-keyword)))
 (define last-form (car (last forms+ends)))
 (define last-end  (cdr (last forms+ends)))
@@ -88,6 +97,8 @@
             (string-append
              (if (and template? (not (memq #:template? rest)))
                  "\n #:template? #t" "")
+             (if (and guix-commit (not (memq #:guix-commit rest)))
+                 guix-commit-keyword "")
              (if (and (pair? packages) (not (memq #:extra-packages rest)))
                  packages-keyword ""))))
        (when (string-null? additions) (next))

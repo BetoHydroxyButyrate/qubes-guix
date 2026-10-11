@@ -661,36 +661,9 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
 
 ;; `qubes-guix-update`: guix pull, then optionally reconfigure, through the
 ;; Qubes updates proxy when dom0 enabled updates-proxy-setup for this qube
-;; (templates). guix-daemon is pointed at the proxy by qubes-updates-proxy,
-;; but `guix pull` fetches the channels with libgit2 in the caller's own
-;; process, which only follows http_proxy/https_proxy.
-(define (qubes-guix-update-script config)
-  (mixed-text-file "qubes-guix-update" "#!" (file-append bash-minimal "/bin/sh") "
-# qubes-guix-update [-r|--reconfigure] [GUIX-PULL-ARGS...]
-#   guix pull, through the Qubes updates proxy when this qube has one (a
-#   template with updates-proxy-setup); with -r, then also
-#   sudo guix system reconfigure ${QUBES_GUIX_CONFIG:-/etc/config.scm}
-set -eu
-reconfigure=0
-case ${1:-} in
-    -r|--reconfigure) reconfigure=1; shift;;
-    -h|--help) sed -n '2,5p' \"$0\"; exit 0;;
-esac
-pguix pull \"$@\"
-if [ \"$reconfigure\" = 1 ]; then
-    guix=$HOME/.config/guix/current/bin/guix
-    [ -x \"$guix\" ] || guix=guix
-    # Builds and substitutes go through guix-daemon, which has the proxy.
-    # But (qubes system) builds the system's own guix from the channels
-    # (guix-for-channels), which makes root fetch them into its own cache:
-    # in a template, through the proxy, which sudo would otherwise drop.
-    set --
-    if [ \"$(" (qubesdb-read-path config) " /qubes-service/updates-proxy-setup 2>/dev/null)\" = 1 ]; then
-        set -- http_proxy=http://127.0.0.1:8082 https_proxy=http://127.0.0.1:8082
-    fi
-    sudo env \"$@\" \"$guix\" system reconfigure \"${QUBES_GUIX_CONFIG:-/etc/config.scm}\"
-fi
-"))
+;; (templates); also moves the Guix lock (#:guix-commit). The script is
+;; qubes/aux-files/qubes-guix-update.sh; it uses guest/wrap-config.guile to
+;; add #:guix-commit to a configuration that has none.
 
 ;; `pguix`: guix, through the Qubes updates proxy when this qube has one.
 ;; Only the commands that fetch in the caller's own process need it: pull
@@ -722,10 +695,20 @@ exec guix \"$@\"
            #:builder
            #~(begin
                (use-modules (guix build utils))
-               (let ((bin (string-append #$output "/bin")))
+               (let* ((bin   (string-append #$output "/bin"))
+                      (share (string-append #$output "/share/qubes-guix"))
+                      (wrap  (string-append share "/wrap-config.guile"))
+                      (update (string-append bin "/qubes-guix-update")))
                  (mkdir-p bin)
-                 (copy-file #$(qubes-guix-update-script config)
-                            (string-append bin "/qubes-guix-update"))
+                 (mkdir-p share)
+                 (copy-file #$(local-file "../../guest/wrap-config.guile")
+                            wrap)
+                 (copy-file #$(local-file "../aux-files/qubes-guix-update.sh")
+                            update)
+                 (substitute* update
+                   (("@SH@") #$(file-append bash-minimal "/bin/sh"))
+                   (("@QUBESDB_READ@") #$(qubesdb-read-path config))
+                   (("@WRAP_CONFIG@") wrap))
                  (copy-file #$(pguix-script config)
                             (string-append bin "/pguix"))
                  (for-each (lambda (f) (chmod (string-append bin "/" f) #o555))

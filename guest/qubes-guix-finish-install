@@ -13,9 +13,11 @@
 #
 # --template: the qube is a TemplateVM (qubes-guix-create --template).
 # -b BRANCH:  the channel branch to build from and to record (default main).
-# --guix-commit C: build with Guix at commit C; "installer" (default) is the
-#             installer's own commit (substitutes for nearly everything),
-#             "latest" the current master.
+# --build-commit C: build with Guix at commit C; "installer" (default) is
+#             the installer's own commit (substitutes for nearly everything),
+#             "latest" the current master. Only for this build.
+# --guix-commit C: lock the installed system's Guix at C (#:guix-commit:
+#             its /etc/guix/channels.scm pins C). Default: follow the head.
 # --packages: extra packages, as #:extra-packages (missing ones are skipped).
 # TARGET:     where the new system is mounted (default /mnt).
 #
@@ -28,7 +30,7 @@ prog=${0##*/}
 here=$(cd "$(dirname "$0")" && pwd)
 template=0
 branch=main
-guix_commit=installer
+build_commit=installer
 target=/mnt
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -39,7 +41,9 @@ while [ $# -gt 0 ]; do
         --template) template=1; shift;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
         --packages) [ $# -ge 2 ] || die "$1 needs a value"; QUBES_PACKAGES=$2; export QUBES_PACKAGES; shift 2;;
-        --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
+        --build-commit) [ $# -ge 2 ] || die "$1 needs a value"; build_commit=$2; shift 2;;
+        --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"
+                       QUBES_GUIX_COMMIT=$2; export QUBES_GUIX_COMMIT; shift 2;;
         -*) die "unknown option $1";;
         *) target=$1; shift;;
     esac
@@ -95,21 +99,21 @@ sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$cha
 # itself, come as substitutes rather than local builds. Only the qubes
 # channel's packages are built here. (/etc/guix/channels.scm, what later
 # pulls follow, stays unpinned.)
-case $guix_commit in
-    installer) guix_commit=$(guix describe 2>/dev/null | sed -n 's/^ *commit: //p' | head -n1);;
-    latest) guix_commit=;;
+case $build_commit in
+    installer) build_commit=$(guix describe 2>/dev/null | sed -n 's/^ *commit: //p' | head -n1);;
+    latest) build_commit=;;
 esac
-if [ -n "$guix_commit" ]; then
-    case $guix_commit in
-        *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash";;
+if [ -n "$build_commit" ]; then
+    case $build_commit in
+        *[!0-9a-f]*) die "--build-commit: '$build_commit' isn't a commit hash";;
     esac
-    say "Building with Guix at commit $guix_commit"
+    say "Building with Guix at commit $build_commit"
     sed "s/^       %default-channels)\$/       (map (lambda (c)\\
               (if (eq? (channel-name c) 'guix)\\
-                  (channel (inherit c) (commit \"$guix_commit\"))\\
+                  (channel (inherit c) (commit \"$build_commit\"))\\
                   c))\\
             %default-channels))/" "$channels" > "$channels.pinned"
-    grep -q "$guix_commit" "$channels.pinned" || die "couldn't pin Guix in $channels"
+    grep -q "$build_commit" "$channels.pinned" || die "couldn't pin Guix in $channels"
     mv "$channels.pinned" "$channels"
 else
     say "Building with the latest Guix (unpinned): slow, it builds Guix itself"

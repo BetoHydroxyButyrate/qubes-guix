@@ -319,22 +319,29 @@ Keep the template's netvm until the updates proxy works. dom0 normally enables `
 ## Updating
 
 There are two cases:
-- **Updating the system:** run `qubes-guix-update -r`. It runs `guix pull`, then `sudo guix system reconfigure /etc/config.scm` with the Guix just pulled. In a template with `updates-proxy-setup`, it pulls through the Qubes updates proxy, so the template needs no netvm. Without `-r` it only pulls. Other arguments go to `guix pull`, and `QUBES_GUIX_CONFIG` names another config file. Elsewhere it's the same as `guix pull` followed by `sudo guix system reconfigure /etc/config.scm`.
+- **Updating the system:** run `qubes-guix-update -r`. It runs `guix pull`, then `sudo guix system reconfigure /etc/config.scm` with the Guix just pulled. In a template with `updates-proxy-setup`, it pulls through the Qubes updates proxy, so the template needs no netvm. Without `-r` it only pulls. Other arguments go to `guix pull`, and `QUBES_GUIX_CONFIG` names another config file. `--guix-commit C` and `--head` move the Guix lock (below). Elsewhere it's the same as `guix pull` followed by `sudo guix system reconfigure /etc/config.scm`.
 - **Working on the channel itself:** use `sudo guix system reconfigure -L /path/to/checkout /etc/config.scm`. `-L` puts the checkout ahead of the pulled channel, so you can test before committing.
 
-### Pinning Guix (or: why reconfigure rebuilds everything)
+### Following the head, or locking Guix at a commit
 
-There are no substitutes for this channel's packages, so they're built from source on your machine. They are built against whatever Guix provides (gcc, glibc, python, Xorg…). Each `guix pull` that moves the Guix channel changes those inputs, and the next reconfigure rebuilds every Qubes package, which takes a long time.
+There are no substitutes for this channel's packages, so they're built from source on your machine. They are built against whatever Guix provides (gcc, glibc, python, Xorg…). Each pull that moves the Guix channel changes those inputs, and the next reconfigure rebuilds every Qubes package, which takes a long time.
 
-Pinning the Guix channel to a commit keeps those inputs fixed. A reconfigure then only rebuilds when this channel itself changes. The cost is that you get Guix updates (including security fixes) only when you move the pin, so do that deliberately and often enough.
+So a qube, typically a template, does one of two things:
+- **Follows the head** (the default): every `qubes-guix-update -r` pulls current Guix master and rebuilds. You get fixes as they land, and occasionally breakage.
+- **Is locked at a commit:** `#:guix-commit "C"` on its `qubes-operating-system` form pins Guix at C in `/etc/guix/channels.scm`. Every `guix pull` and `qubes-guix-update` stays there, so reconfigures only rebuild when this channel changes. Choosing C, and testing it, is up to whoever builds the template. A commit you've already run, from `guix describe`, is a good start.
 
-The easy way is to record what you have now and pin everything except this channel:
+Moving between them:
 
 ```
-guix describe -f channels > ~/.config/guix/channels.scm
+qubes-guix-update --guix-commit C   # lock at C (or move the lock): edits config.scm, pulls C, reconfigures
+qubes-guix-update --head            # unlock: back to following the head
 ```
 
-Then delete the `(commit "…")` line from the `qubes` channel entry, so that one keeps following `main`. Keep the `(commit …)` lines for `guix` (and `nonguix`, if you use it). To move the pin later, edit the commit, or rerun the command above after an unpinned `guix pull`.
+`qubes-guix-create --unattended --guix-commit C` records the lock at install time. The install itself always builds with the installer's own Guix, which is fast because nearly everything comes from substitutes. Then `--unattended` starts the qube and runs `qubes-guix-update -r` once, which takes it to the head or to C. A template is then shut down, ready. `--no-update` skips that step.
+
+The qubes channel itself isn't locked: it follows its branch. For a one-off build at another commit, without moving the lock, there's `guix time-machine --commit=C -- …`.
+
+**AppVMs follow their template, with nothing to configure.** An AppVM's root, including `/gnu/store` and `/var/guix`, comes from the template at every boot. Its `guix` is either the template's system Guix, or the template user's pulled Guix, through `~/.config/guix/current`, a link into `/var/guix`. So an updated template means an updated Guix in the AppVM at its next boot. `guix pull` in an AppVM gives a newer one until shutdown, like `apt` in a Debian AppVM.
 
 ### Firefox ESR (nonguix)
 

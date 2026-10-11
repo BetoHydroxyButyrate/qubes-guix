@@ -28,6 +28,10 @@
 ;;;   service installs as /etc/guix/channels.scm. 'guix pull' uses that file
 ;;;   when a user has no ~/.config/guix/channels.scm, so every user's first
 ;;;   pull already includes this channel.
+;;; - #:guix-commit "C": /etc/guix/channels.scm pins the guix channel at
+;;;   commit C, so every 'guix pull' (and qubes-guix-update) stays there:
+;;;   the template is "locked". #f (the default) follows the branch head.
+;;;   Move it with 'qubes-guix-update --guix-commit C' (or --head).
 ;;; - unless #:system-guix? is #f (and with system channels): the system's
 ;;;   own guix is built from the channels of the Guix doing the build, so it
 ;;;   includes qubes: 'guix describe' shows it from the first boot.
@@ -122,13 +126,28 @@ Guix runs visudo on the result, so a syntax error fails the build."
      (openpgp-fingerprint                ; the signing subkey
       "1607 721B 3110 F370 9497  F436 B548 D5A5 665F D366")))))
 
-(define (with-qubes-channel config branch)
+(define (pin-guix chans pin)
+  "CHANS with the guix channel at commit PIN (a string), or as they are if
+PIN is #f.  (Not named 'commit': inside (channel (inherit ...)) the field
+binding would shadow it.)"
+  (if pin
+      (map (lambda (c)
+             (if (eq? (channel-name c) 'guix)
+                 (channel (inherit c) (commit pin))
+                 c))
+           chans)
+      chans))
+
+(define* (with-qubes-channel config branch #:optional guix-commit)
   "CONFIG, a guix-configuration, with the qubes channel added to the
-system-wide channels (unless it already has one named qubes)."
+system-wide channels (unless it already has one named qubes), and the guix
+channel pinned at GUIX-COMMIT if that's a string."
   (let* ((old (or (guix-configuration-channels config) %default-channels))
-         (new (if (any (lambda (c) (eq? (channel-name c) 'qubes)) old)
-                  old
-                  (append old (list (qubes-channel branch))))))
+         (new (pin-guix
+               (if (any (lambda (c) (eq? (channel-name c) 'qubes)) old)
+                   old
+                   (append old (list (qubes-channel branch))))
+               guix-commit)))
     (guix-configuration
      (inherit config)
      (channels new))))
@@ -206,6 +225,7 @@ system-wide channels (unless it already has one named qubes)."
                                  (system-channels? #t)
                                  (system-guix? #t)
                                  (channel-branch "main")
+                                 (guix-commit #f)
                                  (template? #f)
                                  (extra-packages '()))
   "Return OS, with the Qubes guest agents added and CONFIG for them.
@@ -255,7 +275,8 @@ with a warning."
                                    (service guix-service-type
                                             (let ((c (with-qubes-channel
                                                       (service-value s)
-                                                      channel-branch)))
+                                                      channel-branch
+                                                      guix-commit)))
                                               (if system-guix?
                                                   (with-system-guix c)
                                                   c)))

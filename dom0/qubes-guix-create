@@ -32,6 +32,8 @@ no_password=0
 locale=en_US.utf8
 wait_start=1
 packages_file=
+guix_commit=
+first_update=1
 run_now=0
 branch=main
 repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
@@ -46,7 +48,7 @@ Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
                               [--run] NAME
        $prog --unattended [--template] [--branch B] [--no-password]
                           [--force] [--locale L] [--packages FILE]
-                          [--no-wait] NAME
+                          [--guix-commit C] [--no-update] [--no-wait] NAME
 
 Create the StandaloneVM HVM qube NAME and boot it from the Guix System
 installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
@@ -96,6 +98,15 @@ Options:
                         already has partitions. --locale: default en_US.utf8
                         A template is left without a netvm afterwards: it
                         updates through the Qubes updates proxy.
+      --guix-commit C   with --unattended: lock the qube's Guix at commit C
+                        (#:guix-commit in its config.scm; move it later with
+                        qubes-guix-update --guix-commit C, or --head).
+                        Default: follow the head.
+      --no-update       with --unattended: skip the first update. Normally,
+                        once installed (built with the installer's own Guix,
+                        for speed), NAME is started and 'qubes-guix-update
+                        -r' run in it: to the head, or to the --guix-commit
+                        lock. A template is then shut down, ready.
       --packages FILE   with --unattended, --finish-install, --bootstrap:
                         extra packages for config.scm (#:extra-packages),
                         one or more per line, # starts a comment (default:
@@ -143,6 +154,8 @@ while [ $# -gt 0 ]; do
         --locale)   [ $# -ge 2 ] || die "$1 needs a value"; locale=$2; shift 2;;
         --no-wait)  wait_start=0; shift;;
         --packages) [ $# -ge 2 ] || die "$1 needs a value"; packages_file=$2; shift 2;;
+        --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
+        --no-update) first_update=0; shift;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
         --dry-run)  dry_run=1; shift;;
         -h|--help)  usage; exit 0;;
@@ -331,6 +344,14 @@ if [ "$install" = 1 ]; then
     [ "$force" = 1 ] && cmd="$cmd --force"
     [ -n "$hash" ] && cmd="$cmd --password-hash '$hash'"
     [ -n "$packages" ] && cmd="$cmd --packages '$packages'"
+    if [ -n "$guix_commit" ]; then
+        case $guix_commit in
+            *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash";;
+        esac
+        cmd="$cmd --guix-commit $guix_commit"
+    fi
+    t0=$(date +%s)
+    elapsed() { local s=$(( $(date +%s) - t0 )); printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60)); }
     type_into "$name" "set +H
 $(net_cmds)
 rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $cmd"
@@ -341,7 +362,7 @@ It partitions /dev/xvda, builds a Guix with the qubes channel and the system
 (an hour or more), then powers $name off. Watch VT3 for errors.
 EOF
     if [ "$dry_run" = 1 ]; then
-        echo "(dry run: would then wait for $name to power off$( [ "$template" = 1 ] && echo ", remove its netvm") and run: qvm-start $name)"
+        echo "(dry run: would then wait for $name to power off$( [ "$template" = 1 ] && echo ", remove its netvm"), qvm-start $name$( [ "$first_update" = 1 ] && echo ", run qubes-guix-update -r in it$( [ "$template" = 1 ] && echo ' and shut it down')"))"
     elif [ "$wait_start" = 1 ]; then
         echo "Waiting for $name to power off, to start it from its disk (Ctrl+C: stop"
         echo "waiting; then start it yourself with: qvm-start $name)."
@@ -354,8 +375,28 @@ EOF
             qvm-prefs "$name" netvm ''
         fi
         echo "Starting $name."
+        echo "Installed in $(elapsed)."
         qvm-start "$name"
-        echo "Started. Check from dom0:  qvm-run -u root --pass-io $name 'herd status qrexec-agent'"
+        if [ "$first_update" = 1 ]; then
+            # The install built with the installer's Guix (fast: substitutes).
+            # Now bring the system to the Guix it follows: the head, or the
+            # --guix-commit lock recorded in its config.scm.
+            echo "Updating $name: qubes-guix-update -r (pull to $( [ -n "$guix_commit" ] && echo "commit $guix_commit" || echo 'the head'), then reconfigure)."
+            echo "This is long: it builds the Qubes packages against that Guix. Output follows."
+            if qvm-run -q -u user --pass-io --no-gui "$name" 'qubes-guix-update -r'; then
+                echo "Updated in $(elapsed) in all."
+                if [ "$template" = 1 ]; then
+                    qvm-shutdown --wait "$name"
+                    echo "$name is ready: shut down, updated. Base AppVMs on it."
+                fi
+            else
+                echo "$prog: the update in $name failed; it's running, at the installer's Guix." >&2
+                echo "Look at the output above; rerun it in $name with:  qubes-guix-update -r" >&2
+                exit 1
+            fi
+        else
+            echo "Started. Check from dom0:  qvm-run -u root --pass-io $name 'herd status qrexec-agent'"
+        fi
     else
         echo "When it's off:  qvm-start $name"
     fi

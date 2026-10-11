@@ -32,9 +32,11 @@ proxy=0
 if [ "$proxy" = 1 ]; then
     # Right after boot (e.g. qubes-guix-create --unattended's first update)
     # the proxy may still be starting: give it a minute.
+    # Look for the listening socket (127.0.0.1:8082 = 0100007F:1F92, state
+    # 0A = LISTEN) rather than connecting: bash-minimal has no /dev/tcp, and
+    # each connection would start a qubes.UpdatesProxy call.
     i=0
-    # shellcheck disable=SC3025  # bash (bash-minimal) runs this
-    while ! (exec 3<>/dev/tcp/127.0.0.1/8082) 2>/dev/null; do
+    while ! grep -q ' 0100007F:1F92 00000000:0000 0A ' /proc/net/tcp; do
         i=$((i + 1))
         [ "$i" -lt 60 ] || die "the Qubes updates proxy (127.0.0.1:8082) isn't
 listening; see: sudo herd status qubes-updates-proxy"

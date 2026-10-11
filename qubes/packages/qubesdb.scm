@@ -40,9 +40,13 @@
 	 (add-before 'build 'set-pythonpath
 		     (lambda* (#:key inputs outputs #:allow-other-keys)
 			      (let ((out (assoc-ref outputs "out")))
+				;; setuptools' site-packages, whatever the Python version
+				;; (3.11 in Guix 1.5.0, 3.12 later).
 				(setenv "GUIX_PYTHONPATH"
-					(string-append (search-input-directory
-							inputs "lib/python3.12/site-packages")
+					(string-append (car (find-files
+							     (assoc-ref inputs "python-setuptools")
+							     "^site-packages$"
+							     #:directories? #t))
 						       ":"
 						       (or (getenv "GUIX_PYTHONPATH") "")))
 				;; Python extension links libqubesdb from ../client (build tree);
@@ -82,8 +86,8 @@
 	 (add-after 'install 'fix-extension-rpath
 		    (lambda* (#:key outputs #:allow-other-keys)
 			     (let* ((out (assoc-ref outputs "out"))
-				    (so (string-append out "/lib/python3.12/site-packages/"
-						       "qubesdb.cpython-312-x86_64-linux-gnu.so")))
+				    ;; qubesdb.cpython-3NN-...so, whatever the version.
+				    (so (car (find-files out "^qubesdb\\.cpython-.*\\.so$"))))
 			       (invoke "patchelf" "--add-rpath"
 				       (string-append out "/lib")
 				       so))))

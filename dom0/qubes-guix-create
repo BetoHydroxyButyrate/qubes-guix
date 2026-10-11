@@ -376,6 +376,12 @@ EOF
         fi
         echo "Starting $name."
         echo "Installed in $(elapsed)."
+        # dom0 only starts a qube's qrexec daemon, and qvm-start only waits
+        # for it, if the qube has the qrexec feature. A new qube doesn't: the
+        # agent asks for it on its first boot, too late for this start. The
+        # installed system has the agent, so set it now (setting it before
+        # the install would make qvm-start wait for, and kill, the installer).
+        qvm-features "$name" qrexec 1
         qvm-start "$name"
         if [ "$first_update" = 1 ]; then
             # The install built with the installer's Guix (fast: substitutes).

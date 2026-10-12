@@ -1,0 +1,199 @@
+;;; guest/wrap-config.guile — wrap the last form of a Guix system configuration
+;;; in (qubes-operating-system ...). Run by qubes-guix-setup through
+;;; `guix repl`; plain Guile works too.
+;;;
+;;;   QUBES_IN=/etc/config.scm QUBES_OUT=/tmp/new.scm guix repl -- wrap-config.guile
+;;;
+;;; With QUBES_TEMPLATE=1 the wrap gets #:template? #t (a Qubes TemplateVM);
+;;; an existing (qubes-operating-system ...) without it gets it added.
+;;; With QUBES_BRANCH=B (other than main), a new wrap gets
+;;; #:channel-branch "B": the branch of the system-wide qubes channel.
+;;; With QUBES_PACKAGES="git emacs", it gets #:extra-packages '("git" "emacs")
+;;; (also added to an existing wrap that has none).
+;;; With QUBES_GUIX_COMMIT=C, #:guix-commit "C" (likewise): the commit the
+;;; system's channels pin Guix at. An existing #:guix-commit is left alone;
+;;; qubes-guix-update --guix-commit changes it.
+;;; With QUBES_CHANNELS_FILE=F, a file of (channel ...) forms, #:extra-channels
+;;; (list <F's text>) (likewise; an existing one is left alone).
+;;;
+;;; The edit is textual (the file is never re-printed), so comments and
+;;; layout survive. Exit status: 0 wrapped, 3 already a qube, 1 error.
+;;;
+;;; Not named .scm on purpose: Guix compiles (and first loads) every .scm in
+;;; a channel, and loading this script would exit and fail guix pull.
+
+(use-modules (ice-9 textual-ports)
+             (ice-9 match)
+             (srfi srfi-1))
+
+;; Register #~ #$ reader syntax when Guix is around, so configs that use
+;; gexps can be read.
+(false-if-exception (resolve-module '(guix gexp)))
+
+(define (fail fmt . args)
+  (apply format (current-error-port) (string-append "wrap-config: " fmt "~%")
+         args)
+  (exit 1))
+
+(define in  (or (getenv "QUBES_IN")  (fail "QUBES_IN not set")))
+(define out (or (getenv "QUBES_OUT") (fail "QUBES_OUT not set")))
+
+(define text (call-with-input-file in get-string-all))
+
+;; Read every top-level form, remembering where each ends.
+(define forms+ends
+  (call-with-input-string text
+    (lambda (port)
+      (let loop ((acc '()))
+        (let ((form (catch #t
+                      (lambda () (read port))
+                      (lambda (key . args)
+                        (fail "~a doesn't read as Scheme: ~a ~s" in key args)))))
+          (if (eof-object? form)
+              (reverse acc)
+              (loop (cons (cons form (ftell port)) acc))))))))
+
+(when (null? forms+ends)
+  (fail "~a is empty" in))
+
+(define (mentions? symbols tree)
+  (let walk ((x tree))
+    (cond ((pair? x) (or (walk (car x)) (walk (cdr x))))
+          ((vector? x) (walk (vector->list x)))
+          (else (memq x symbols)))))
+
+(define template? (equal? (getenv "QUBES_TEMPLATE") "1"))
+(define branch
+  (let ((b (getenv "QUBES_BRANCH")))
+    (and b (not (string-null? b)) (not (string=? b "main")) b)))
+(define packages                        ; QUBES_PACKAGES="git emacs"
+  (let ((p (getenv "QUBES_PACKAGES")))
+    (if p (filter (lambda (x) (not (string-null? x))) (string-split p #\space)) '())))
+(define packages-keyword
+  (format #f "\n #:extra-packages '~s" packages))
+(define guix-commit                     ; QUBES_GUIX_COMMIT=<hash>
+  (let ((c (getenv "QUBES_GUIX_COMMIT")))
+    (and c (not (string-null? c)) c)))
+(define guix-commit-keyword
+  (format #f "\n #:guix-commit ~s" guix-commit))
+(define channels-text                   ; QUBES_CHANNELS_FILE=extra.scm
+  ;; The file's text, kept as written (comments too), after checking that
+  ;; its forms are all (channel ...).
+  (let ((file (getenv "QUBES_CHANNELS_FILE")))
+    (and file (not (string-null? file))
+         (let ((text (call-with-input-file file get-string-all)))
+           (call-with-input-string text
+             (lambda (port)
+               (let loop ((n 0))
+                 (let ((form (read port)))
+                   (cond ((eof-object? form)
+                          (if (zero? n) #f text))
+                         ((and (pair? form) (eq? (car form) 'channel))
+                          (loop (+ n 1)))
+                         (else
+                          (fail "~a: expected only (channel ...) forms, found ~s"
+                                file form)))))))))))
+(define channels-keyword
+  (and channels-text
+       ;; The ")" on a line of its own: the file may end with a comment.
+       (string-append "\n #:extra-channels\n (list\n"
+                      (string-trim-right channels-text)
+                      "\n )")))
+(define new-keywords
+  ;; Appended inside a new (qubes-operating-system ...) wrap.
+  (string-append (if template? "\n #:template? #t" "")
+                 (if branch (format #f "\n #:channel-branch ~s" branch) "")
+                 (if guix-commit guix-commit-keyword "")
+                 (or channels-keyword "")
+                 (if (null? packages) "" packages-keyword)))
+(define last-form (car (last forms+ends)))
+(define last-end  (cdr (last forms+ends)))
+(define prev-end
+  (match (reverse forms+ends)
+    ((_ (_ . end) . _) end)
+    (_ 0)))
+
+;; Start of the last form: skip whitespace and ; comments after the
+;; previous form.
+(define last-start
+  (let loop ((i prev-end))
+    (cond ((>= i last-end) (fail "can't locate the last form in ~a" in))
+          ((char-whitespace? (string-ref text i)) (loop (+ i 1)))
+          ((char=? (string-ref text i) #\;)
+           (let ((nl (string-index text #\newline i)))
+             (loop (if nl (+ nl 1) last-end))))
+          ((char=? (string-ref text i) #\() i)
+          (else (fail "unexpected text before the last form of ~a" in)))))
+
+;; The (channel ...) forms of #:extra-channels need (guix channels).
+(define channels-modules
+  ";; For the (channel ...) forms of #:extra-channels.
+(use-modules (guix channels))
+
+")
+
+(when (any (lambda (f) (mentions? '(qubes-operating-system
+                                    qubes-guest-service-type)
+                                  (car f)))
+           forms+ends)
+  (match last-form
+    ;; Already wrapped: add what was asked for and isn't there yet
+    ;; (#:template? #t, #:extra-packages) just inside the wrap's closing
+    ;; paren. An existing #:extra-packages list is left as it is: edit it.
+    (('qubes-operating-system . rest)
+     (=> next)
+     (let ((additions
+            (string-append
+             (if (and template? (not (memq #:template? rest)))
+                 "\n #:template? #t" "")
+             (if (and guix-commit (not (memq #:guix-commit rest)))
+                 guix-commit-keyword "")
+             (if (and channels-keyword (not (memq #:extra-channels rest)))
+                 channels-keyword "")
+             (if (and (pair? packages) (not (memq #:extra-packages rest)))
+                 packages-keyword ""))))
+       (when (string-null? additions) (next))
+       (call-with-output-file out
+         (lambda (port)
+           (if (and channels-keyword (not (memq #:extra-channels rest)))
+               (begin
+                 (put-string port (substring text 0 last-start))
+                 (put-string port channels-modules)
+                 (put-string port (substring text last-start (- last-end 1))))
+               (put-string port (substring text 0 (- last-end 1))))
+           (put-string port additions)
+           (put-string port ")")
+           (put-string port (substring text last-end))
+           (unless (string-suffix? "\n" text) (newline port))))
+       (format #t "Added~a to ~a -> ~a~%"
+               (string-map (lambda (c) (if (char=? c #\newline) #\space c))
+                           additions)
+               in out)
+       (exit 0)))
+    (_
+     (when (and template? (not (mentions? '(#:template?) last-form)))
+       (fail "~a already uses the Qubes service, but not as a template;
+add #:template? #t to its (qubes-operating-system ...) form by hand" in))
+     (format #t "~a already uses the Qubes service; nothing to do.~%" in)
+     (exit 3))))
+(match last-form
+  (('operating-system . _) #t)
+  (_ (fail "the last form of ~a is not (operating-system ...); wrap it by hand:
+  (qubes-operating-system <your operating-system>)" in)))
+
+(call-with-output-file out
+  (lambda (port)
+    (put-string port (substring text 0 last-start))
+    (put-string port (string-append ";; Added by qubes-guix-setup: make this system a Qubes qube.
+;; See https://github.com/BetoHydroxyButyrate/qubes-guix (qubes/system.scm).
+(use-modules (qubes system)" (if channels-keyword " (guix channels)" "") ")
+
+(qubes-operating-system
+"))
+    (put-string port (substring text last-start last-end))
+    (put-string port new-keywords)
+    (put-string port ")")
+    (put-string port (substring text last-end))
+    (unless (string-suffix? "\n" text) (newline port))))
+
+(format #t "Wrapped ~a -> ~a~%" in out)

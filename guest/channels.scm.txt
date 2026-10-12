@@ -1,0 +1,12 @@
+;; ~/.config/guix/channels.scm with the qubes channel, as installed by
+;; qubes-guix-setup. Commits are signed; guix pull verifies them.
+(cons* (channel
+        (name 'qubes)
+        (url "https://github.com/BetoHydroxyButyrate/qubes-guix")
+        (branch "main")
+        (introduction
+         (make-channel-introduction
+          "c64335f79ddd03d2aad0d6c7fef8543813d7fcdc"
+          (openpgp-fingerprint            ; the signing SUBKEY (see .guix-authorizations)
+           "9765 1FBD E504 F2D1 3DA9  88EB C0E8 4747 0C0B 2F22"))))
+       %default-channels)

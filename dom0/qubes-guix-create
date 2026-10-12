@@ -1,0 +1,706 @@
+#!/bin/bash
+# qubes-guix-create — run in dom0. Creates a Guix System qube and boots it
+# from the Guix installer ISO.
+#
+#   qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+#
+# Part of the qubes-guix channel: https://github.com/BetoHydroxyButyrate/qubes-guix
+
+set -euo pipefail
+
+prog=${0##*/}
+
+# Defaults. MEMORY is what the qube gets for the whole install: there is no
+# memory balancing until the Qubes agent runs, and `guix system init`
+# needs more than a desktop does.
+# MAXMEM defaults to MEMORY, i.e. no memory balancing. An HVM with
+# MAXMEM > MEMORY boots in Xen populate-on-demand mode, which is slow:
+# measured 24 s with 8000/8000 against 83 s with 8000/32542.
+vcpus=2
+memory=4000
+maxmem=
+label=purple
+root_size=60g
+netvm=
+template=0
+type_network=0
+bootstrap=0
+finish_install=0
+install=0
+force=0
+no_password=0
+locale=en_US.utf8
+wait_start=1
+packages_file=
+channels_file=
+guix_commit=
+first_update=1
+run_now=0
+branch=main
+repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
+dry_run=0
+
+usage() {
+    cat <<EOF
+Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+       $prog --type-network NAME
+       $prog --bootstrap [--template] [--branch B] [--packages FILE] NAME
+       $prog --finish-install [--template] [--branch B] [--packages FILE]
+                              [--run] NAME
+       $prog --unattended [--template] [--branch B] [--no-password]
+                          [--force] [--locale L] [--packages FILE]
+                          [--guix-commit C] [--no-update] [--no-wait] NAME
+
+Create the StandaloneVM HVM qube NAME and boot it from the Guix System
+installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
+
+  VCPUS    virtual CPUs                         (default $vcpus)
+  MEMORY   initial memory, MiB                  (default $memory)
+  MAXMEM   memory-balancing maximum, MiB        (default: = MEMORY)
+           MAXMEM > MEMORY turns memory balancing on, but slows every
+           boot (Xen populate-on-demand); keep the gap small.
+
+Options:
+  -l, --label COLOUR    window label            (default $label)
+  -s, --size SIZE       root volume size        (default $root_size)
+  -n, --netvm QUBE      network qube            (default: the system default)
+  -t, --template        make a TemplateVM (AppVMs can be based on it)
+                        instead of a StandaloneVM
+      --dry-run         print the dom0 commands, change nothing; with the
+                        typing modes below, print what would be typed
+      --type-network    for a running NAME without its Qubes agent (the
+                        installer, or the installed system before setup):
+                        click its console window, and this switches it to
+                        the root shell (Ctrl+Alt+F3) and types the network
+                        setup there, with NAME's address, gateway and DNS
+      --bootstrap       likewise, but types a script into /tmp on NAME and
+                        shows it without running it: network, then clone
+                        this repository and run its guest setup as the
+                        uid-1000 user (with --template: for a template)
+      --finish-install  at the installer's "Installation complete" screen,
+                        BEFORE rebooting: clones this repository into /root
+                        on the installer (VT3) and shows the command that
+                        makes the new system a qube before its first boot
+                        (guest/qubes-guix-finish-install). Needs the
+                        installer's network (--type-network) still up.
+      --run             with --finish-install: run that command too, rather
+                        than leaving it for you to review and type
+      --unattended      the whole install, unattended, instead of the
+                        installer's dialogs: run it at the installer's first
+                        screen (after the GRUB 'nomodeset' step). Asks here
+                        for a password for the user and root (stored as a
+                        hash; --no-password: none), then types into VT3 the
+                        network setup, a clone of this repository and
+                        guest/qubes-guix-install: partition /dev/xvda,
+                        write config.scm (Xfce; user 'user'; dom0's
+                        timezone), qubes-guix-finish-install, power off.
+                        Then waits for NAME to stop and starts it from its
+                        disk (--no-wait: don't). --force: wipe a disk that
+                        already has partitions. --locale: default en_US.utf8
+                        A template is left without a netvm afterwards: it
+                        updates through the Qubes updates proxy.
+      --guix-commit C   with --unattended: lock the qube's Guix at commit C
+                        (#:guix-commit in its config.scm; move it later with
+                        qubes-guix-update --guix-commit C, or --head).
+                        Default: follow the head.
+      --no-update       with --unattended: skip the first update. Normally,
+                        once installed (built with the installer's own Guix,
+                        for speed), NAME is started and 'qubes-guix-update
+                        -r' run in it: to the head, or to the --guix-commit
+                        lock. A template is then shut down, ready.
+      --channels FILE   with --unattended, --finish-install, --bootstrap:
+                        extra channels, FILE holding (channel ...) forms
+                        (default: qubes-guix-channels next to this
+                        script, if there). They go into config.scm as
+                        #:extra-channels; --unattended and --finish-install
+                        also build with them, so --packages can name their
+                        packages.
+      --packages FILE   with --unattended, --finish-install, --bootstrap:
+                        extra packages for config.scm (#:extra-packages),
+                        one or more per line, # starts a comment (default:
+                        qubes-guix-packages next to this script, if there;
+                        else just git). Names Guix doesn't have are skipped
+                        with a warning, not an error.
+  -b, --branch B        the qubes-guix branch that --bootstrap,
+                        --finish-install and --unattended clone and build
+                        from                               (default main)
+  -h, --help            this help
+
+Example:
+  $prog guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
+  $prog guix untrusted:/home/user/guix.iso 4 4000 16000
+EOF
+}
+
+die() { echo "$prog: $*" >&2; exit 1; }
+
+# Show, then run (unless --dry-run). Commands that change dom0 state go
+# through this; read-only checks don't.
+run() {
+    printf '+'; printf ' %q' "$@"; printf '\n'
+    if [ "$dry_run" = 0 ]; then "$@"; fi
+}
+
+is_uint() { case $1 in ''|*[!0-9]*) return 1;; esac; }
+
+# --- arguments ---------------------------------------------------------
+
+args=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        -l|--label) [ $# -ge 2 ] || die "$1 needs a value"; label=$2; shift 2;;
+        -s|--size)  [ $# -ge 2 ] || die "$1 needs a value"; root_size=$2; shift 2;;
+        -n|--netvm) [ $# -ge 2 ] || die "$1 needs a value"; netvm=$2; shift 2;;
+        -t|--template) template=1; shift;;
+        --type-network) type_network=1; shift;;
+        --bootstrap) bootstrap=1; shift;;
+        --finish-install) finish_install=1; shift;;
+        --run)      run_now=1; shift;;
+        --unattended|--install) install=1; shift;;
+        --force)    force=1; shift;;
+        --no-password) no_password=1; shift;;
+        --locale)   [ $# -ge 2 ] || die "$1 needs a value"; locale=$2; shift 2;;
+        --no-wait)  wait_start=0; shift;;
+        --packages) [ $# -ge 2 ] || die "$1 needs a value"; packages_file=$2; shift 2;;
+        --channels) [ $# -ge 2 ] || die "$1 needs a value"; channels_file=$2; shift 2;;
+        --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
+        --no-update) first_update=0; shift;;
+        -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
+        --dry-run)  dry_run=1; shift;;
+        -h|--help)  usage; exit 0;;
+        --)         shift; args+=("$@"); break;;
+        -*)         die "unknown option $1 (see --help)";;
+        *)          args+=("$1"); shift;;
+    esac
+done
+
+# --- typing into a qube's console (--type-network, --bootstrap,
+#     --finish-install) --------------------------------------------------
+
+# The network settings dom0 has for qube $1: sets ip, gw, dns.
+qube_net() {
+    ip=$(qvm-prefs "$1" ip 2>/dev/null) || ip=
+    [ -n "$ip" ] || die "$1 has no IP address (no netvm?)"
+    gw=$(qvm-prefs "$1" visible_gateway)
+    dns=$(qvm-prefs "$1" dns | xargs)
+    [ -n "$dns" ] || dns="10.139.1.1 10.139.1.2"
+}
+
+# Type TEXT into the root shell on VT3 of qube NAME's console window.
+# The VT switch is a synthetic event (--window): a real Ctrl+Alt+F3 would be
+# caught by dom0's own X server and switch dom0's console. The text is real
+# (XTEST) key presses to the focused window: synthetic ones lose Shift in the
+# Qubes GUI daemon ($ arrives as 4, | as \). Keep TEXT free of tabs (they'd
+# trigger completion) and of '!' (bash history expansion).
+type_into() {
+    local name=$1 text=$2 win
+    if [ "$dry_run" = 1 ]; then
+        echo "Dry run: would type into $name's console, after Ctrl+Alt+F3 and Enter:"
+        printf '%s\n' "$text" | sed 's/^/  | /'
+        return 0
+    fi
+    command -v xdotool >/dev/null 2>&1 || die "xdotool not found in dom0"
+    qvm-check -q --running "$name" 2>/dev/null || die "$name isn't running"
+    echo "Click $name's console window (the cursor is a cross); then hands off"
+    echo "keyboard and mouse until the typing stops."
+    win=$(xdotool selectwindow) || die "no window selected"
+    xdotool key --window "$win" ctrl+alt+F3
+    sleep 1
+    xdotool windowactivate --sync "$win"
+    # The installer's VT3 first says "[press ENTER to login]"; in a shell
+    # that's already open, an empty line does nothing.
+    xdotool key Return
+    sleep 1
+    # One line at a time, each ended by a Return key press: a newline inside
+    # 'xdotool type' doesn't reach the console as Enter.
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] && xdotool type --delay 12 -- "$line"
+        xdotool key Return
+        sleep 0.2
+    done <<< "$text"
+}
+
+# A TemplateVM gets the template setup whether or not --template was given:
+# forgetting it gives a template without /rw, /home or the updates proxy.
+detect_template() {
+    if [ "$(qvm-prefs "$1" klass 2>/dev/null)" = TemplateVM ] && [ "$template" = 0 ]; then
+        echo "$1 is a TemplateVM: setting it up as a template (--template)."
+        template=1
+    fi
+}
+
+# Extra packages, into $packages: from --packages FILE, or qubes-guix-packages
+# next to this script. Checked here: they're typed into a root shell.
+# Extra channels, into $channels_text: from --channels FILE, or
+# qubes-guix-channels next to this script. (channel ...) forms, typed into
+# the qube as a file, so: tabs become spaces (a tab would trigger completion),
+# and no line may be the here-document's end marker.
+read_channels() {
+    if [ -z "$channels_file" ] && [ -f "$(dirname "$0")/qubes-guix-channels" ]; then
+        channels_file=$(dirname "$0")/qubes-guix-channels
+    fi
+    channels_text=
+    if [ -n "$channels_file" ]; then
+        [ -r "$channels_file" ] || die "can't read $channels_file"
+        channels_text=$(expand "$channels_file")
+        if ! printf '%s\n' "$channels_text" | sed 's/;.*//' | grep -q '(channel'; then
+            echo "Extra channels: none in $channels_file (all commented out?)"
+            channels_text=
+            return 0
+        fi
+        printf '%s\n' "$channels_text" | grep -qx 'QGCH' &&
+            die "$channels_file: a line 'QGCH' would end the typed file early"
+        echo "Extra channels (from $channels_file):"
+        printf '%s\n' "$channels_text" | sed 's/;.*//' |
+            sed -n "s/.*(name '\\([^) ]*\\).*/  \\1/p; s/.*(name (quote \\([^) ]*\\)).*/  \\1/p" || true
+    fi
+}
+
+# Shell lines that write $channels_text to file $1 in the qube.
+channels_heredoc() {
+    printf "cat > %s <<'QGCH'\n%s\nQGCH\n" "$1" "$channels_text"
+}
+
+read_packages() {
+    if [ -z "$packages_file" ] && [ -f "$(dirname "$0")/qubes-guix-packages" ]; then
+        packages_file=$(dirname "$0")/qubes-guix-packages
+    fi
+    packages=
+    if [ -n "$packages_file" ]; then
+        [ -r "$packages_file" ] || die "can't read $packages_file"
+        packages=$(sed 's/#.*//' "$packages_file" | xargs)
+        for p in $packages; do
+            case $p in
+                *[!A-Za-z0-9@._+-]*|[!A-Za-z0-9]*) die "bad package name '$p' in $packages_file";;
+            esac
+        done
+        echo "Extra packages (from $packages_file): ${packages:-none}"
+    fi
+}
+
+typed=Typed
+[ "$dry_run" = 1 ] && typed="Dry run, not typed"
+
+# Root-shell commands that bring up the first non-loopback interface with
+# the address, gateway and DNS from qube_net: eth0 in the installer, maybe
+# not after it. NetworkManager (installed system) would fight a static setup.
+net_cmds() {
+    printf '%s' "herd stop NetworkManager 2>/dev/null; \
+IF=\$(ls /sys/class/net | grep -v '^lo\$' | head -n1); \
+ip addr replace $ip/8 dev \$IF; ip link set \$IF up; \
+ip route replace default via $gw; \
+printf 'nameserver %s\\n' $dns > /etc/resolv.conf; \
+ip -br addr show \$IF; ip route"
+}
+
+if [ "$type_network" = 1 ]; then
+    [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
+    name=${args[0]}
+    qube_net "$name"
+    # The first non-loopback interface: eth0 in the installer, maybe not
+    # after it. NetworkManager (installed system) would fight a static setup.
+    type_into "$name" "$(net_cmds)
+"
+    cat <<EOF
+$typed into $name's console (VT3): $ip/8 via $gw, DNS $dns
+The last lines on its screen show the result. Back to the installer:
+  xdotool key --window \$(xdotool selectwindow) ctrl+alt+F1
+EOF
+    exit 0
+fi
+
+if [ "$bootstrap" = 1 ]; then
+    [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
+    name=${args[0]}
+    detect_template "$name"
+    qube_net "$name"
+    setup_args=
+    [ "$template" = 1 ] && setup_args=--template
+    read_packages
+    read_channels
+    chf=/tmp/qubes-guix-channels.scm
+    ch_lines=
+    [ -n "$channels_text" ] && ch_lines="$(channels_heredoc $chf)"
+    f=/tmp/qubes-guix-bootstrap.sh
+    # Written to a file on the qube and shown, NOT run: read it, then run it.
+    # As root: the network (Qubes has no DHCP); then as the first regular
+    # user: clone this repository and run guest/qubes-guix-setup.
+    type_into "$name" "set +H; cat > $f <<'QGEOF'
+# qubes-guix bootstrap, typed in by qubes-guix-create (dom0). Review, then:
+#   sh $f
+set -eu
+IP=$ip GW=$gw DNS='$dns' BRANCH=$branch SETUP_ARGS='$setup_args'
+PKGS='$packages'
+CHANNELS=$( [ -n "$channels_text" ] && echo "$chf")
+$ch_lines
+herd stop NetworkManager 2>/dev/null || true
+IF=\$(ls /sys/class/net | grep -v '^lo\$' | head -n1)
+ip addr replace \$IP/8 dev \$IF
+ip link set \$IF up
+ip route replace default via \$GW
+printf 'nameserver %s\\n' \$DNS > /etc/resolv.conf
+U=\$(id -un 1000 2>/dev/null)
+[ -n \"\$U\" ] || { echo 'no user with uid 1000'; exit 1; }
+echo \"network up on \$IF; running the setup as \$U\"
+# su -c gives no controlling terminal, and sudo (in the setup) needs one
+# for its password prompt: 'script' supplies a pty.
+su - \"\$U\" -c \"script -qec 'set -e; cd; if [ -d qubes-guix ]; then guix shell git -- git -C qubes-guix fetch -q origin \$BRANCH; guix shell git -- git -C qubes-guix checkout -q -B \$BRANCH FETCH_HEAD; else guix shell git -- git clone -b \$BRANCH $repo_url; fi; QUBES_GUIX_BRANCH=\$BRANCH QUBES_PACKAGES=\\\"\$PKGS\\\" QUBES_CHANNELS_FILE=\$CHANNELS qubes-guix/guest/qubes-guix-setup \$SETUP_ARGS' /dev/null\"
+QGEOF
+printf '\\033c'; cat $f; echo; echo 'Review the above, then run:  sh $f'
+"
+    cat <<EOF
+$typed into $name's console (VT3): $f, shown there but not run.
+Read it on the console, then run:  sh $f
+(It sets the network, then runs the setup as the uid-1000 user, branch
+$branch$( [ "$template" = 1 ] && echo ', as a template'). sudo asks that user's password once.)
+EOF
+    exit 0
+fi
+
+if [ "$install" = 1 ]; then
+    [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
+    name=${args[0]}
+    detect_template "$name"
+    qube_net "$name"
+    tz=$(timedatectl show -p Timezone --value 2>/dev/null) || tz=
+    [ -n "$tz" ] || tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
+    [ -n "$tz" ] || tz=UTC
+    hash=
+    if [ "$no_password" = 0 ] && [ "$dry_run" = 1 ]; then
+        hash='<hash of the password you would be asked for>'
+    elif [ "$no_password" = 0 ]; then
+        command -v openssl >/dev/null 2>&1 ||
+            die "openssl not found in dom0 (needed to hash the password); or use --no-password"
+        while :; do
+            read -rsp "Password for 'user' and root in $name: " pw1; echo
+            read -rsp "Again: " pw2; echo
+            [ -n "$pw1" ] && [ "$pw1" = "$pw2" ] && break
+            echo "Empty, or they don't match; again."
+        done
+        hash=$(printf '%s\n' "$pw1" | openssl passwd -6 -stdin)
+        unset pw1 pw2
+    fi
+    read_packages
+    # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
+    d=/root/qubes-guix
+    cmd="sh $d/guest/qubes-guix-install --host-name $(echo "$name" | tr '_' '-') --timezone $tz --locale $locale -b $branch --poweroff"
+    [ "$template" = 1 ] && cmd="$cmd --template"
+    [ "$force" = 1 ] && cmd="$cmd --force"
+    [ -n "$hash" ] && cmd="$cmd --password-hash '$hash'"
+    [ -n "$packages" ] && cmd="$cmd --packages '$packages'"
+    if [ -n "$guix_commit" ]; then
+        case $guix_commit in
+            *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash";;
+        esac
+        cmd="$cmd --guix-commit $guix_commit"
+    fi
+    t0=$(date +%s)
+    elapsed() { local s=$(( $(date +%s) - t0 )); printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60)); }
+    read_channels
+    ch_lines=
+    if [ -n "$channels_text" ]; then
+        ch_lines="$(channels_heredoc /root/qubes-guix-channels.scm)"
+        cmd="$cmd --channels /root/qubes-guix-channels.scm"
+    fi
+    type_into "$name" "set +H
+$(net_cmds)
+$ch_lines
+rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $cmd"
+    cat <<EOF
+$typed into $name's console (VT3): the network setup, then a clone of branch
+$branch and guest/qubes-guix-install ($( [ "$template" = 1 ] && echo 'template, ')timezone $tz, user 'user'$( [ -n "$hash" ] || echo ', no password')).
+It partitions /dev/xvda, builds a Guix with the qubes channel and the system
+(an hour or more), then powers $name off. Watch VT3 for errors.
+EOF
+    if [ "$dry_run" = 1 ]; then
+        echo "(dry run: would then wait for $name to power off$( [ "$template" = 1 ] && echo ", remove its netvm"), qvm-start $name$( [ "$first_update" = 1 ] && echo ", run qubes-guix-update -r in it$( [ "$template" = 1 ] && echo ' and shut it down')"))"
+    elif [ "$wait_start" = 1 ]; then
+        echo "Waiting for $name to power off, to start it from its disk (Ctrl+C: stop"
+        echo "waiting; then start it yourself with: qvm-start $name)."
+        while qvm-check -q --running "$name" 2>/dev/null; do sleep 15; done
+        if [ "$template" = 1 ]; then
+            # Like other templates: no network; updates (guix pull,
+            # substitutes) go through the Qubes updates proxy.
+            echo "$name is off. As a template it now gets no netvm (updates go through"
+            echo "the updates proxy). To give it one back:  qvm-prefs $name netvm <qube>"
+            qvm-prefs "$name" netvm ''
+        fi
+        echo "Starting $name."
+        echo "Installed in $(elapsed)."
+        # dom0 only starts a qube's qrexec daemon, and qvm-start only waits
+        # for it, if the qube has the qrexec feature. A new qube doesn't: the
+        # agent asks for it on its first boot, too late for this start. The
+        # installed system has the agent, so set it now (setting it before
+        # the install would make qvm-start wait for, and kill, the installer).
+        qvm-features "$name" qrexec 1
+        qvm-start "$name"
+        if [ "$first_update" = 1 ]; then
+            # The install built with the installer's Guix (fast: substitutes).
+            # Now bring the system to the Guix it follows: the head, or the
+            # --guix-commit lock recorded in its config.scm.
+            echo "Updating $name: qubes-guix-update -r (pull to $( [ -n "$guix_commit" ] && echo "commit $guix_commit" || echo 'the head'), then reconfigure)."
+            echo "This is long: it builds the Qubes packages against that Guix. Output follows."
+            if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r'; then
+                echo "Updated in $(elapsed) in all."
+                if [ "$template" = 1 ]; then
+                    qvm-shutdown --wait "$name"
+                    echo "$name is ready: shut down, updated. Base AppVMs on it."
+                fi
+            else
+                echo "$prog: the update in $name failed; it's running, at the installer's Guix." >&2
+                echo "Look at the output above; rerun it in $name with:  qubes-guix-update -r" >&2
+                exit 1
+            fi
+        else
+            echo "Started. Check from dom0:  qvm-run -u root --pass-io $name 'herd status qrexec-agent'"
+        fi
+    else
+        echo "When it's off:  qvm-start $name"
+    fi
+    exit 0
+fi
+
+if [ "$finish_install" = 1 ]; then
+    [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
+    name=${args[0]}
+    detect_template "$name"
+    # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
+    d=/root/qubes-guix
+    cmd="sh $d/guest/qubes-guix-finish-install"
+    [ "$template" = 1 ] && cmd="$cmd --template"
+    cmd="$cmd -b $branch"
+    read_packages
+    [ -n "$packages" ] && cmd="$cmd --packages '$packages'"
+    read_channels
+    ch_lines=
+    if [ -n "$channels_text" ]; then
+        ch_lines="$(channels_heredoc /root/qubes-guix-channels.scm)"
+        cmd="$cmd --channels /root/qubes-guix-channels.scm"
+    fi
+    # The installer's shell is root, and its network was set up by
+    # --type-network. git isn't in the installer image: guix shell fetches it.
+    if [ "$run_now" = 1 ]; then
+        next="$cmd"
+    else
+        next="{ printf '\\033c'; echo 'Cloned into $d. Review it, then run:'; echo '  $cmd'; }"
+    fi
+    type_into "$name" "set +H
+$ch_lines
+rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $next"
+    if [ "$run_now" = 1 ]; then
+        cat <<EOF
+$typed into $name's console (VT3): clone $branch into $d and run
+  $cmd
+It wraps /mnt/etc/config.scm and rebuilds /mnt with the qubes channel: the
+first time it builds a Guix, which takes a while. Watch VT3 for 'Done', then
+reboot (Ctrl+Alt+F1 back to the installer, or 'reboot' on VT3).
+EOF
+    else
+        cat <<EOF
+$typed into $name's console (VT3): clone branch $branch into $d.
+Review it there, then run:
+  $cmd
+When it says Done, reboot.
+EOF
+    fi
+    exit 0
+fi
+
+[ ${#args[@]} -ge 2 ] && [ ${#args[@]} -le 5 ] || { usage >&2; exit 2; }
+
+name=${args[0]}
+iso=${args[1]}
+[ ${#args[@]} -ge 3 ] && vcpus=${args[2]}
+[ ${#args[@]} -ge 4 ] && memory=${args[3]}
+[ ${#args[@]} -ge 5 ] && maxmem=${args[4]}
+[ -n "$maxmem" ] || maxmem=$memory
+
+# --- checks (nothing is changed until they all pass) --------------------
+
+command -v qvm-create >/dev/null 2>&1 ||
+    die "qvm-create not found: run this in dom0"
+
+[[ $name =~ ^[a-zA-Z][a-zA-Z0-9_.-]{0,30}$ ]] ||
+    die "invalid qube name '$name' (letter first; letters, digits, _ . -; max 31)"
+qvm-check -q "$name" 2>/dev/null &&
+    die "a qube named '$name' already exists"
+
+case $iso in
+    *:/*) iso_vm=${iso%%:*}; iso_path=${iso#*:};;
+    *)    die "ISO must be ISO_VM:/absolute/path, e.g. untrusted:/home/user/guix.iso";;
+esac
+[ -n "$iso_vm" ] || die "ISO must be ISO_VM:/absolute/path"
+case $iso_path in *.iso) ;; *) echo "$prog: warning: '$iso_path' doesn't end in .iso" >&2;; esac
+
+is_uint "$vcpus"  && [ "$vcpus" -ge 1 ]     || die "VCPUS must be a positive integer"
+is_uint "$memory" && [ "$memory" -ge 1024 ] || die "MEMORY must be at least 1024 (MiB)"
+is_uint "$maxmem"                           || die "MAXMEM must be an integer (MiB)"
+[ "$maxmem" -ge "$memory" ] || die "MAXMEM ($maxmem) is less than MEMORY ($memory)"
+[ "$memory" -ge 3000 ] ||
+    echo "$prog: warning: MEMORY $memory MiB is tight for 'guix system init'; 4000 is safer" >&2
+
+if [ -n "$netvm" ]; then
+    qvm-check -q "$netvm" 2>/dev/null || die "network qube '$netvm' doesn't exist"
+fi
+
+if [ "$iso_vm" = dom0 ]; then
+    [ -f "$iso_path" ] || die "no such file in dom0: $iso_path"
+else
+    qvm-check -q "$iso_vm" 2>/dev/null || die "qube '$iso_vm' doesn't exist"
+    # The ISO is attached from a running qube, so start it now (also needed
+    # to look for the file).
+    if ! qvm-check -q --running "$iso_vm" 2>/dev/null; then
+        run qvm-start "$iso_vm"
+    fi
+    if [ "$dry_run" = 0 ] || qvm-check -q --running "$iso_vm" 2>/dev/null; then
+        qvm-run -q --pass-io --no-gui --no-shell "$iso_vm" test -f "$iso_path" ||
+            die "no such file in $iso_vm: $iso_path"
+    fi
+fi
+
+# --- create -------------------------------------------------------------
+
+created=0
+cleanup() {
+    status=$?
+    if [ $status -ne 0 ] && [ "$created" = 1 ] && [ "$dry_run" = 0 ]; then
+        echo "$prog: failed; removing the half-made qube '$name'" >&2
+        qvm-kill "$name" >/dev/null 2>&1 || true
+        qvm-remove -f "$name" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+if [ "$template" = 1 ]; then
+    class=TemplateVM
+    # Templates get no netvm by default, but the installer and the first
+    # guix pull need one. Afterwards it can go (updates via the proxy).
+    [ -n "$netvm" ] || netvm=$(qubes-prefs default_netvm)
+    [ -n "$netvm" ] || die "no default netvm; give one with --netvm"
+else
+    class=StandaloneVM
+fi
+
+echo "Creating $name: $class, HVM, $vcpus vCPU, $memory-$maxmem MiB, root $root_size"
+
+run qvm-create --class "$class" --label "$label" \
+    --property virt_mode=hvm "$name"
+created=1
+
+# The kernel comes from the qube's own disk (GRUB), not from dom0.
+run qvm-prefs "$name" kernel ''
+run qvm-prefs "$name" vcpus "$vcpus"
+run qvm-prefs "$name" memory "$memory"
+run qvm-prefs "$name" maxmem "$maxmem"
+# With memory balancing on, a Guix boot can take over a minute to reach the
+# qrexec agent (83 s measured), past the 60 s default; on a timeout,
+# qvm-start kills the domain uncleanly. Without balancing it's ~25 s.
+run qvm-prefs "$name" qrexec_timeout 300
+[ -n "$netvm" ] && run qvm-prefs "$name" netvm "$netvm"
+run qvm-volume extend "$name:root" "$root_size"
+
+# The Qubes Update tool can't update Guix (guix pull + reconfigure does).
+run qvm-features "$name" skip-update 1
+
+# A template's updates go through the Qubes updates proxy (qubes.UpdatesProxy),
+# so it can do without a netvm once installed. The guest reads this at boot.
+[ "$template" = 1 ] && run qvm-service "$name" updates-proxy-setup on
+
+# Memory balancing. It only takes effect once the agent runs
+# meminfo-writer; until then the qube simply has MEMORY.
+if [ "$maxmem" -gt "$memory" ]; then
+    run qvm-service "$name" meminfo-writer on
+else
+    run qvm-service "$name" meminfo-writer off
+fi
+
+run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
+created=0           # it exists and boots: keep it from here on
+
+# --- what the installer needs -------------------------------------------
+
+pref() { qvm-prefs "$name" "$1" 2>/dev/null || true; }
+
+if [ "$dry_run" = 1 ]; then
+    echo
+    echo "(dry run: nothing was changed)"
+    exit 0
+fi
+
+ip=$(pref ip)
+gw=$(pref visible_gateway)
+dns=$(pref dns | xargs)
+[ -n "$dns" ] || dns="10.139.1.1 10.139.1.2"
+
+# The installer's console is the emulated VGA window. dom0's desktop grabs
+# Alt+Fn, so console switches go through xdotool (click the window when the
+# cursor turns into a cross).
+vt_key() { echo "     xdotool key --window \$(xdotool selectwindow) $1"; }
+
+cat <<EOF
+
+$name is booting the Guix installer in its console window. To install:
+
+1. At the GRUB menu, with 'GNU Guix installation' highlighted, press 'e'.
+   Go to the end of the 'linux' line (it ends 'modprobe.blacklist=radeon,
+   amdgpu'), add  nomodeset  and boot it (Ctrl+X). Without it the console
+   on VT3 doesn't work. The installed system doesn't need it.
+EOF
+
+if [ -z "$ip" ]; then
+    cat <<EOF
+
+2. $name has no network qube, so the installer will be offline. Give it
+   one (qvm-prefs $name netvm <qube>) and restart it.
+EOF
+else
+    cat <<EOF
+
+2. Qubes has no DHCP, so the network is set by hand. Easiest, in dom0:
+     $prog --type-network $name
+   (click the console window when asked; it switches to the shell on VT3
+   and types the commands). Or type them yourself after Ctrl+Alt+F3
+   (check the interface name with 'ip -br link'):
+     ip addr add $ip/8 dev eth0
+     ip link set eth0 up
+     ip route add default via $gw
+EOF
+    for d in $dns; do echo "     echo nameserver $d >> /etc/resolv.conf"; done
+    cat <<EOF
+   The /8 puts the gateway on-link; with /32 the default route is refused.
+   Keep these for the network section of your first config.scm:
+     address $ip/8, gateway $gw, DNS $dns
+EOF
+fi
+
+cat <<EOF
+
+3. Switch to the installer screen. In dom0:
+$(vt_key ctrl+alt+F1)
+
+4. Unattended: at the installer's first screen, in dom0:
+     $prog --unattended$( [ "$template" = 1 ] && echo ' --template')$( [ "$branch" != main ] && echo " -b $branch") $name
+   (skip steps 2 and 3: it sets the network itself). It asks for a password,
+   then types the rest: partition, config.scm (Xfce, user 'user'), the
+   qubes channel, guix system init, power off; then starts $name again.
+
+   Or install as usual, up to the 'Installation complete' screen. DON'T
+   reboot yet. In dom0:
+     $prog --finish-install$( [ "$template" = 1 ] && echo ' --template')$( [ "$branch" != main ] && echo " -b $branch") --run $name
+   (click the console window when asked). On VT3 it clones the channel
+   and makes the installed system a qube: config.scm wrapped in
+   (qubes-operating-system ...), then 'guix system init' with the qubes
+   channel. Without --run it only shows the command, for you to review
+   and type. When VT3 says Done, reboot. That's the last manual step:
+   the first boot has its network, qrexec, the GUI agent, passwordless
+   sudo for the qubes group, and the qubes channel for guix pull.
+
+   An already-installed and rebooted system: log in as root on VT3, then
+     $prog --bootstrap$( [ "$template" = 1 ] && echo ' --template') $name
+   types /tmp/qubes-guix-bootstrap.sh there (network, clone, setup); read
+   it, then 'sh /tmp/qubes-guix-bootstrap.sh'.
+
+   If the console window goes away once the Qubes GUI agent runs, get it
+   back with:  qvm-start-daemon --force-stubdomain $name
+EOF

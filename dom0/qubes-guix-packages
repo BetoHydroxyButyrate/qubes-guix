@@ -1,0 +1,22 @@
+# qubes-guix-packages: extra packages for an unattended Guix install
+# (qubes-guix-create --unattended). Copy this next to qubes-guix-create in
+# dom0 and edit it, or pass another file with --packages FILE.
+#
+# One or more package names per line; '#' starts a comment. name@version
+# works too. Names Guix doesn't have are skipped with a warning, so a typo
+# doesn't stop the install. The list ends up in the qube's /etc/config.scm
+# (the packages field): change it there later, then 'qubes-guix-update -r'.
+# In a template, these are in every AppVM based on it.
+
+git
+
+# Uncomment what you want:
+# emacs
+# vim
+# icecat              # the browser in Guix proper
+# alacritty
+# mousepad
+# htop
+# keepassxc
+# icedove             # Thunderbird, under its Guix name
+# libreoffice

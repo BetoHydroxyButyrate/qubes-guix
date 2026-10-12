@@ -1,0 +1,31 @@
+;; qubes-guix-channels: extra Guix channels for a new Guix qube
+;; (qubes-guix-create --unattended, --finish-install, --bootstrap). Copy this
+;; next to qubes-guix-create in dom0 and edit it, or pass another file with
+;; --channels FILE. While everything here is commented out, no extra
+;; channels are added.
+;;
+;; Only (channel ...) forms; ';' starts a comment. They end up in the
+;; qube's /etc/config.scm as #:extra-channels, so every 'guix pull' and the
+;; system's own guix include them, and the packages file (qubes-guix-packages)
+;; can name their packages. Give each an introduction: Guix then
+;; authenticates the channel's commits as it does for its own.
+;;
+;; Take a channel's name, URL and introduction from its own documentation,
+;; not from here, so you check them at their source. For example nonguix
+;; (non-free software, e.g. firefox-esr): see the "Installation" section of
+;; https://gitlab.com/nonguix/nonguix and copy its channel form below.
+;;
+;; (channel
+;;  (name 'CHANNEL-NAME)
+;;  (url "https://...")
+;;  (branch "master")
+;;  (introduction
+;;   (make-channel-introduction
+;;    "FIRST-SIGNED-COMMIT"
+;;    (openpgp-fingerprint "SIGNING KEY FINGERPRINT"))))
+;;
+;; A channel with its own substitute server (nonguix has one) needs that
+;; server and its signing key in the qube's config.scm too, by hand:
+;;   #:extra-substitute-urls '("https://...")
+;;   #:extra-authorized-keys (list (plain-file "x.pub" "(public-key ...)"))
+;; Without them its packages are built from source.

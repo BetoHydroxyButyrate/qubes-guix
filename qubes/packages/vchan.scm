@@ -1,0 +1,47 @@
+(define-module (qubes packages vchan)
+  #:use-module (guix packages)
+  #:use-module (guix git-download)
+  #:use-module (guix build-system gnu)
+  #:use-module ((guix licenses) #:prefix license:)
+;;  #:use-module (guix licenses)
+  #:use-module (guix gexp)
+  #:use-module ((guix utils) #:select (cc-for-target))
+  #:use-module (gnu packages)
+  #:use-module (gnu packages virtualization)
+  #:use-module (gnu packages pkg-config))
+
+(define-public qubes-core-vchan-xen
+  (package
+    (name "qubes-core-vchan-xen")
+    (version "4.2.8")
+    (source (origin
+              (method git-fetch)
+              (uri (git-reference
+                    (url "https://github.com/QubesOS/qubes-core-vchan-xen")
+                    (commit "a1337c282ffefcfc13a570683c57bc04813038db")))
+              (file-name (git-file-name name version))
+              (sha256
+               (base32 "0nb5ky69w0v6xy7dkriagyi8fa2zpq2dnibr90pkf7asi0cib77j"))))
+    (build-system gnu-build-system)
+    (arguments
+     `(#:tests? #f                        ; none shipped
+       #:make-flags
+       (list (string-append "PREFIX=" (assoc-ref %outputs "out"))
+             (string-append "CC=" ,(cc-for-target)))
+       #:phases
+       (modify-phases %standard-phases
+         (delete 'configure)              ; plain Makefile
+         (replace 'build
+           (lambda* (#:key make-flags #:allow-other-keys)
+             (apply invoke "make" "-C" "vchan" "-f" "Makefile.linux" make-flags)))
+         (replace 'install
+           (lambda* (#:key make-flags #:allow-other-keys)
+             (apply invoke "make" "-C" "vchan" "-f" "Makefile.linux"
+                    "install" make-flags))))))
+    (native-inputs (list pkg-config))
+    (inputs (list xen))
+    (synopsis "Qubes vchan libraries for Xen guests")
+    (description "The Qubes OS inter-VM communication library, built
+against upstream Xen's libxenvchan.")
+    (home-page "https://github.com/QubesOS/qubes-core-vchan-xen")
+    (license license:gpl2+)))

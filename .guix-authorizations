@@ -1,0 +1,6 @@
+(authorizations
+ (version 0)
+ (("9765 1FBD E504 F2D1 3DA9  88EB C0E8 4747 0C0B 2F22"   ; [S] subkey
+   (name "beto"))
+  ("4736 A0E8 3B97 C7A6 8F11  D663 18C2 899E 2837 B877"   ; primary
+   (name "beto-primary"))))

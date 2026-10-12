@@ -1,0 +1,179 @@
+#!/bin/sh
+# qubes-guix-setup — run in a freshly installed Guix System qube, as your
+# normal user (it uses sudo where it must). Turns the installed system into
+# an integrated Qubes qube:
+#   1. adds the qubes channel to ~/.config/guix/channels.scm and runs guix pull;
+#   2. wraps /etc/config.scm in (qubes-operating-system ...)  (see qubes/system.scm);
+#   3. checks the new configuration, installs it and reconfigures.
+# Then reboot. Safe to rerun: steps already done are skipped.
+#
+#   guix shell git -- git clone https://github.com/BetoHydroxyButyrate/qubes-guix
+#   qubes-guix/guest/qubes-guix-setup [--template] [--packages "A B"] [CONFIG]
+#                                                   # CONFIG: default /etc/config.scm
+#
+# --template: this qube is a Qubes TemplateVM (made with qubes-guix-create
+# --template). Its configuration gets #:template? #t, which also serves the
+# AppVMs based on it.
+#
+# --packages "git emacs" (or QUBES_PACKAGES=...): extra packages, added as
+# #:extra-packages to the (qubes-operating-system ...) form if it has none.
+# Names this Guix doesn't have are skipped with a warning, not an error.
+#
+# --channels FILE (or QUBES_CHANNELS_FILE=...): extra channels, FILE holding
+# (channel ...) forms, added as #:extra-channels. They take effect from the
+# next 'qubes-guix-update -r' (packages from them, after that one).
+#
+# QUBES_GUIX_BRANCH=test qubes-guix/guest/qubes-guix-setup   pulls the channel
+# from that branch instead of main (for testing; commits must still be signed).
+
+set -eu
+
+prog=${0##*/}
+here=$(cd "$(dirname "$0")" && pwd)
+template=0
+while [ $# -gt 0 ]; do
+    case $1 in
+        --template) template=1; shift;;
+        --channels) [ $# -ge 2 ] || { echo "${0##*/}: $1 needs a file" >&2; exit 1; }
+                    QUBES_CHANNELS_FILE=$(cd "$(dirname "$2")" && pwd)/${2##*/}
+                    export QUBES_CHANNELS_FILE; shift 2;;
+        --packages) [ $# -ge 2 ] || { echo "${0##*/}: $1 needs a value" >&2; exit 1; }
+                    QUBES_PACKAGES=$2; export QUBES_PACKAGES; shift 2;;
+        *) break;;
+    esac
+done
+config=${1:-/etc/config.scm}
+channels=${XDG_CONFIG_HOME:-$HOME/.config}/guix/channels.scm
+guix=$HOME/.config/guix/current/bin/guix
+
+say() { printf '\n==> %s\n' "$*"; }
+die() { echo "$prog: $*" >&2; exit 1; }
+
+[ -d /run/current-system ] || die "this isn't Guix System"
+[ "$(id -u)" -ne 0 ] || die "run as your normal user, not root (sudo is used where needed)"
+command -v sudo >/dev/null || die "sudo not found"
+
+# The password is needed only after the long guix pull, when nobody may be
+# watching, and a sudo prompt that times out ends the run. So ask now, while
+# someone is here, and keep sudo's timestamp fresh until the script exits.
+# (After the first reconfigure, (qubes system) makes sudo passwordless.)
+if ! sudo -n true 2>/dev/null; then
+    echo "$prog needs sudo later on; asking for the password now."
+    sudo -v || die "sudo failed"
+fi
+( while sleep 60; do kill -0 $$ 2>/dev/null && sudo -n -v 2>/dev/null || exit; done ) &
+keepalive=$!
+trap 'kill "$keepalive" 2>/dev/null' EXIT
+[ -f "$config" ] || die "no such file: $config"
+for f in wrap-config.guile channels.scm.txt; do
+    [ -f "$here/$f" ] || die "$f missing next to $prog"
+done
+
+# --- 1. channel --------------------------------------------------------
+
+if [ -f "$channels" ] && grep -q "(name 'qubes)" "$channels"; then
+    say "The qubes channel is already in $channels"
+    # The branch is only applied when this script writes the file.
+    if [ -n "${QUBES_GUIX_BRANCH:-}" ] &&
+       ! grep -q "(branch \"$QUBES_GUIX_BRANCH\")" "$channels"; then
+        die "QUBES_GUIX_BRANCH=$QUBES_GUIX_BRANCH, but $channels doesn't
+pull that branch. Set (branch \"$QUBES_GUIX_BRANCH\") in its qubes entry, then rerun."
+    fi
+elif [ -f "$channels" ]; then
+    die "$channels exists but has no qubes channel. Add the (channel (name 'qubes) ...)
+entry from $here/channels.scm.txt to it, then rerun."
+else
+    say "Adding the qubes channel ($channels)"
+    mkdir -p "$(dirname "$channels")"
+    sed "s/(branch \"main\")/(branch \"${QUBES_GUIX_BRANCH:-main}\")/" \
+        "$here/channels.scm.txt" > "$channels"
+fi
+
+if [ -x "$guix" ] && "$guix" describe 2>/dev/null | grep '^  qubes ' >/dev/null; then
+    say "guix already includes the qubes channel; pulling for updates"
+else
+    say "guix pull (the first one takes a while)"
+fi
+guix pull
+[ -x "$guix" ] || die "guix pull didn't produce $guix"
+"$guix" describe | grep '^  qubes ' >/dev/null ||
+    die "the pulled guix doesn't include the qubes channel (see: $guix describe)"
+
+# --- 2. configuration --------------------------------------------------
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"; kill "$keepalive" 2>/dev/null' EXIT
+new=$tmp/config.scm
+
+set +e
+QUBES_IN=$config QUBES_OUT=$new QUBES_TEMPLATE=$template \
+    QUBES_BRANCH=${QUBES_GUIX_BRANCH:-} \
+    "$guix" repl -- "$here/wrap-config.guile"
+status=$?
+set -e
+case $status in
+    0) changed=1;;
+    3) changed=0; cp "$config" "$new";;
+    *) die "couldn't update $config (unchanged)";;
+esac
+
+say "Checking the configuration (evaluates it; builds nothing)"
+if ! "$guix" system build --dry-run "$new" >/dev/null; then
+    cp "$new" "$HOME/config.scm.qubes-failed"
+    die "the new configuration doesn't evaluate; $config is unchanged.
+The attempted version is in $HOME/config.scm.qubes-failed"
+fi
+
+if [ "$changed" = 1 ]; then
+    backup=$config.pre-qubes
+    [ -e "$backup" ] && backup=$config.pre-qubes.$(date +%Y%m%d%H%M%S)
+    say "Installing the new $config (old one: $backup)"
+    sudo cp "$config" "$backup"
+    sudo cp "$new" "$config"
+fi
+
+# --- 3. reconfigure ----------------------------------------------------
+
+say "guix system reconfigure (builds the Qubes agents from source)"
+sudo "$guix" system reconfigure "$config"
+
+if [ "$template" = 1 ]; then
+    name=$(hostname)
+    cat <<EOF
+
+Done. Shut it down so dom0 sees the new root:  sudo shutdown
+(The next start moves /home to the private volume; your home is copied.)
+
+Then in dom0 (as your normal dom0 user):
+  qvm-start $name                      # first boot as a template; check it works
+  qvm-shutdown --wait $name
+  qvm-create --template $name --label red \\
+      --property virt_mode=hvm --property kernel='' \\
+      --property memory=4000 --property maxmem=4000 work
+  qvm-start work
+
+Keep the template's netvm until the updates proxy is known to work. To test:
+  qvm-service $name updates-proxy-setup on
+  qvm-start $name; then in it: herd status qubes-updates-proxy
+Only then, if you want the template offline:  qvm-prefs $name netvm ''
+
+Software belongs in the template's /etc/config.scm. 'guix install' in an
+AppVM lasts until it shuts down, like apt in a Debian AppVM. To update the
+template (through the updates proxy, so no netvm needed), in the template:
+  qubes-guix-update -r          # guix pull, then sudo guix system reconfigure
+(Use the qube's name if it differs from the host name '$name'.)
+EOF
+    exit 0
+fi
+
+cat <<EOF
+
+Done. Reboot to start the Qubes agents:  sudo reboot
+
+After the reboot the network comes from QubesDB (no manual setup), and from
+dom0 these should work:
+  qvm-run --pass-io $(hostname) 'ip -br addr'
+  qvm-features $(hostname)
+  qvm-run $(hostname) alacritty      # or any installed program
+(Use the qube's name if it differs from the host name '$(hostname)'.)
+EOF

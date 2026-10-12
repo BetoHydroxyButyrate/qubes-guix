@@ -128,7 +128,7 @@ Guix runs visudo on the result, so a syntax error fails the build."
    (branch branch)
    (introduction
     (make-channel-introduction
-     "c64335f79ddd03d2aad0d6c7fef8543813d7fcdc"
+     "1101f87885074cb3ac8bddc314f274cfeba84e76"
      (openpgp-fingerprint                ; the signing subkey
       "9765 1FBD E504 F2D1 3DA9  88EB C0E8 4747 0C0B 2F22")))))
 

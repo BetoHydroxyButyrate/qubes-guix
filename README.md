@@ -371,10 +371,10 @@ Each fix is a build phase in the relevant package, with a comment. Reports are b
 - **qrexec-agent:** `env_buf[64]`. **qubes-gui-runuser:** `env_buf[256]`. Both abort the PAM session when `SHELL` or `PATH` is long; store paths are.
 - **qubes-app-u2f:** replies to CTAPHID_CBOR requests are framed as CTAPHID_MSG, which breaks spec-compliant FIDO2 clients.
 - **qubes-app-u2f:** a makeCredential request without `rp.name` is rejected, although CTAP2 allows that.
-- **qubes-linux-utils (main):** meminfo-writer exits when `memory/swapinfo` can't be written, i.e. on an R4.3 dom0. This channel builds the R4.3 branch, which doesn't have the change.
 
 ## Gotchas worth knowing
 
+- **Build the Qubes components from the branch matching dom0's release, not `main`.** Upstream supports a newer dom0 with older qubes, not the reverse. For example, qubes-linux-utils from `main` reports swapinfo, which only an R4.4 dom0 accepts, and on R4.3 its meminfo-writer exits after one update ([QubesOS/qubes-issues#11164](https://github.com/QubesOS/qubes-issues/issues/11164), closed as an unsupported combination). This channel builds the R4.3 branches.
 - **`/var/run` is not `/run` on Guix, and `/var/run` survives reboots.** Stale pidfiles bite.
 - **There is no `/sbin`.** The service creates the two links Xen's shutdown path needs.
 - **Services in packages other than core-agent are linked into `/run/qubes-rpc`.** The qrexec agent searches there first.

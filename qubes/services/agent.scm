@@ -208,6 +208,43 @@ DNS).")
               (zero? (system* #$(file-append bash-minimal "/bin/sh")
                               #$(qubes-network-script config)))))))
 
+;; When the netvm restarts (or the qube's netvm changes), dom0 detaches the
+;; qube's vif and attaches a new one: eth0 disappears and comes back
+;; unconfigured. Upstream re-runs the uplink setup from a udev rule
+;; (qubes-network-uplink@ethN); here a small watcher does the same: on any
+;; link event for the interface, if it exists but has no IPv4 address, run
+;; the setup script again. The setup itself makes link events, but by then
+;; the address is there, so it doesn't loop.
+(define (qubes-network-watch-script config)
+  (let ((ip    (file-append iproute "/sbin/ip"))
+        (grep* (file-append grep "/bin/grep"))
+        (sleep (file-append coreutils "/bin/sleep"))
+        (sh    (file-append bash-minimal "/bin/sh")))
+    (mixed-text-file "qubes-network-watch" "
+set -u
+IF=" (qubes-guest-network-interface config) "
+" ip " -o monitor link | while read -r line; do
+    case $line in Deleted*) continue;; esac
+    case $line in *\" $IF:\"*|*\" $IF@\"*) ;; *) continue;; esac
+    [ -e /sys/class/net/$IF ] || continue
+    " ip " -4 -o address show dev $IF | " grep* " -q inet && continue
+    echo \"qubes-network-watch: $IF came back unconfigured; setting it up\"
+    " sleep " 1
+    " sh " " (qubes-network-script config) "
+done
+")))
+
+(define (qubes-network-watch-shepherd-service config)
+  (shepherd-service
+   (documentation "Set the Qubes uplink up again when its interface comes
+back (the netvm restarted or changed).")
+   (provision '(qubes-network-watch))
+   (requirement '(networking))
+   (start #~(make-forkexec-constructor
+             (list #$(file-append bash-minimal "/bin/sh")
+                   #$(qubes-network-watch-script config))))
+   (stop #~(make-kill-destructor))))
+
 (define (qubesdb-read-path config)
   (file-append (qubes-guest-qubesdb config) "/bin/qubesdb-read"))
 
@@ -593,7 +630,8 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
            (respawn? #t)))
          '())
      (if (qubes-guest-network? config)
-         (list (qubes-network-shepherd-service config))
+         (list (qubes-network-shepherd-service config)
+               (qubes-network-watch-shepherd-service config))
          '())
      (if (qubes-guest-ctap-backend config)
          (list (qubes-ctap-shepherd-service config))

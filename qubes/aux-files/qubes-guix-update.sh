@@ -1,11 +1,14 @@
 #!@SH@
-# qubes-guix-update [-r|--reconfigure] [--guix-commit C | --head] [GUIX-PULL-ARGS...]
+# qubes-guix-update [-r|--reconfigure] [--guix-commit C | --head] [--allow-downgrades]
+#                   [GUIX-PULL-ARGS...]
 #   As root (it uses sudo if needed): guix pull, through the Qubes updates
 #   proxy when this qube has one (a template with updates-proxy-setup);
 #   with -r, then guix system reconfigure ${QUBES_GUIX_CONFIG:-/etc/config.scm}
 #   --guix-commit C  lock this system's Guix at commit C: sets #:guix-commit
 #                    in the config, pulls Guix at C and reconfigures
 #   --head           unlock: follow the branch head again (likewise)
+#   --allow-downgrades  for the pull AND the reconfigure: needed once after a
+#                    channel's history was rewritten
 # Installed by the qubes channel (qubes/services/agent.scm).
 #
 # Root does the update, as for other Qubes templates: one Guix checkout and
@@ -24,6 +27,7 @@ fi
 
 reconfigure=0
 pin=
+downgrades=
 while [ $# -gt 0 ]; do
     case $1 in
         -r|--reconfigure) reconfigure=1; shift;;
@@ -31,7 +35,8 @@ while [ $# -gt 0 ]; do
                        pin=$2; reconfigure=1; shift 2;;
         --guix-commit=*) pin=${1#*=}; reconfigure=1; shift;;
         --head) pin='head'; reconfigure=1; shift;;
-        -h|--help) sed -n '2,8p' "$0"; exit 0;;
+        --allow-downgrades) downgrades=--allow-downgrades; shift;;
+        -h|--help) sed -n '2,11p' "$0"; exit 0;;
         *) break;;
     esac
 done
@@ -129,11 +134,11 @@ if [ -n "$pin" ]; then
                  value
                  (loop (eval form (current-module)))))))))
 SCM
-    "$guix" pull -C "$tmp/channels.scm" "$@"
+    "$guix" pull -C "$tmp/channels.scm" ${downgrades:+"$downgrades"} "$@"
 else
-    "$guix" pull -C /etc/guix/channels.scm "$@"
+    "$guix" pull -C /etc/guix/channels.scm ${downgrades:+"$downgrades"} "$@"
 fi
 
 if [ "$reconfigure" = 1 ]; then
-    "$current" system reconfigure "$config"
+    "$current" system reconfigure ${downgrades:+"$downgrades"} "$config"
 fi

@@ -366,11 +366,11 @@ GNU IceCat is the browser Guix ships. If you'd rather have Firefox ESR, it's in 
 
 ## Upstream bugs found (patched here)
 
-Each fix is a build phase in the relevant package, with a comment. Reports are being filed with QubesOS/qubes-issues.
+Each fix is a build phase in the relevant package, with a comment, and each bug is reported upstream. The phases go once the fixes reach a release this channel builds.
 
-- **qrexec-agent:** `env_buf[64]`. **qubes-gui-runuser:** `env_buf[256]`. Both abort the PAM session when `SHELL` or `PATH` is long; store paths are.
-- **qubes-app-u2f:** replies to CTAPHID_CBOR requests are framed as CTAPHID_MSG, which breaks spec-compliant FIDO2 clients.
-- **qubes-app-u2f:** a makeCredential request without `rp.name` is rejected, although CTAP2 allows that.
+- **qrexec-agent:** `env_buf[64]`. **qubes-gui-runuser:** `env_buf[256]`. Both abort the PAM session when `SHELL` or `PATH` is long; store paths are. ([QubesOS/qubes-issues#11163](https://github.com/QubesOS/qubes-issues/issues/11163))
+- **qubes-app-u2f:** replies to CTAPHID_CBOR requests are framed as CTAPHID_MSG, which breaks spec-compliant FIDO2 clients. ([QubesOS/qubes-issues#10981](https://github.com/QubesOS/qubes-issues/issues/10981))
+- **qubes-app-u2f:** a makeCredential request without `rp.name` is rejected, although CTAP2 allows that. ([QubesOS/qubes-issues#11162](https://github.com/QubesOS/qubes-issues/issues/11162))
 
 ## Gotchas worth knowing
 

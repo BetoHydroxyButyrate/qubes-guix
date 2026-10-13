@@ -39,12 +39,17 @@ config=${QUBES_GUIX_CONFIG:-}
 [ -n "$config" ] || config=/etc/config.scm
 [ -f "$config" ] || die "no such file: $config"
 
-# A user's own pulled Guix (~/.config/guix/current) overrides the system's
-# for that user, and no longer follows the template's updates.
+# A user's own pulled Guix (~/.config/guix/current, which their PATH puts
+# first) overrides the system's for that user, and no longer follows the
+# template's updates. (The profile it points to, under
+# /var/guix/profiles/per-user, stays after the link is removed: harmless,
+# so check the link.)
 for p in /var/guix/profiles/per-user/*/current-guix; do
     [ -e "$p" ] || continue
     u=${p#/var/guix/profiles/per-user/}; u=${u%%/*}
     [ "$u" = root ] && continue
+    h=$(getent passwd "$u" | cut -d: -f6)
+    [ -n "$h" ] && [ -e "$h/.config/guix/current" ] || continue
     echo "$prog: note: user '$u' has their own pulled Guix, which overrides the
 system's for them. To use the system's: rm ~$u/.config/guix/current (as $u)." >&2
 done

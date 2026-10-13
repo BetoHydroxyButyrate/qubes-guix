@@ -53,7 +53,8 @@ for p in /var/guix/profiles/per-user/*/current-guix; do
     [ -e "$p" ] || continue
     u=${p#/var/guix/profiles/per-user/}; u=${u%%/*}
     [ "$u" = root ] && continue
-    h=$(getent passwd "$u" | cut -d: -f6)
+    # (Not getent: glibc's tools aren't in the system profile.)
+    h=$(grep "^$u:" /etc/passwd | cut -d: -f6)
     [ -n "$h" ] && [ -e "$h/.config/guix/current" ] || continue
     echo "$prog: note: user '$u' has their own pulled Guix, which overrides the
 system's for them. To use the system's: rm ~$u/.config/guix/current (as $u)." >&2

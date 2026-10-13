@@ -33,7 +33,9 @@
 ;;;   own guix include them, and #:extra-packages can name their packages.
 ;;;   #:extra-substitute-urls '("https://...") and #:extra-authorized-keys
 ;;;   (the servers' signing keys: (local-file ...), (plain-file ...) or the
-;;;   key text as a string) add a channel's own build farm, if it has one.
+;;;   key text as a string) add substitute servers: a channel's own build
+;;;   farm, or a local server or cache. They're tried before the default
+;;;   servers (which stay, as the fallback).
 ;;; - #:guix-commit "C": /etc/guix/channels.scm pins the guix channel at
 ;;;   commit C, so every 'guix pull' (and qubes-guix-update) stays there:
 ;;;   the template is "locked". #f (the default) follows the branch head.
@@ -171,16 +173,18 @@ string."
 (define (with-extra-substitutes config urls keys)
   "CONFIG, a guix-configuration, also using the substitute servers URLS,
 whose signing KEYS (file-like objects, or the key text as strings) it
-authorizes: e.g. a channel's own build farm."
+authorizes: e.g. a channel's own build farm, or a local server. URLS come
+FIRST: Guix takes each item from the first server in the list that has it,
+so a local server (or cache) is used whenever it can be, and the default
+servers only for what it lacks."
   (if (and (null? urls) (null? keys))
       config
       (guix-configuration
        (inherit config)
-       (substitute-urls (append (guix-configuration-substitute-urls config)
-                                (remove (cut member <>
-                                             (guix-configuration-substitute-urls
-                                              config))
-                                        urls)))
+       (substitute-urls (append urls
+                                (remove (cut member <> urls)
+                                        (guix-configuration-substitute-urls
+                                         config))))
        (authorized-keys (append (guix-configuration-authorized-keys config)
                                 (map as-key keys))))))
 

@@ -16,13 +16,20 @@
 # --build-commit C: build with Guix at commit C; "installer" is the
 #             installer's own commit (substitutes for nearly everything),
 #             "latest" the current master. Only for this build. Default:
-#             "installer", or "latest" with --channels (other channels
-#             track current Guix).
+#             the --guix-commit lock if given (so the first update has
+#             nothing to rebuild; with --substitutes, the commit your
+#             server built), else "installer", or "latest" with --channels
+#             (other channels track current Guix).
 # --guix-commit C: lock the installed system's Guix at C (#:guix-commit:
 #             its /etc/guix/channels.scm pins C). Default: follow the head.
 # --packages: extra packages, as #:extra-packages (missing ones are skipped).
 # --channels F: extra channels, F holding (channel ...) forms: built with,
 #             and recorded as #:extra-channels.
+# --substitutes F: extra substitute servers (e.g. a local guix publish or
+#             cache), F holding "url URL" and "key (public-key ...)" lines:
+#             used, before the default servers, for this build (the keys
+#             authorized in the installer), and recorded as
+#             #:extra-substitute-urls / #:extra-authorized-keys.
 # TARGET:     where the new system is mounted (default /mnt).
 #
 # qubes-guix-create --finish-install (dom0) fetches this repository into /tmp
@@ -35,6 +42,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 template=0
 branch=main
 build_commit=default
+subs_file=
 target=/mnt
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -49,6 +57,9 @@ while [ $# -gt 0 ]; do
                     [ -f "$2" ] || die "no such file: $2"
                     QUBES_CHANNELS_FILE=$(cd "$(dirname "$2")" && pwd)/${2##*/}
                     export QUBES_CHANNELS_FILE; shift 2;;
+        --substitutes) [ $# -ge 2 ] || die "$1 needs a file"
+                       [ -f "$2" ] || die "no such file: $2"
+                       subs_file=$2; shift 2;;
         --build-commit) [ $# -ge 2 ] || die "$1 needs a value"; build_commit=$2; shift 2;;
         --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"
                        QUBES_GUIX_COMMIT=$2; export QUBES_GUIX_COMMIT; shift 2;;
@@ -111,6 +122,10 @@ sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$cha
 # everything). But other channels track current Guix: nonguix, built against
 # the 1.5.0 installer's Guix, needs packages (linux-libre-7.2) that Guix
 # didn't have yet. So with extra channels, the default is the latest Guix.
+if [ "$build_commit" = default ] && [ -n "${QUBES_GUIX_COMMIT:-}" ]; then
+    build_commit=$QUBES_GUIX_COMMIT
+    say "Building with Guix at the commit it's locked to ($build_commit)"
+fi
 if [ "$build_commit" = default ]; then
     if [ -n "${QUBES_CHANNELS_FILE:-}" ]; then
         build_commit=latest
@@ -149,6 +164,25 @@ if [ -n "${QUBES_CHANNELS_FILE:-}" ]; then
     mv "$channels.extra" "$channels"
 fi
 
+# Extra substitute servers: authorized in the installer's daemon and used,
+# ahead of the default ones, for the builds below; recorded in config.scm
+# (QUBES_SUBSTITUTE_URLS/KEYS, read by wrap-config.guile).
+subs=
+if [ -n "$subs_file" ]; then
+    QUBES_SUBSTITUTE_URLS=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$subs_file" | xargs)
+    QUBES_SUBSTITUTE_KEYS=$(sed -n 's/^[[:space:]]*key[[:space:]]\{1,\}//p' "$subs_file")
+    export QUBES_SUBSTITUTE_URLS QUBES_SUBSTITUTE_KEYS
+    [ -n "$QUBES_SUBSTITUTE_URLS" ] || die "$subs_file: no 'url ...' line"
+    say "Substitute servers first: $QUBES_SUBSTITUTE_URLS"
+    printf '%s\n' "$QUBES_SUBSTITUTE_KEYS" > "$tmp/keys"
+    while IFS= read -r k; do
+        [ -n "$k" ] || continue
+        printf '%s\n' "$k" | guix archive --authorize ||
+            die "couldn't authorize the key: $k"
+    done < "$tmp/keys"
+    subs="$QUBES_SUBSTITUTE_URLS https://bordeaux.guix.gnu.org https://ci.guix.gnu.org"
+fi
+
 say "Wrapping $config"
 set +e
 QUBES_IN=$config QUBES_OUT=$new QUBES_TEMPLATE=$template QUBES_BRANCH=$branch \
@@ -162,7 +196,8 @@ case $status in
 esac
 
 say "Checking it with the qubes channel ($branch). The first run builds a Guix: slow."
-if ! guix time-machine -C "$channels" -- system build --dry-run "$new" >/dev/null; then
+if ! guix time-machine ${subs:+"--substitute-urls=$subs"} -C "$channels" -- \
+        system build ${subs:+"--substitute-urls=$subs"} --dry-run "$new" >/dev/null; then
     cp "$new" /root/config.scm.qubes-failed
     die "the wrapped configuration doesn't evaluate; $config is unchanged.
 The attempted version is in /root/config.scm.qubes-failed"
@@ -172,7 +207,8 @@ fi
 cp "$new" "$config"
 
 say "Rebuilding $target as a qube (guix system init; builds the Qubes agents)"
-guix time-machine -C "$channels" -- system init "$config" "$target"
+guix time-machine ${subs:+"--substitute-urls=$subs"} -C "$channels" -- \
+    system init ${subs:+"--substitute-urls=$subs"} "$config" "$target"
 
 cat <<EOF
 

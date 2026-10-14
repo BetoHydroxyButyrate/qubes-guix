@@ -1,0 +1,7 @@
+# qubes-guix-substitutes (dom0, next to qubes-guix-create): guix-subs on the
+# vl03 VLAN. Its own builds (signed with its key), then its caches of
+# bordeaux and ci; the defaults stay as the fallback.
+url http://guix-subs.zepherin.com
+url http://guix-subs.zepherin.com/bordeaux
+url http://guix-subs.zepherin.com/ci
+key (public-key (ecc (curve Ed25519) (q #B690E745D098BABC1CF2C66D11C1124A62438B5AC722FF79882041A003A4E823#)))

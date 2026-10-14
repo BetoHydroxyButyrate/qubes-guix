@@ -33,6 +33,7 @@ locale=en_US.utf8
 wait_start=1
 packages_file=
 channels_file=
+subs_file=
 guix_commit=
 first_update=1
 run_now=0
@@ -49,7 +50,8 @@ Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
                               [--run] NAME
        $prog --unattended [--template] [--branch B] [--no-password]
                           [--force] [--locale L] [--packages FILE]
-                          [--guix-commit C] [--no-update] [--no-wait] NAME
+                          [--guix-commit C] [--substitutes FILE]
+                          [--no-update] [--no-wait] NAME
 
 Create the StandaloneVM HVM qube NAME and boot it from the Guix System
 installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
@@ -115,6 +117,19 @@ Options:
                         #:extra-channels; --unattended and --finish-install
                         also build with them, so --packages can name their
                         packages.
+      --substitutes FILE
+                        with --unattended, --finish-install: extra
+                        substitute servers, e.g. your own 'guix publish' or
+                        cache (default: qubes-guix-substitutes next to this
+                        script, if there). FILE has lines
+                          url http://host/...
+                          key (public-key (ecc (curve Ed25519) (q #...#)))
+                        They're tried before the default servers for the
+                        install, and recorded in config.scm
+                        (#:extra-substitute-urls, #:extra-authorized-keys)
+                        for later updates. With --guix-commit, the install
+                        also builds at that commit: lock to the commit your
+                        server built, and nearly everything comes from it.
       --packages FILE   with --unattended, --finish-install, --bootstrap:
                         extra packages for config.scm (#:extra-packages),
                         one or more per line, # starts a comment (default:
@@ -163,6 +178,7 @@ while [ $# -gt 0 ]; do
         --no-wait)  wait_start=0; shift;;
         --packages) [ $# -ge 2 ] || die "$1 needs a value"; packages_file=$2; shift 2;;
         --channels) [ $# -ge 2 ] || die "$1 needs a value"; channels_file=$2; shift 2;;
+        --substitutes) [ $# -ge 2 ] || die "$1 needs a value"; subs_file=$2; shift 2;;
         --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
         --no-update) first_update=0; shift;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
@@ -260,6 +276,51 @@ read_channels() {
 # Shell lines that write $channels_text to file $1 in the qube.
 channels_heredoc() {
     printf "cat > %s <<'QGCH'\n%s\nQGCH\n" "$1" "$channels_text"
+}
+
+# Extra substitute servers, into $subs_text: from --substitutes FILE, or
+# qubes-guix-substitutes next to this script. Only "url URL" and
+# "key (public-key ...)" lines (comments and blank lines dropped), checked
+# here: they're typed into a root shell as a file.
+read_substitutes() {
+    if [ -z "$subs_file" ] && [ -f "$(dirname "$0")/qubes-guix-substitutes" ]; then
+        subs_file=$(dirname "$0")/qubes-guix-substitutes
+    fi
+    subs_text=
+    [ -n "$subs_file" ] || return 0
+    [ -r "$subs_file" ] || die "can't read $subs_file"
+    # Comments are whole lines only: keys contain '#'.
+    subs_text=$(sed 's/^[[:space:]]*#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' "$subs_file" | expand)
+    if [ -z "$subs_text" ]; then
+        echo "Substitute servers: none in $subs_file (all commented out?)"
+        return 0
+    fi
+    local line
+    while IFS= read -r line; do
+        case $line in
+            "url "*)
+                case ${line#url } in
+                    http://*|https://*) ;;
+                    *) die "$subs_file: not an http(s) URL: $line";;
+                esac
+                case ${line#url } in
+                    *[!A-Za-z0-9:/._~%-]*) die "$subs_file: odd characters in: $line";;
+                esac;;
+            "key (public-key "*")")
+                case $line in
+                    *"'"*|*'$'*|*'`'*|*'\'*|*'!'*) die "$subs_file: odd characters in: $line";;
+                esac;;
+            *) die "$subs_file: expected 'url URL' or 'key (public-key ...)' on one line, found: $line";;
+        esac
+    done <<< "$subs_text"
+    printf '%s\n' "$subs_text" | grep -q '^url ' || die "$subs_file: no 'url ...' line"
+    echo "Substitute servers (from $subs_file):"
+    printf '%s\n' "$subs_text" | sed -n 's/^url /  /p'
+}
+
+# Shell lines that write $subs_text to file $1 in the qube.
+subs_heredoc() {
+    printf "cat > %s <<'QGSU'\n%s\nQGSU\n" "$1" "$subs_text"
 }
 
 read_packages() {
@@ -403,9 +464,16 @@ if [ "$install" = 1 ]; then
         ch_lines="$(channels_heredoc /root/qubes-guix-channels.scm)"
         cmd="$cmd --channels /root/qubes-guix-channels.scm"
     fi
+    read_substitutes
+    su_lines=
+    if [ -n "$subs_text" ]; then
+        su_lines="$(subs_heredoc /root/qubes-guix-substitutes)"
+        cmd="$cmd --substitutes /root/qubes-guix-substitutes"
+    fi
     type_into "$name" "set +H
 $(net_cmds)
 $ch_lines
+$su_lines
 rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $cmd"
     cat <<EOF
 $typed into $name's console (VT3): the network setup, then a clone of branch
@@ -478,6 +546,12 @@ if [ "$finish_install" = 1 ]; then
         ch_lines="$(channels_heredoc /root/qubes-guix-channels.scm)"
         cmd="$cmd --channels /root/qubes-guix-channels.scm"
     fi
+    read_substitutes
+    su_lines=
+    if [ -n "$subs_text" ]; then
+        su_lines="$(subs_heredoc /root/qubes-guix-substitutes)"
+        cmd="$cmd --substitutes /root/qubes-guix-substitutes"
+    fi
     # The installer's shell is root, and its network was set up by
     # --type-network. git isn't in the installer image: guix shell fetches it.
     if [ "$run_now" = 1 ]; then
@@ -487,6 +561,7 @@ if [ "$finish_install" = 1 ]; then
     fi
     type_into "$name" "set +H
 $ch_lines
+$su_lines
 rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $next"
     if [ "$run_now" = 1 ]; then
         cat <<EOF

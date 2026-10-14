@@ -15,6 +15,9 @@
 ;;; qubes-guix-update --guix-commit changes it.
 ;;; With QUBES_CHANNELS_FILE=F, a file of (channel ...) forms, #:extra-channels
 ;;; (list <F's text>) (likewise; an existing one is left alone).
+;;; With QUBES_SUBSTITUTE_URLS="URL ..." (and QUBES_SUBSTITUTE_KEYS, the
+;;; servers' public keys, one per line), #:extra-substitute-urls and
+;;; #:extra-authorized-keys (likewise).
 ;;;
 ;;; The edit is textual (the file is never re-printed), so comments and
 ;;; layout survive. Exit status: 0 wrapped, 3 already a qube, 1 error.
@@ -99,12 +102,35 @@
        (string-append "\n #:extra-channels\n (list\n"
                       (string-trim-right channels-text)
                       "\n )")))
+;; QUBES_SUBSTITUTE_URLS="http://a http://a/bordeaux", QUBES_SUBSTITUTE_KEYS:
+;; one "(public-key ...)" per line.
+(define (non-empty-strings lst)
+  (filter (lambda (x) (not (string-null? x))) (map string-trim-both lst)))
+(define substitute-urls
+  (let ((u (getenv "QUBES_SUBSTITUTE_URLS")))
+    (if u (non-empty-strings (string-split u #\space)) '())))
+(define substitute-keys
+  (let ((k (getenv "QUBES_SUBSTITUTE_KEYS")))
+    (if k (non-empty-strings (string-split k #\newline)) '())))
+(define substitutes-keyword
+  (if (null? substitute-urls)
+      #f
+      (string-append
+       (format #f "\n #:extra-substitute-urls '~s" substitute-urls)
+       (if (null? substitute-keys)
+           ""
+           (string-append "\n #:extra-authorized-keys\n (list"
+                          (string-concatenate
+                           (map (lambda (k) (format #f "\n  ~s" k))
+                                substitute-keys))
+                          ")")))))
 (define new-keywords
   ;; Appended inside a new (qubes-operating-system ...) wrap.
   (string-append (if template? "\n #:template? #t" "")
                  (if branch (format #f "\n #:channel-branch ~s" branch) "")
                  (if guix-commit guix-commit-keyword "")
                  (or channels-keyword "")
+                 (or substitutes-keyword "")
                  (if (null? packages) "" packages-keyword)))
 (define last-form (car (last forms+ends)))
 (define last-end  (cdr (last forms+ends)))
@@ -150,6 +176,9 @@
                  guix-commit-keyword "")
              (if (and channels-keyword (not (memq #:extra-channels rest)))
                  channels-keyword "")
+             (if (and substitutes-keyword
+                      (not (memq #:extra-substitute-urls rest)))
+                 substitutes-keyword "")
              (if (and (pair? packages) (not (memq #:extra-packages rest)))
                  packages-keyword ""))))
        (when (string-null? additions) (next))

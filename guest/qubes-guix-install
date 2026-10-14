@@ -31,6 +31,9 @@
 #                       (#:extra-channels)
 #   --guix-commit C     lock the system's Guix at commit C (#:guix-commit);
 #                       default: follow the head
+#   --substitutes FILE  extra substitute servers ("url URL", "key (public-key
+#                       ...)" lines): used for the install, and recorded
+#                       in config.scm
 #   --force             DISK already has partitions: wipe it anyway
 #   --poweroff          power off when done (dom0 then starts it from disk)
 #
@@ -50,6 +53,7 @@ locale=en_US.utf8
 hash=
 packages=git
 channels_file=
+subs_file=
 guix_commit=
 force=0
 poweroff=0
@@ -72,6 +76,7 @@ while [ $# -gt 0 ]; do
         --packages) need "$@"; packages=$2; shift 2;;
         --channels) need "$@"; channels_file=$2; shift 2;;
         --guix-commit) need "$@"; guix_commit=$2; shift 2;;
+        --substitutes) need "$@"; subs_file=$2; shift 2;;
         --force) force=1; shift;;
         --poweroff) poweroff=1; shift;;
         -*) die "unknown option $1";;
@@ -202,6 +207,7 @@ fi
 set -- -b "$branch" --packages "$packages"
 [ -n "$guix_commit" ] && set -- "$@" --guix-commit "$guix_commit"
 [ -n "$channels_file" ] && set -- "$@" --channels "$channels_file"
+[ -n "$subs_file" ] && set -- "$@" --substitutes "$subs_file"
 [ "$template" = 1 ] && set -- --template "$@"
 sh "$here/qubes-guix-finish-install" "$@" "$target"
 

@@ -36,6 +36,9 @@
 ;;;   key text as a string) add substitute servers: a channel's own build
 ;;;   farm, or a local server or cache. They're tried before the default
 ;;;   servers (which stay, as the fallback).
+;;;   They're also listed in /etc/qubes-guix-substitute-urls, where
+;;;   qubes-guix-update --guix-commit server looks for the server whose
+;;;   last-built Guix commit to lock to.
 ;;; - #:guix-commit "C": /etc/guix/channels.scm pins the guix channel at
 ;;;   commit C, so every 'guix pull' (and qubes-guix-update) stays there:
 ;;;   the template is "locked". #f (the default) follows the branch head.
@@ -373,6 +376,16 @@ with a warning."
                              kept0)
                         kept0)))
          (append
+          ;; The extra servers, one per line, for qubes-guix-update
+          ;; --guix-commit server (the first one's /guix-commit).
+          (if (pair? extra-substitute-urls)
+              (list (simple-service
+                     'qubes-substitute-urls etc-service-type
+                     (list (list "qubes-guix-substitute-urls"
+                                 (plain-file "qubes-guix-substitute-urls"
+                                             (string-join extra-substitute-urls
+                                                          "\n" 'suffix))))))
+              '())
           (if system-channels?
               (list (simple-service 'qubes-trusted-channels
                                     activation-service-type

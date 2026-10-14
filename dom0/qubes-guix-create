@@ -104,7 +104,10 @@ Options:
       --guix-commit C   with --unattended: lock the qube's Guix at commit C
                         (#:guix-commit in its config.scm; move it later with
                         qubes-guix-update --guix-commit C, or --head).
-                        Default: follow the head.
+                        Default: follow the head. 'server': the commit
+                        the first --substitutes server last built (it
+                        publishes it as /guix-commit), so the install and
+                        updates match its builds.
       --no-update       with --unattended: skip the first update. Normally,
                         once installed (built with the installer's own Guix,
                         for speed), NAME is started and 'qubes-guix-update
@@ -452,7 +455,8 @@ if [ "$install" = 1 ]; then
     [ -n "$packages" ] && cmd="$cmd --packages '$packages'"
     if [ -n "$guix_commit" ]; then
         case $guix_commit in
-            *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash";;
+            server) ;;
+            *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash (or 'server')";;
         esac
         cmd="$cmd --guix-commit $guix_commit"
     fi
@@ -507,7 +511,7 @@ EOF
             # The install built with the installer's Guix (fast: substitutes).
             # Now bring the system to the Guix it follows: the head, or the
             # --guix-commit lock recorded in its config.scm.
-            echo "Updating $name: qubes-guix-update -r (pull to $( [ -n "$guix_commit" ] && echo "commit $guix_commit" || echo 'the head'), then reconfigure)."
+            echo "Updating $name: qubes-guix-update -r (pull to $( [ -n "$guix_commit" ] && echo "the locked commit" || echo 'the head'), then reconfigure)."
             echo "This is long: it builds the Qubes packages against that Guix. Output follows."
             if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r'; then
                 echo "Updated in $(elapsed) in all."

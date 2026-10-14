@@ -6,6 +6,9 @@
 #   with -r, then guix system reconfigure ${QUBES_GUIX_CONFIG:-/etc/config.scm}
 #   --guix-commit C  lock this system's Guix at commit C: sets #:guix-commit
 #                    in the config, pulls Guix at C and reconfigures
+#   --guix-commit server  likewise, at the commit your substitute server
+#                    last built (its /guix-commit; the server is the first
+#                    of #:extra-substitute-urls), so its builds match
 #   --head           unlock: follow the branch head again (likewise)
 #   --allow-downgrades  for the pull AND the reconfigure: needed once after a
 #                    channel's history was rewritten
@@ -36,7 +39,7 @@ while [ $# -gt 0 ]; do
         --guix-commit=*) pin=${1#*=}; reconfigure=1; shift;;
         --head) pin='head'; reconfigure=1; shift;;
         --allow-downgrades) downgrades=--allow-downgrades; shift;;
-        -h|--help) sed -n '2,11p' "$0"; exit 0;;
+        -h|--help) sed -n '2,14p' "$0"; exit 0;;
         *) break;;
     esac
 done
@@ -88,6 +91,26 @@ guix=$current
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+# --guix-commit server: the Guix commit the substitute server last built.
+# Fetched with 'guix download' (through the proxy, if any): no curl needed.
+if [ "$pin" = server ]; then
+    urls=/etc/qubes-guix-substitute-urls
+    [ -s "$urls" ] || die "--guix-commit server: no substitute server in the
+config (#:extra-substitute-urls) to ask"
+    server=$(head -n1 "$urls")
+    server=${server%/}
+    file=$("$guix" download "$server/guix-commit" 2>/dev/null | head -n1) ||
+        file=
+    [ -n "$file" ] && [ -f "$file" ] ||
+        die "--guix-commit server: couldn't fetch $server/guix-commit"
+    pin=$(tr -d ' \n' < "$file")
+    case $pin in
+        *[!0-9a-f]*|'') die "$server/guix-commit: '$pin' isn't a commit hash";;
+    esac
+    [ ${#pin} -eq 40 ] || die "$server/guix-commit: '$pin' isn't a full commit hash"
+    echo "$prog: $server last built Guix $pin; locking to it"
+fi
 
 if [ -n "$pin" ]; then
     case $pin in

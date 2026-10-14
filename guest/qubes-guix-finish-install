@@ -22,6 +22,8 @@
 #             (other channels track current Guix).
 # --guix-commit C: lock the installed system's Guix at C (#:guix-commit:
 #             its /etc/guix/channels.scm pins C). Default: follow the head.
+#             "server": the commit the first --substitutes server last
+#             built (its /guix-commit), so the install matches its builds.
 # --packages: extra packages, as #:extra-packages (missing ones are skipped).
 # --channels F: extra channels, F holding (channel ...) forms: built with,
 #             and recorded as #:extra-channels.
@@ -122,6 +124,22 @@ sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$cha
 # everything). But other channels track current Guix: nonguix, built against
 # the 1.5.0 installer's Guix, needs packages (linux-libre-7.2) that Guix
 # didn't have yet. So with extra channels, the default is the latest Guix.
+# --guix-commit server: ask the first substitute server which Guix commit
+# it last built (it publishes it as /guix-commit).
+if [ "${QUBES_GUIX_COMMIT:-}" = server ]; then
+    [ -n "$subs_file" ] || die "--guix-commit server needs --substitutes"
+    server=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$subs_file" | head -n1)
+    server=${server%/}
+    file=$(guix download "$server/guix-commit" 2>/dev/null | head -n1) || file=
+    [ -n "$file" ] && [ -f "$file" ] ||
+        die "couldn't fetch $server/guix-commit (is the server up?)"
+    QUBES_GUIX_COMMIT=$(tr -d ' \n' < "$file")
+    case $QUBES_GUIX_COMMIT in
+        *[!0-9a-f]*|'') die "$server/guix-commit: not a commit hash";;
+    esac
+    export QUBES_GUIX_COMMIT
+    say "$server last built Guix $QUBES_GUIX_COMMIT: locking to it"
+fi
 if [ "$build_commit" = default ] && [ -n "${QUBES_GUIX_COMMIT:-}" ]; then
     build_commit=$QUBES_GUIX_COMMIT
     say "Building with Guix at the commit it's locked to ($build_commit)"

@@ -333,6 +333,13 @@ exec " pa " --start -n --file=" #$output "/etc/pulse/qubes-default.pa \\
 " #$output "/bin/qubes-start-pulseaudio &
 " (search-input-file inputs "/bin/mkdir") " -p \"$HOME/.cache\"
 " #$output "/lib/qubes/icon-sender 2>\"$HOME/.cache/icon-sender.log\" &
+# split-ssh (qubes-split-ssh-client's session hook): its agent socket, for
+# every program of the session (the fork server, started below, passes the
+# environment on). An agent the session already has wins.
+if [ -x /run/current-system/profile/lib/qubes/session.d/split-ssh-client ] &&
+   [ -z \"${SSH_AUTH_SOCK:-}\" ]; then
+    export SSH_AUTH_SOCK=\"$HOME/.ssh/qubes-agent.sock\"
+fi
 # Session hooks from other qube packages (e.g. the split-gpg2 client): each
 # gates itself on its qubes-service and runs for the life of the session.
 for f in /run/current-system/profile/lib/qubes/session.d/*; do

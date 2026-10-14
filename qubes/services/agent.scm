@@ -36,6 +36,7 @@
   #:use-module (qubes packages gui)
   #:use-module (qubes packages ctap)        ; qctap-proxy (U2F/FIDO2)
   #:use-module (qubes packages split-gpg)   ; split-gpg2 client
+  #:use-module (qubes packages split-ssh)   ; split-ssh client
   #:export (qubes-guest-configuration
             qubes-guest-configuration?
             qubes-guest-network?
@@ -69,6 +70,10 @@
   ;; split-gpg2 client (qubes.Gpg2), or #f. Runs in the user's Qubes session
   ;; only when dom0 enables the qube's split-gpg2-client service.
   (split-gpg2 qubes-guest-split-gpg2 (default qubes-split-gpg2-client))
+  ;; split-ssh client (qubes.SshAgent), or #f. Runs in the user's Qubes
+  ;; session; dom0's qubes.SshAgent policy decides which vault (and whether
+  ;; to ask), so there's no per-qube service to enable.
+  (split-ssh  qubes-guest-split-ssh  (default qubes-split-ssh-client))
   ;; #t: this system is a Qubes TemplateVM, or an AppVM based on one (they
   ;; share this configuration). Adds what upstream's mount-dirs.sh and
   ;; initramfs do: /home on the private volume (/rw/home), swap on the
@@ -772,6 +777,10 @@ pull}, and optionally @command{guix system reconfigure}.")
           ;; because split-gpg2 is used through the ordinary gpg command.
           (if (and (qubes-guest-gui? config) (qubes-guest-split-gpg2 config))
               (list (qubes-guest-split-gpg2 config) gnupg)
+              '())
+          ;; Its session.d hook; qubes-session then exports SSH_AUTH_SOCK.
+          (if (and (qubes-guest-gui? config) (qubes-guest-split-ssh config))
+              (list (qubes-guest-split-ssh config))
               '())))
 
 (define qubes-guest-service-type

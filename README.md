@@ -18,6 +18,7 @@ Status: a daily-driven StandaloneVM (HVM) on Qubes R4.3. Everything below has be
 | Feature advertisement (`qvm-features`, Services tab) | ✅ |
 | U2F **and** FIDO2/passkeys via the CTAP proxy (sys-usb) | ✅ |
 | split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube) | ✅ |
+| split-ssh client (`ssh`, `git` over SSH with keys in a vault qube) | 🚧 written, not yet tested |
 | TemplateVM / AppVM based on a Guix template | 🚧 written, not yet tested |
 | PVH | ❌ not yet |
 | Qubes Update tool | ❌ by design (use `guix pull` + reconfigure; see below) |
@@ -33,6 +34,7 @@ qubes/packages/core-agent.scm   qubes-core-agent (qubes-rpc services, qfile-*), 
 qubes/packages/gui.scm          qubes-gui-common, qubes-gui-agent (Xorg drivers, pulse module, session glue)
 qubes/packages/ctap.scm         qubes-ctap (U2F/FIDO2 proxy, frontend)
 qubes/packages/split-gpg.scm    qubes-split-gpg2-client
+qubes/packages/split-ssh.scm    qubes-split-ssh-client
 qubes/services/agent.scm        qubes-guest-service-type — the integration
 qubes/system.scm                qubes-operating-system — adds all of it to any operating-system
 dom0/qubes-guix-create          dom0: create the qube and boot the installer
@@ -126,6 +128,7 @@ A local desktop (e.g. XFCE on `:0`) can coexist: the Qubes GUI agent runs its ow
           (network-interface "eth0")
           (ctap-backend "sys-usb")     ; #f: no U2F/FIDO2 proxy
           (split-gpg2 qubes-split-gpg2-client)  ; #f: no split-gpg2 client
+          (split-ssh qubes-split-ssh-client)    ; #f: no split-ssh client
           (default-menu-items '("xfce4-terminal.desktop" "thunar.desktop"))))
                                        ; what dom0 shows in the Qubes menu by
                                        ; default (only the installed ones)
@@ -319,6 +322,32 @@ Keep the template's netvm until the updates proxy works. dom0 normally enables `
   gpg -K                                     # sec# + ssb lines = working
   ```
   A warning that the agent "is older than us" is harmless. It just means the vault's GnuPG is older than Guix's.
+
+### Split SSH
+
+The SSH keys stay in a vault qube; Guix qubes use them through its `ssh-agent`, over qrexec (`qubes.SshAgent`). Every Guix qube with the GUI has the client: its session's `SSH_AUTH_SOCK` is `~/.ssh/qubes-agent.sock`, forwarded to whichever vault dom0's policy names. So enrolling a qube is only a policy line.
+
+- **Vault qube** (e.g. `ssh-vault`, no netvm): its agent on a fixed socket, with the keys added; `-c` asks for confirmation at each use. For example, in its `~/.bashrc`, so opening a terminal there once after boot starts the agent and adds the key (or put it in an autostart entry):
+  ```sh
+  export SSH_AUTH_SOCK=$HOME/.ssh/agent.sock
+  ssh-add -l >/dev/null 2>&1; [ $? -eq 2 ] && { rm -f "$SSH_AUTH_SOCK"; ssh-agent -a "$SSH_AUTH_SOCK" >/dev/null; }
+  ssh-add -l >/dev/null 2>&1 || ssh-add -c ~/.ssh/id_ed25519
+  ```
+  And the service, in the vault's template (or `/usr/local/etc/qubes-rpc/` in the vault itself):
+  ```sh
+  # /etc/qubes-rpc/qubes.SshAgent
+  #!/bin/sh
+  notify-send "SSH agent used by $QREXEC_REMOTE_DOMAIN" 2>/dev/null
+  exec socat - "UNIX-CONNECT:$HOME/.ssh/agent.sock"
+  ```
+  (`chmod +x`; `socat` must be installed.)
+- **dom0:** which qubes may use it. Tag the Guix AppVMs (`qvm-tags NAME add split-ssh`), or allow any qube and answer each prompt:
+  ```
+  # /etc/qubes/policy.d/30-user-split-ssh.policy
+  qubes.SshAgent  *  @tag:split-ssh  @default  allow target=ssh-vault
+  qubes.SshAgent  *  @anyvm          @default  ask default_target=ssh-vault
+  ```
+- **Guix qube:** nothing. `ssh-add -l` lists the vault's keys (after a prompt, with `ask`). If the session already has `SSH_AUTH_SOCK` (another agent), that one is used instead.
 
 ## Updating
 

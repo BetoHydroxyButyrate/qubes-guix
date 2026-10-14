@@ -145,19 +145,17 @@ if [ -n "$pin" ]; then
 
     # 2. This pull: the system's channels with Guix at the new lock. (Until
     # the reconfigure below, /etc/guix/channels.scm still has the old one.)
-    cat > "$tmp/channels.scm" <<SCM
-(map (lambda (c)
-       (if (eq? (channel-name c) 'guix)
-           (channel (inherit c) (commit $value))
-           c))
-     (call-with-input-file "/etc/guix/channels.scm"
-       (lambda (port)
-         (let loop ((value '()))
-           (let ((form (read port)))
-             (if (eof-object? form)
-                 value
-                 (loop (eval form (current-module)))))))))
-SCM
+    # /etc/guix/channels.scm is one (list (channel ...) ...) expression:
+    # wrap its text, rather than reading the file from inside the channels
+    # file (Guix evaluates those without file access: no
+    # call-with-input-file).
+    { printf '%s\n' "(map (lambda (c)" \
+          "       (if (eq? (channel-name c) 'guix)" \
+          "           (channel (inherit c) (commit $value))" \
+          "           c))"
+      cat /etc/guix/channels.scm
+      printf '%s\n' ")"
+    } > "$tmp/channels.scm"
     "$guix" pull -C "$tmp/channels.scm" ${downgrades:+"$downgrades"} "$@"
 else
     "$guix" pull -C /etc/guix/channels.scm ${downgrades:+"$downgrades"} "$@"

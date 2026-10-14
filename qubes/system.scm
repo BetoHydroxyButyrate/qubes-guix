@@ -193,35 +193,80 @@ servers only for what it lacks."
 ;; those of ~/.config/guix/trusted-channels.scm, or else those of the Guix
 ;; doing the pull. On a new system that's the system's Guix, without the
 ;; qubes channel, so the first pull from /etc/guix/channels.scm warns (for a
-;; local file it's only a warning). New home directories get a
-;; trusted-channels.scm that trusts what /etc/guix/channels.scm lists.
-;; A directory, not a single file: skeletons are copied with
-;; copy-recursively, which creates the parents (.config) only for
-;; directories. The channels are written out literally (channel->code).
-(define (guix-config-skeleton branch extras)
-  (let ((text (string-append
-               ";; The channels 'guix pull' trusts. Written by (qubes system) from the
-;; system's channels; add others (e.g. nonguix) to trust them too.
-"
-               (with-output-to-string
-                 (lambda ()
-                   (pretty-print
-                    `(list ,@(map channel->code
-                                  (add-channels %default-channels
-                                                (cons (qubes-channel branch)
-                                                      extras))))))))))
-    (computed-file "guix-config-skeleton"
-                   #~(begin
-                       (mkdir #$output)
-                       (call-with-output-file
-                           (string-append #$output "/trusted-channels.scm")
-                         (lambda (port) (display #$text port)))))))
+;; local file it's only a warning).
+;;
+;; So every reconfigure writes /etc/guix/trusted-channels.scm from the
+;; system's channels, and home directories get a LINK to it (skeleton, and
+;; an activation step for existing homes): it then follows the channels as
+;; they change. (A copy, as before, went stale with the first channel added
+;; or changed: a later #:extra-channels stayed "not trusted" for good.)
+(define %trusted-channels-file "/etc/guix/trusted-channels.scm")
 
-(define (with-trusted-channels skeletons branch extras)
+;; First line of the file, also of the copies earlier versions put in home
+;; directories: the activation replaces those (only those) with the link.
+(define %trusted-channels-marker
+  ";; The channels 'guix pull' trusts. Written by (qubes system)")
+
+(define (trusted-channels-file branch extras)
+  (plain-file
+   "trusted-channels.scm"
+   (string-append
+    %trusted-channels-marker " from the
+;; system's channels at every reconfigure: change those in config.scm, not
+;; this file. To trust more (e.g. a channel you pull yourself), replace the
+;; link ~/.config/guix/trusted-channels.scm with a file of your own.
+"
+    (with-output-to-string
+      (lambda ()
+        (pretty-print
+         `(list ,@(map channel->code
+                       (add-channels %default-channels
+                                     (cons (qubes-channel branch)
+                                           extras))))))))))
+
+;; A directory, not a single entry: skeletons are copied with
+;; copy-recursively, which creates the parents (.config) only for
+;; directories, and copies the link as a link.
+(define guix-config-skeleton
+  (computed-file "guix-config-skeleton"
+                 #~(begin
+                     (mkdir #$output)
+                     (symlink #$%trusted-channels-file
+                              (string-append #$output
+                                             "/trusted-channels.scm")))))
+
+(define (trusted-channels-activation branch extras)
+  #~(begin
+      (use-modules (ice-9 ftw) (ice-9 rdelim))
+      (let ((target #$%trusted-channels-file)
+            (marker #$%trusted-channels-marker))
+        (unless (file-exists? "/etc/guix") (mkdir "/etc/guix"))
+        (false-if-exception (delete-file target))
+        (symlink #$(trusted-channels-file branch extras) target)
+        ;; Earlier versions' copies in existing homes -> the link. (In an
+        ;; AppVM, /home may not be mounted yet: those are done at the next
+        ;; activation that sees them, or by hand.)
+        (for-each
+         (lambda (home)
+           (let ((f (string-append home
+                                   "/.config/guix/trusted-channels.scm")))
+             (when (and (false-if-exception
+                         (eq? 'regular (stat:type (lstat f))))
+                        (let ((line (call-with-input-file f read-line)))
+                          (and (string? line)
+                               (string-prefix? marker line))))
+               (delete-file f)
+               (symlink target f))))
+         (cons "/root"
+               (map (lambda (d) (string-append "/home/" d))
+                    (or (scandir "/home"
+                                 (lambda (d) (not (member d '("." "..")))))
+                        '())))))))
+
+(define (with-trusted-channels skeletons)
   (if (assoc ".config/guix" skeletons)
       skeletons
-      (cons (list ".config/guix" (guix-config-skeleton branch extras))
-            skeletons)))
+      (cons (list ".config/guix" guix-config-skeleton) skeletons)))
 
 ;; The system's own guix (/run/current-system/profile/bin/guix, the one a
 ;; user has before their first 'guix pull') built from the channels of the
@@ -297,8 +342,7 @@ with a warning."
                %qubes-kernel-arguments))
       (users (map add-qubes-group (operating-system-users os)))
       (skeletons (if system-channels?
-                     (with-trusted-channels (operating-system-skeletons os)
-                                            channel-branch extra-channels)
+                     (with-trusted-channels (operating-system-skeletons os))
                      (operating-system-skeletons os)))
       (packages (append (operating-system-packages os)
                         (available-packages extra-packages)))
@@ -328,10 +372,18 @@ with a warning."
                                    s))
                              kept0)
                         kept0)))
-         (if (any qubes-service? kept)
-             kept                       ; already a qube: keep its config
-             (cons (service qubes-guest-service-type
-                            (if template? (as-template config) config))
-                   (if (qubes-guest-network? config)
-                       (remove-services-named %networking-service-names kept)
-                       kept))))))))
+         (append
+          (if system-channels?
+              (list (simple-service 'qubes-trusted-channels
+                                    activation-service-type
+                                    (trusted-channels-activation
+                                     channel-branch extra-channels)))
+              '())
+          (if (any qubes-service? kept)
+              kept                      ; already a qube: keep its config
+              (cons (service qubes-guest-service-type
+                             (if template? (as-template config) config))
+                    (if (qubes-guest-network? config)
+                        (remove-services-named %networking-service-names
+                                               kept)
+                        kept)))))))))

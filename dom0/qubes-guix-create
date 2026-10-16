@@ -104,9 +104,11 @@ Options:
       --guix-commit C   with --unattended: lock the qube's Guix at commit C
                         (#:guix-commit in its config.scm; move it later with
                         qubes-guix-update --guix-commit C, or --head).
-                        Default: follow the head. 'server': the commit
-                        the first --substitutes server last built (it
-                        publishes it as /guix-commit), so the install and
+                        Default: follow the head. 'server': every channel
+                        at the commits the first --substitutes server last
+                        built (its /channel-commits, recorded as
+                        #:channel-commits; Guix alone from /guix-commit if
+                        that's all it publishes), so the install and
                         updates match its builds.
       --no-update       with --unattended: skip the first update. Normally,
                         once installed (built with the installer's own Guix,

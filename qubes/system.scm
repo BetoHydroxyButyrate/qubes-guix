@@ -43,6 +43,16 @@
 ;;;   commit C, so every 'guix pull' (and qubes-guix-update) stays there:
 ;;;   the template is "locked". #f (the default) follows the branch head.
 ;;;   Move it with 'qubes-guix-update --guix-commit C' (or --head).
+;;; - #:channel-commits '((guix . "C1") (qubes . "C2") ...): likewise for
+;;;   every channel named, e.g. all those a substitute server built from,
+;;;   so the qube's packages match its builds ('qubes-guix-update
+;;;   --guix-commit server' writes it from the server's /channel-commits).
+;;;   Channels it doesn't name follow their branch. #:guix-commit, if set,
+;;;   wins for guix.
+;;; - #:follow-head '(qubes ...): these channels follow their branch head
+;;;   even when #:channel-commits pins them (#t: all channels). E.g. while
+;;;   working on qubes-guix itself: set '(qubes), then qubes-guix-update -r.
+;;;   The lock stays recorded; remove the name to use it again.
 ;;; - unless #:system-guix? is #f (and with system channels): the system's
 ;;;   own guix is built from the channels of the Guix doing the build, so it
 ;;;   includes qubes: 'guix describe' shows it from the first boot.
@@ -137,17 +147,21 @@ Guix runs visudo on the result, so a syntax error fails the build."
      (openpgp-fingerprint                ; the signing subkey
       "9765 1FBD E504 F2D1 3DA9  88EB C0E8 4747 0C0B 2F22")))))
 
-(define (pin-guix chans pin)
-  "CHANS with the guix channel at commit PIN (a string), or as they are if
-PIN is #f.  (Not named 'commit': inside (channel (inherit ...)) the field
-binding would shadow it.)"
-  (if pin
-      (map (lambda (c)
-             (if (eq? (channel-name c) 'guix)
-                 (channel (inherit c) (commit pin))
-                 c))
-           chans)
-      chans))
+(define (pin-channels chans pins follow-head)
+  "CHANS with each channel that PINS (an alist of channel names and commit
+strings) names at that commit, unless FOLLOW-HEAD (a list of channel names,
+or #t for all) names it: those, and channels PINS doesn't name, are left as
+they are.  (The commit isn't bound to a variable named 'commit': inside
+(channel (inherit ...)) the field binding would shadow it.)"
+  (define (follows? name)
+    (or (eq? follow-head #t) (memq name follow-head)))
+  (map (lambda (c)
+         (let ((pin (and (not (follows? (channel-name c)))
+                         (assq-ref pins (channel-name c)))))
+           (if pin
+               (channel (inherit c) (commit pin))
+               c)))
+       chans))
 
 (define (add-channels chans more)
   "CHANS followed by those of MORE whose names CHANS doesn't have yet."
@@ -158,14 +172,20 @@ binding would shadow it.)"
                   more)))
 
 (define* (with-qubes-channel config branch #:optional guix-commit
-                             (extras '()))
+                             (extras '()) (channel-commits '())
+                             (follow-head '()))
   "CONFIG, a guix-configuration, with the qubes channel and the EXTRAS
 channels added to the system-wide channels (unless it already has channels
-of those names), and the guix channel pinned at GUIX-COMMIT if that's a
-string."
-  (let* ((old (or (guix-configuration-channels config) %default-channels))
-         (new (pin-guix (add-channels old (cons (qubes-channel branch) extras))
-                        guix-commit)))
+of those names), and the channels pinned: those CHANNEL-COMMITS names at its
+commits, and guix at GUIX-COMMIT if that's a string (it wins over
+CHANNEL-COMMITS); except those FOLLOW-HEAD names (or all, if it's #t)."
+  (let* ((old  (or (guix-configuration-channels config) %default-channels))
+         (pins (if guix-commit
+                   (acons 'guix guix-commit channel-commits)
+                   channel-commits))
+         (new  (pin-channels (add-channels old
+                                           (cons (qubes-channel branch) extras))
+                             pins follow-head)))
     (guix-configuration
      (inherit config)
      (channels new))))
@@ -312,6 +332,8 @@ servers only for what it lacks."
                                  (system-guix? #t)
                                  (channel-branch "main")
                                  (guix-commit #f)
+                                 (channel-commits '())
+                                 (follow-head '())
                                  (extra-channels '())
                                  (extra-substitute-urls '())
                                  (extra-authorized-keys '())
@@ -366,7 +388,9 @@ with a warning."
                                                        (service-value s)
                                                        channel-branch
                                                        guix-commit
-                                                       extra-channels)
+                                                       extra-channels
+                                                       channel-commits
+                                                       follow-head)
                                                       extra-substitute-urls
                                                       extra-authorized-keys)))
                                               (if system-guix?

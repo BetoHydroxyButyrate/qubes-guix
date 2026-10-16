@@ -22,8 +22,11 @@
 #             (other channels track current Guix).
 # --guix-commit C: lock the installed system's Guix at C (#:guix-commit:
 #             its /etc/guix/channels.scm pins C). Default: follow the head.
-#             "server": the commit the first --substitutes server last
-#             built (its /guix-commit), so the install matches its builds.
+#             "server": EVERY channel at the commits the first
+#             --substitutes server last built (its /channel-commits;
+#             recorded as #:channel-commits), so the install matches its
+#             builds; Guix alone (its /guix-commit) if it doesn't publish
+#             /channel-commits.
 # --packages: extra packages, as #:extra-packages (missing ones are skipped).
 # --channels F: extra channels, F holding (channel ...) forms: built with,
 #             and recorded as #:extra-channels.
@@ -124,24 +127,50 @@ sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$cha
 # everything). But other channels track current Guix: nonguix, built against
 # the 1.5.0 installer's Guix, needs packages (linux-libre-7.2) that Guix
 # didn't have yet. So with extra channels, the default is the latest Guix.
-# --guix-commit server: ask the first substitute server which Guix commit
-# it last built (it publishes it as /guix-commit).
+# --guix-commit server: ask the first substitute server which commits it
+# last built: every channel's (its /channel-commits, "NAME COMMIT" lines),
+# or Guix's alone (/guix-commit, from servers that publish only that).
+server_commits=
 if [ "${QUBES_GUIX_COMMIT:-}" = server ]; then
     [ -n "$subs_file" ] || die "--guix-commit server needs --substitutes"
     server=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$subs_file" | head -n1)
     server=${server%/}
-    file=$(guix download "$server/guix-commit" 2>/dev/null | head -n1) || file=
-    [ -n "$file" ] && [ -f "$file" ] ||
-        die "couldn't fetch $server/guix-commit (is the server up?)"
-    QUBES_GUIX_COMMIT=$(tr -d ' \n' < "$file")
-    case $QUBES_GUIX_COMMIT in
-        *[!0-9a-f]*|'') die "$server/guix-commit: not a commit hash";;
-    esac
-    export QUBES_GUIX_COMMIT
-    say "$server last built Guix $QUBES_GUIX_COMMIT: locking to it"
+    file=$(guix download "$server/channel-commits" 2>/dev/null | head -n1) || file=
+    if [ -n "$file" ] && [ -f "$file" ]; then
+        server_commits=$(grep -v '^[[:space:]]*$' "$file")
+        printf '%s\n' "$server_commits" | while read -r name c rest; do
+            case $c in
+                *[!0-9a-f]*|'') die "$server/channel-commits: '$name $c' isn't NAME COMMIT";;
+            esac
+            [ ${#c} -eq 40 ] && [ -z "$rest" ] ||
+                die "$server/channel-commits: '$name $c $rest' isn't NAME COMMIT"
+        done || exit 1
+        guix_lock=$(printf '%s\n' "$server_commits" | awk '$1 == "guix" {print $2; exit}')
+        [ -n "$guix_lock" ] || die "$server/channel-commits: no guix line"
+        # Recorded as #:channel-commits (wrap-config.guile), which has Guix's
+        # too: no separate #:guix-commit.
+        unset QUBES_GUIX_COMMIT
+        QUBES_CHANNEL_COMMITS=$server_commits
+        export QUBES_CHANNEL_COMMITS
+        say "$server last built these channels: locking to them
+$server_commits"
+    else
+        file=$(guix download "$server/guix-commit" 2>/dev/null | head -n1) || file=
+        [ -n "$file" ] && [ -f "$file" ] ||
+            die "couldn't fetch $server/channel-commits or /guix-commit (is the server up?)"
+        QUBES_GUIX_COMMIT=$(tr -d ' \n' < "$file")
+        case $QUBES_GUIX_COMMIT in
+            *[!0-9a-f]*|'') die "$server/guix-commit: not a commit hash";;
+        esac
+        export QUBES_GUIX_COMMIT
+        guix_lock=$QUBES_GUIX_COMMIT
+        say "$server last built Guix $QUBES_GUIX_COMMIT (it publishes no
+/channel-commits): locking Guix alone to it"
+    fi
 fi
-if [ "$build_commit" = default ] && [ -n "${QUBES_GUIX_COMMIT:-}" ]; then
-    build_commit=$QUBES_GUIX_COMMIT
+[ -n "${guix_lock:-}" ] || guix_lock=${QUBES_GUIX_COMMIT:-}
+if [ "$build_commit" = default ] && [ -n "$guix_lock" ]; then
+    build_commit=$guix_lock
     say "Building with Guix at the commit it's locked to ($build_commit)"
 fi
 if [ "$build_commit" = default ]; then
@@ -180,6 +209,22 @@ if [ -n "${QUBES_CHANNELS_FILE:-}" ]; then
     { echo '(append'; cat "$channels"; echo; echo '(list'
       cat "$QUBES_CHANNELS_FILE"; echo; echo '))'; } > "$channels.extra"
     mv "$channels.extra" "$channels"
+fi
+
+# The server's commits for the channels other than Guix (whose commit the
+# build uses is $build_commit, above): build with them too, so the qubes,
+# nonguix... packages come from the server.
+if [ -n "$server_commits" ]; then
+    pins=$(printf '%s\n' "$server_commits" |
+           awk '$1 != "guix" {printf "(%s . \"%s\") ", $1, $2}')
+    { printf '%s\n' "(let ((pins '($pins)))" \
+          "  (map (lambda (c)" \
+          "         (let ((pin (assq-ref pins (channel-name c))))" \
+          "           (if pin (channel (inherit c) (commit pin)) c)))"
+      cat "$channels"
+      printf '%s\n' "))"
+    } > "$channels.locked"
+    mv "$channels.locked" "$channels"
 fi
 
 # Extra substitute servers: authorized in the installer's daemon and used,

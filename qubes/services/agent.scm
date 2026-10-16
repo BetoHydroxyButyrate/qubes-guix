@@ -704,9 +704,10 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
 
 ;; `qubes-guix-update`: guix pull, then optionally reconfigure, through the
 ;; Qubes updates proxy when dom0 enabled updates-proxy-setup for this qube
-;; (templates); also moves the Guix lock (#:guix-commit). The script is
-;; qubes/aux-files/qubes-guix-update.sh; it uses guest/wrap-config.guile to
-;; add #:guix-commit to a configuration that has none.
+;; (templates); also moves the locks (#:guix-commit, #:channel-commits) and
+;; honours #:follow-head. The script is qubes/aux-files/qubes-guix-update.sh;
+;; it uses guest/wrap-config.guile to add or replace those in a configuration
+;; and to read #:follow-head.
 
 ;; `pguix`: guix, through the Qubes updates proxy when this qube has one.
 ;; Only the commands that fetch in the caller's own process need it: pull

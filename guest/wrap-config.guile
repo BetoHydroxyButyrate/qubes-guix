@@ -13,6 +13,13 @@
 ;;; With QUBES_GUIX_COMMIT=C, #:guix-commit "C" (likewise): the commit the
 ;;; system's channels pin Guix at. An existing #:guix-commit is left alone;
 ;;; qubes-guix-update --guix-commit changes it.
+;;; With QUBES_CHANNEL_COMMITS="NAME COMMIT" lines (a substitute server's
+;;; /channel-commits), #:channel-commits '((NAME . "COMMIT") ...): added to a
+;;; new wrap or one without it, and REPLACED in one that has it (then nothing
+;;; else is changed). Set but empty: #:channel-commits '() (unlocked).
+;;; With QUBES_PRINT=follow-head, print the channel names of #:follow-head
+;;; (space-separated; "all" for #t; nothing if none), change nothing, and
+;;; need no QUBES_OUT.
 ;;; With QUBES_CHANNELS_FILE=F, a file of (channel ...) forms, #:extra-channels
 ;;; (list <F's text>) (likewise; an existing one is left alone).
 ;;; With QUBES_SUBSTITUTE_URLS="URL ..." (and QUBES_SUBSTITUTE_KEYS, the
@@ -26,6 +33,7 @@
 ;;; a channel, and loading this script would exit and fail guix pull.
 
 (use-modules (ice-9 textual-ports)
+             (ice-9 rdelim)
              (ice-9 match)
              (srfi srfi-1))
 
@@ -39,7 +47,12 @@
   (exit 1))
 
 (define in  (or (getenv "QUBES_IN")  (fail "QUBES_IN not set")))
-(define out (or (getenv "QUBES_OUT") (fail "QUBES_OUT not set")))
+(define print-request                   ; QUBES_PRINT=follow-head
+  (let ((p (getenv "QUBES_PRINT")))
+    (and p (not (string-null? p)) p)))
+(define out (or (getenv "QUBES_OUT")
+                (and print-request "/dev/null")
+                (fail "QUBES_OUT not set")))
 
 (define text (call-with-input-file in get-string-all))
 
@@ -79,6 +92,38 @@
     (and c (not (string-null? c)) c)))
 (define guix-commit-keyword
   (format #f "\n #:guix-commit ~s" guix-commit))
+(define channel-commits                 ; QUBES_CHANNEL_COMMITS: "NAME COMMIT" lines
+  ;; #f if unset; '() if set but empty (unlock).
+  (let ((c (getenv "QUBES_CHANNEL_COMMITS")))
+    (and c
+         (filter-map
+          (lambda (line)
+            (match (filter (lambda (w) (not (string-null? w)))
+                           (string-split (string-trim-both line) #\space))
+              (() #f)
+              ((name commit)
+               (unless (and (>= (string-length commit) 7)
+                            (string-every (char-set-union char-set:digit
+                                                          (string->char-set "abcdef"))
+                                          commit))
+                 (fail "QUBES_CHANNEL_COMMITS: ~s isn't a commit hash" commit))
+               (cons (string->symbol name) commit))
+              (_ (fail "QUBES_CHANNEL_COMMITS: expected \"NAME COMMIT\", got ~s"
+                       line))))
+          (string-split c #\newline)))))
+(define channel-commits-value           ; the value's text
+  (and channel-commits
+       (if (null? channel-commits)
+           "'()"
+           (string-append
+            "'("
+            (string-join (map (lambda (p) (format #f "(~a . ~s)" (car p) (cdr p)))
+                              channel-commits)
+                         "\n   ")
+            ")"))))
+(define channel-commits-keyword
+  (and channel-commits (pair? channel-commits)
+       (string-append "\n #:channel-commits\n " channel-commits-value)))
 (define channels-text                   ; QUBES_CHANNELS_FILE=extra.scm
   ;; The file's text, kept as written (comments too), after checking that
   ;; its forms are all (channel ...).
@@ -129,6 +174,7 @@
   (string-append (if template? "\n #:template? #t" "")
                  (if branch (format #f "\n #:channel-branch ~s" branch) "")
                  (if guix-commit guix-commit-keyword "")
+                 (or channel-commits-keyword "")
                  (or channels-keyword "")
                  (or substitutes-keyword "")
                  (if (null? packages) "" packages-keyword)))
@@ -158,6 +204,74 @@
 
 ")
 
+;; QUBES_PRINT=follow-head: report #:follow-head, change nothing.
+(define (quoted-names x)
+  (match x
+    (('quote (? list? names)) names)
+    (('list . items)
+     (map (match-lambda (('quote (? symbol? n)) n)
+                        (other (fail "#:follow-head: can't read ~s" other)))
+          items))
+    (_ (fail "#:follow-head: expected #t or '(name ...), got ~s" x))))
+(when print-request
+  (unless (string=? print-request "follow-head")
+    (fail "QUBES_PRINT: only follow-head is known, not ~s" print-request))
+  (match last-form
+    (('qubes-operating-system . rest)
+     (match (memq #:follow-head rest)
+       ((_ #t . _) (display "all"))
+       ((_ value . _) (display (string-join (map symbol->string
+                                                 (quoted-names value))
+                                            " ")))
+       (_ #t)))
+    (_ #t))
+  (newline)
+  (exit 0))
+
+;; The elements of the form that starts (with its "(") at START: a list of
+;; (DATUM START . END), END just past the datum. Positions are ftell's, as
+;; for forms+ends.
+(define (skip-blank port)
+  (let loop ()
+    (let ((c (peek-char port)))
+      (cond ((eof-object? c) (ftell port))
+            ((char-whitespace? c) (read-char port) (loop))
+            ((char=? c #\;) (read-line port) (loop))
+            (else (ftell port))))))
+(define (form-elements start)
+  (call-with-input-string text
+    (lambda (port)
+      (seek port (+ start 1) SEEK_SET)
+      (let loop ((acc '()))
+        (let ((pos (skip-blank port)))
+          (if (let ((c (peek-char port)))
+                (or (eof-object? c) (char=? c #\))))
+              (reverse acc)
+              (let* ((datum (read port))
+                     (end (ftell port)))
+                (loop (cons (cons* datum pos end) acc)))))))))
+
+;; QUBES_CHANNEL_COMMITS on a wrap that already has #:channel-commits:
+;; replace its value (only that), keeping everything else as written.
+(match last-form
+  (('qubes-operating-system . rest)
+   (when (and channel-commits (memq #:channel-commits rest))
+     (let loop ((elts (form-elements last-start)))
+       (cond ((or (null? elts) (null? (cdr elts)))
+              (fail "couldn't find #:channel-commits' value in ~a" in))
+             ((eq? (car (car elts)) #:channel-commits)
+              (let ((vstart (cadr (cadr elts)))
+                    (vend   (cddr (cadr elts))))
+                (call-with-output-file out
+                  (lambda (port)
+                    (put-string port (substring text 0 vstart))
+                    (put-string port channel-commits-value)
+                    (put-string port (substring text vend))))
+                (format #t "Set #:channel-commits in ~a -> ~a~%" in out)
+                (exit 0)))
+             (else (loop (cdr elts)))))))
+  (_ #t))
+
 (when (any (lambda (f) (mentions? '(qubes-operating-system
                                     qubes-guest-service-type)
                                   (car f)))
@@ -174,6 +288,9 @@
                  "\n #:template? #t" "")
              (if (and guix-commit (not (memq #:guix-commit rest)))
                  guix-commit-keyword "")
+             (if (and channel-commits-keyword
+                      (not (memq #:channel-commits rest)))
+                 channel-commits-keyword "")
              (if (and channels-keyword (not (memq #:extra-channels rest)))
                  channels-keyword "")
              (if (and substitutes-keyword

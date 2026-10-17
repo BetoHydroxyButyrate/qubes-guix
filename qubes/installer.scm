@@ -1,0 +1,202 @@
+;;; qubes/installer.scm — the qubes-guix installer ISO.
+;;;
+;;; The stock Guix System installer, plus what makes it a (headless) qube:
+;;; QubesDB, the qrexec agent, and the network from QubesDB. So under Qubes:
+;;; - no GRUB edit: 'nomodeset' is on the kernel command line (the console on
+;;;   VT3 needs it);
+;;; - no network setup by hand: the address, gateway and DNS come from QubesDB
+;;;   at boot, as in any qube;
+;;; - no typing into the console: dom0 drives an install with
+;;;   'qvm-run -u root' (qubes-guix-create --unattended), and sees its output;
+;;; - this repository's guest/ scripts are in /root/qubes-guix (git, too);
+;;; - its 'guix' already includes the qubes channel, and the Qubes packages a
+;;;   qube needs are in its store: qubes-guix-finish-install uses that Guix
+;;;   directly, with nothing to build for the Qubes agents.
+;;; The installer's own dialogs (on tty1) still work, for a manual install.
+;;;
+;;; Build it with iso/qubes-guix-iso (a Guix that includes this channel is
+;;; what puts the channel into the ISO's guix), or by hand:
+;;;
+;;;   guix time-machine -C channels.scm -- system image -t iso9660 \
+;;;     -e '((@ (qubes installer) qubes-installation-os))'
+;;;
+;;; #:offline? #t also puts in the ISO everything the default install
+;;; (qubes-guix-install: Xfce, user 'user', git) needs, and the git checkouts
+;;; of the channels: that install then needs no network at all. It makes the
+;;; ISO a few GiB larger.
+;;;
+;;; The installer never sends its features to dom0 (features-request? #f):
+;;; dom0 keeps the first value a qube gives for qrexec and gui, and the
+;;; installer's gui=0 would stick to the installed system.
+
+(define-module (qubes installer)
+  #:use-module (gnu)
+  #:use-module (gnu system install)
+  #:use-module ((gnu packages version-control) #:select (git))
+  #:use-module ((gnu services desktop)
+                #:select (%desktop-services xfce-desktop-service-type))
+  #:use-module (guix channels)
+  #:use-module ((guix describe) #:select (current-channels))
+  #:autoload   (guix git) (url-cache-directory %repository-cache-directory)
+  #:use-module ((guix utils) #:select (cache-directory))
+  #:use-module (guix gexp)
+  #:use-module (qubes system)
+  #:use-module (qubes services agent)
+  #:use-module ((qubes packages gui) #:select (qubes-gui-agent))
+  #:use-module ((qubes packages ctap) #:select (qubes-ctap))
+  #:use-module ((qubes packages split-gpg) #:select (qubes-split-gpg2-client))
+  #:use-module ((qubes packages split-ssh) #:select (qubes-split-ssh-client))
+  #:use-module (srfi srfi-1)
+  #:export (qubes-installation-os
+            qubes-reference-os))
+
+;; This repository's guest scripts, copied to /root/qubes-guix/guest at boot
+;; (writable, and outside /tmp, which cow-store hides).
+(define %guest-scripts
+  (local-file "../guest" "qubes-guix-guest" #:recursive? #t))
+
+(define %installer-config
+  (qubes-guest-configuration
+   (gui? #f)                    ; the console window is the installer's screen
+   (ctap-backend #f)
+   (split-gpg2 #f)
+   (split-ssh #f)
+   (features-request? #f)))
+
+(define (qubes-reference-os branch)
+  "The system qubes-guix-install writes (Xfce, user 'user', git), wrapped as
+qubes-guix-finish-install wraps it. Only its packages matter: in the offline
+ISO, its closure means an install needs no substitutes. Keep it in step with
+the config.scm that guest/qubes-guix-install writes."
+  (qubes-operating-system
+   (operating-system
+     (locale "en_US.utf8")
+     (timezone "UTC")
+     (keyboard-layout (keyboard-layout "us"))
+     (host-name "guix")
+     (users (cons* (user-account
+                     (name "user")
+                     (comment "Qubes user")
+                     (group "users")
+                     (home-directory "/home/user")
+                     (supplementary-groups '("wheel" "netdev" "audio" "video")))
+                   %base-user-accounts))
+     (services
+      (append (list (service xfce-desktop-service-type))
+              %desktop-services))
+     (bootloader (bootloader-configuration
+                   (bootloader grub-bootloader)
+                   (targets (list "/dev/xvda"))
+                   (keyboard-layout keyboard-layout)))
+     (file-systems (cons* (file-system
+                            (mount-point "/")
+                            (device (file-system-label "guix-root"))
+                            (type "ext4"))
+                          %base-file-systems)))
+   #:channel-branch branch
+   #:extra-packages '("git")))
+
+;; The git checkouts of the channels this Guix was built from, as in
+;; ~/.cache/guix/checkouts, and the authentication cache: lowering the
+;; system's guix (guix-for-channels) needs them, and would otherwise clone
+;; guix.git during the install. Taken from the cache of whoever builds the
+;; ISO, which 'guix time-machine' (or pull) has just filled.
+(define (channel-checkouts)
+  (let ((cache (cache-directory #:ensure? #f)))
+    (filter-map
+     (lambda (c)
+       (let ((dir (url-cache-directory (channel-url c)
+                                       (%repository-cache-directory))))
+         (and (file-exists? dir)
+              (list (string-append "checkouts/" (basename dir))
+                    (local-file dir
+                                (string-append "checkout-"
+                                               (symbol->string (channel-name c)))
+                                #:recursive? #t)))))
+     (current-channels))))
+
+(define (authentication-cache)
+  (let ((dir (string-append (cache-directory #:ensure? #f) "/authentication")))
+    (if (file-exists? dir)
+        (list (list "authentication"
+                    (local-file dir "guix-authentication-cache"
+                                #:recursive? #t)))
+        '())))
+
+;; /etc/qubes-guix-cache: links finish-install copies into a writable
+;; XDG_CACHE_HOME/guix (git writes into its checkouts).
+(define (cache-directory-service entries)
+  (simple-service 'qubes-guix-cache etc-service-type
+                  (list (list "qubes-guix-cache"
+                              (file-union "qubes-guix-cache" entries)))))
+
+(define %issue-addition "
+This is the qubes-guix installer. Its network, qrexec and QubesDB come up by
+themselves under Qubes. To install unattended, run in dom0:
+
+  qubes-guix-create --unattended NAME
+
+or install with the dialogs on tty1, then, before rebooting:
+
+  qubes-guix-create --finish-install --run NAME
+
+The guest scripts are in /root/qubes-guix/guest.
+
+")
+
+(define* (qubes-installation-os #:key
+                                (branch "main")
+                                (offline? #f))
+  "The Guix installer, as a headless qube (see this module's commentary).
+BRANCH is the qubes channel branch recorded in its /etc/guix/channels.scm.
+With OFFLINE?, it also holds what a default install needs, and the channel
+checkouts."
+  (let ((base (qubes-operating-system
+               (operating-system
+                 (inherit installation-os)
+                 (label (string-append (operating-system-label installation-os)
+                                       " (qubes-guix)"))
+                 ;; The emulated VGA: without it, VT3's console stays blank.
+                 (kernel-arguments
+                  (append (operating-system-user-kernel-arguments
+                           installation-os)
+                          '("nomodeset")))
+                 (issue (string-append (operating-system-issue installation-os)
+                                       %issue-addition))
+                 (packages (cons git
+                                 (operating-system-packages installation-os))))
+               #:config %installer-config
+               #:channel-branch branch)))
+    (operating-system
+      (inherit base)
+      (services
+       (append
+        (list
+         (simple-service
+          'qubes-guix-scripts activation-service-type
+          #~(begin
+              (use-modules (guix build utils))
+              (let ((dir "/root/qubes-guix/guest"))
+                (unless (file-exists? dir)
+                  (mkdir-p "/root/qubes-guix")
+                  (copy-recursively #$%guest-scripts dir #:log #f)
+                  (for-each (lambda (f) (chmod f #o755))
+                            (find-files "/root/qubes-guix"))
+                  (for-each (lambda (d) (chmod d #o755))
+                            (find-files "/root/qubes-guix"
+                                        (lambda (f s)
+                                          (eq? 'directory (stat:type s)))
+                                        #:directories? #t))))))
+         ;; Built here, so not at install: the Qubes packages the installer
+         ;; itself doesn't run, and the slowest to build.
+         (simple-service 'qubes-packages gc-root-service-type
+                         (list qubes-gui-agent qubes-ctap
+                               qubes-split-gpg2-client
+                               qubes-split-ssh-client)))
+        (if offline?
+            (list (simple-service 'qubes-reference-system gc-root-service-type
+                                  (list (qubes-reference-os branch)))
+                  (cache-directory-service
+                   (append (channel-checkouts) (authentication-cache))))
+            '())
+        (operating-system-user-services base))))))

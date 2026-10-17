@@ -1,0 +1,141 @@
+#!/bin/sh
+# qubes-guix-iso — build the qubes-guix installer ISO, on any x86_64 Guix
+# (a Guix qube, or your substitute server).
+#
+#   qubes-guix-iso [options]
+#
+# The ISO is the Guix installer plus the Qubes agent (qrexec, QubesDB, the
+# network from QubesDB): see qubes/installer.scm. It's built with
+# 'guix time-machine' on the qubes channel, so the ISO's own guix includes
+# that channel, at the commits it was built from; installs from it then
+# build nothing for the Qubes agents.
+#
+#   -b, --branch B        qubes channel branch          (default main)
+#   --guix-commit C       Guix at commit C              (default: latest)
+#   --qubes-commit C      the qubes channel at commit C (default: branch head)
+#   --server URL          every channel at the commits URL last built (its
+#                         /channel-commits, as published by guix-subs), and
+#                         URL first for substitutes: so nearly everything
+#                         comes from that server
+#   --substitute-urls "U ..."  substitute servers, before the defaults
+#   --offline             also put in the ISO what a default unattended
+#                         install needs, and the channels' git checkouts:
+#                         that install then needs no network (a bigger ISO)
+#   -L, --load-path DIR   build from the checkout DIR with your current
+#                         guix, for testing. The ISO's guix then lacks the
+#                         qubes channel, so installs from it fall back to
+#                         guix time-machine (slower; needs the network).
+#   -o, --output FILE     where to put it   (default qubes-guix-installer.iso)
+#   -n, --dry-run         show what would be built, build nothing
+#
+# Next to the ISO, FILE.channels records the channels it was built from.
+
+set -eu
+
+prog=${0##*/}
+here=$(cd "$(dirname "$0")/.." && pwd)
+branch=main
+guix_commit=
+qubes_commit=
+server=
+subs=
+offline='#f'
+load_path=
+out=qubes-guix-installer.iso
+dry_run=
+
+die() { echo "$prog: $*" >&2; exit 1; }
+need() { [ $# -ge 2 ] || die "$1 needs a value"; }
+is_commit() { case $1 in *[!0-9a-f]*|'') return 1;; esac; [ ${#1} -eq 40 ]; }
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        -b|--branch) need "$@"; branch=$2; shift 2;;
+        --guix-commit) need "$@"; guix_commit=$2; shift 2;;
+        --qubes-commit) need "$@"; qubes_commit=$2; shift 2;;
+        --server) need "$@"; server=${2%/}; shift 2;;
+        --substitute-urls) need "$@"; subs=$2; shift 2;;
+        --offline) offline='#t'; shift;;
+        -L|--load-path) need "$@"; load_path=$(cd "$2" && pwd); shift 2;;
+        -o|--output) need "$@"; out=$2; shift 2;;
+        -n|--dry-run) dry_run=--dry-run; shift;;
+        -h|--help) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0;;
+        *) die "unknown argument $1 (see --help)";;
+    esac
+done
+
+[ "$(uname -m)" = x86_64 ] || die "Qubes guests are x86_64: build on an x86_64 Guix"
+command -v guix >/dev/null 2>&1 || die "guix not found"
+case $branch in *[!A-Za-z0-9._/-]*|'') die "bad branch name '$branch'";; esac
+[ -z "$guix_commit" ] || is_commit "$guix_commit" || die "--guix-commit: not a full commit hash"
+[ -z "$qubes_commit" ] || is_commit "$qubes_commit" || die "--qubes-commit: not a full commit hash"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# --server: the commits it last built, "NAME COMMIT" per line.
+pins=
+if [ -n "$server" ]; then
+    file=$(guix download "$server/channel-commits" 2>/dev/null | head -n1) || file=
+    [ -n "$file" ] && [ -f "$file" ] ||
+        die "couldn't fetch $server/channel-commits (is the server up?)"
+    while read -r name c rest; do
+        [ -n "$name" ] || continue
+        is_commit "$c" && [ -z "$rest" ] ||
+            die "$server/channel-commits: '$name $c $rest' isn't NAME COMMIT"
+        case $name in *[!a-z0-9-]*) die "$server/channel-commits: bad name '$name'";; esac
+        pins="$pins($name . \"$c\") "
+    done < "$file"
+    echo "Channels at the commits $server last built:"
+    sed 's/^/  /' "$file"
+    subs="$server $subs"
+fi
+[ -n "$guix_commit" ] && pins="(guix . \"$guix_commit\") $pins"
+[ -n "$qubes_commit" ] && pins="(qubes . \"$qubes_commit\") $pins"
+
+# Extra servers go before the default ones, which stay as the fallback.
+all_subs=
+[ -n "$subs" ] && all_subs="--substitute-urls=$subs https://bordeaux.guix.gnu.org https://ci.guix.gnu.org"
+expr="((@ (qubes installer) qubes-installation-os) #:branch \"$branch\" #:offline? $offline)"
+set -- system image -t iso9660 $dry_run ${all_subs:+"$all_subs"} -e "$expr"
+
+if [ -n "$load_path" ]; then
+    [ -z "$pins" ] || echo "$prog: warning: -L builds with your current guix; commits ignored" >&2
+    echo "Building from $load_path with your current guix"
+    iso=$(guix "$@" -L "$load_path" | tail -n1)
+    guix describe -f channels > "$tmp/described" 2>/dev/null || : > "$tmp/described"
+else
+    # The channels: qubes at BRANCH plus Guix's defaults, as installs use;
+    # then the pins (first one for a name wins: --guix-commit over --server).
+    sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/guest/channels.scm.txt" > "$tmp/base.scm"
+    {
+        echo ";; Written by qubes-guix-iso."
+        echo "(let ((pins '($pins)))"
+        echo "  (map (lambda (c)"
+        echo "         (let ((pin (assq-ref pins (channel-name c))))"
+        echo "           (if pin (channel (inherit c) (commit pin)) c)))"
+        sed 's/^/       /' "$tmp/base.scm"
+        echo "))"
+    } > "$tmp/channels.scm"
+    echo "Building the ISO with the qubes channel ($branch). The first time is long:"
+    echo "it builds the Qubes packages (or fetches them from your server)."
+    iso=$(guix time-machine ${all_subs:+"$all_subs"} -C "$tmp/channels.scm" -- "$@" | tail -n1)
+    guix time-machine ${all_subs:+"$all_subs"} -C "$tmp/channels.scm" -- \
+        describe -f channels > "$tmp/described"
+fi
+
+if [ -n "$dry_run" ]; then
+    echo "(dry run: nothing built)"
+    exit 0
+fi
+case $iso in
+    /gnu/store/*.iso) ;;
+    *) die "the build didn't end with an ISO (last line: $iso)";;
+esac
+cp "$iso" "$out"
+chmod 644 "$out"
+cp "$tmp/described" "$out.channels"
+echo
+echo "$out ($(du -h "$out" | cut -f1)), from $iso"
+echo "Its channels are in $out.channels. In dom0 (with the ISO in qube VM):"
+echo "  qubes-guix-create --unattended NAME VM:$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"

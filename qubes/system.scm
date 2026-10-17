@@ -72,6 +72,7 @@
   #:use-module (gnu system accounts)
   #:use-module (gnu services)
   #:use-module (gnu services base)          ; guix-service-type
+  #:use-module (gnu services shepherd)
   #:use-module (guix channels)
   #:use-module ((guix describe) #:select (current-channels))
   #:use-module (guix gexp)
@@ -219,10 +220,17 @@ servers only for what it lacks."
 ;; local file it's only a warning).
 ;;
 ;; So every reconfigure writes /etc/guix/trusted-channels.scm from the
-;; system's channels, and home directories get a LINK to it (skeleton, and
-;; an activation step for existing homes): it then follows the channels as
-;; they change. (A copy, as before, went stale with the first channel added
-;; or changed: a later #:extra-channels stayed "not trusted" for good.)
+;; system's channels, and home directories get a LINK to it: it then
+;; follows the channels as they change. (A copy, as before, went stale with
+;; the first channel added or changed: a later #:extra-channels stayed "not
+;; trusted" for good.)
+;;
+;; Not through the skeletons: user-homes chowns every skeleton entry it
+;; copies, and chown follows the link to the read-only store. That failed
+;; with "Read-only file system" and left a NEW home owned by root, mode
+;; 700: no login, no GUI session. Instead the activation (existing homes)
+;; and a one-shot after user-homes (new ones, and /home mounted late in an
+;; AppVM) add the link where there's nothing at that path.
 (define %trusted-channels-file "/etc/guix/trusted-channels.scm")
 
 ;; First line of the file, also of the copies earlier versions put in home
@@ -247,49 +255,76 @@ servers only for what it lacks."
                                      (cons (qubes-channel branch)
                                            extras))))))))))
 
-;; A directory, not a single entry: skeletons are copied with
-;; copy-recursively, which creates the parents (.config) only for
-;; directories, and copies the link as a link.
-(define guix-config-skeleton
-  (computed-file "guix-config-skeleton"
-                 #~(begin
-                     (mkdir #$output)
-                     (symlink #$%trusted-channels-file
-                              (string-append #$output
-                                             "/trusted-channels.scm")))))
+;; Code giving each home (/root, /home/*) the link: where nothing is at
+;; ~/.config/guix/trusted-channels.scm, or an earlier version's copy (its
+;; first line is the marker). A file or link of the user's own is left
+;; alone. Directories it creates get the home's owner. It never follows a
+;; link (lstat): a home whose ~/.config or ~/.config/guix is a link is
+;; skipped, so a user's link can't make root chown or write elsewhere.
+(define trusted-channels-links
+  #~(let ((target #$%trusted-channels-file)
+          (marker #$%trusted-channels-marker))
+      (define (directory? f)
+        (false-if-exception (eq? 'directory (stat:type (lstat f)))))
+      ;; #t once D is a real directory; #f if something else is there
+      ;; (e.g. ~/.config a link to elsewhere): that home is skipped.
+      (define (ensure-directory d owner)
+        (cond ((directory? d) #t)
+              ((false-if-exception (lstat d)) #f)
+              (else (mkdir d #o755)
+                    (chown d (stat:uid owner) (stat:gid owner))
+                    #t)))
+      (define (old-copy? f st)
+        (and (eq? 'regular (stat:type st))
+             (let ((line (call-with-input-file f read-line)))
+               (and (string? line) (string-prefix? marker line)))))
+      (define (link-home home)
+        (let* ((owner (lstat home))
+               (config (string-append home "/.config"))
+               (dir (string-append config "/guix"))
+               (file (string-append dir "/trusted-channels.scm"))
+               (st (false-if-exception (lstat file))))
+          (cond ((not st)
+                 (when (and (ensure-directory config owner)
+                            (ensure-directory dir owner))
+                   (symlink target file)))
+                ((old-copy? file st)
+                 (delete-file file)
+                 (symlink target file)))))
+      (for-each
+       (lambda (home)
+         (when (directory? home)
+           (catch 'system-error
+             (lambda () (link-home home))
+             (lambda args
+               (format (current-error-port)
+                       "qubes-trusted-channels: ~a: ~a~%" home
+                       (strerror (system-error-errno args)))))))
+       (cons "/root"
+             (map (lambda (d) (string-append "/home/" d))
+                  (or (scandir "/home"
+                               (lambda (d) (not (member d '("." "..")))))
+                      '()))))))
 
 (define (trusted-channels-activation branch extras)
   #~(begin
       (use-modules (ice-9 ftw) (ice-9 rdelim))
-      (let ((target #$%trusted-channels-file)
-            (marker #$%trusted-channels-marker))
+      (let ((target #$%trusted-channels-file))
         (unless (file-exists? "/etc/guix") (mkdir "/etc/guix"))
         (false-if-exception (delete-file target))
-        (symlink #$(trusted-channels-file branch extras) target)
-        ;; Earlier versions' copies in existing homes -> the link. (In an
-        ;; AppVM, /home may not be mounted yet: those are done at the next
-        ;; activation that sees them, or by hand.)
-        (for-each
-         (lambda (home)
-           (let ((f (string-append home
-                                   "/.config/guix/trusted-channels.scm")))
-             (when (and (false-if-exception
-                         (eq? 'regular (stat:type (lstat f))))
-                        (let ((line (call-with-input-file f read-line)))
-                          (and (string? line)
-                               (string-prefix? marker line))))
-               (delete-file f)
-               (symlink target f))))
-         (cons "/root"
-               (map (lambda (d) (string-append "/home/" d))
-                    (or (scandir "/home"
-                                 (lambda (d) (not (member d '("." "..")))))
-                        '())))))))
+        (symlink #$(trusted-channels-file branch extras) target))
+      #$trusted-channels-links))
 
-(define (with-trusted-channels skeletons)
-  (if (assoc ".config/guix" skeletons)
-      skeletons
-      (cons (list ".config/guix" guix-config-skeleton) skeletons)))
+;; At every boot, once user-homes has made any new home (and, in an AppVM,
+;; /home is mounted).
+(define trusted-channels-shepherd-service
+  (shepherd-service
+   (provision '(qubes-trusted-channels))
+   (requirement '(user-homes))
+   (one-shot? #t)
+   (modules (append '((ice-9 ftw) (ice-9 rdelim)) %default-modules))
+   (documentation "Link ~/.config/guix/trusted-channels.scm in each home.")
+   (start #~(lambda _ #$trusted-channels-links #t))))
 
 ;; The system's own guix (/run/current-system/profile/bin/guix, the one a
 ;; user has before their first 'guix pull') built from the channels of the
@@ -366,9 +401,6 @@ with a warning."
                        (operating-system-user-kernel-arguments os))
                %qubes-kernel-arguments))
       (users (map add-qubes-group (operating-system-users os)))
-      (skeletons (if system-channels?
-                     (with-trusted-channels (operating-system-skeletons os))
-                     (operating-system-skeletons os)))
       (packages (append (operating-system-packages os)
                         (available-packages extra-packages)))
       (sudoers-file (if passwordless-sudo?
@@ -414,7 +446,10 @@ with a warning."
               (list (simple-service 'qubes-trusted-channels
                                     activation-service-type
                                     (trusted-channels-activation
-                                     channel-branch extra-channels)))
+                                     channel-branch extra-channels))
+                    (simple-service 'qubes-trusted-channels-links
+                                    shepherd-root-service-type
+                                    (list trusted-channels-shepherd-service)))
               '())
           (if (any qubes-service? kept)
               kept                      ; already a qube: keep its config

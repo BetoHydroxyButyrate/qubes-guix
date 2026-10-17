@@ -36,6 +36,7 @@ channels_file=
 subs_file=
 guix_commit=
 first_update=1
+run_test=0
 run_now=0
 branch=main
 repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
@@ -51,7 +52,7 @@ Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --unattended [--template] [--branch B] [--no-password]
                           [--force] [--locale L] [--packages FILE]
                           [--guix-commit C] [--substitutes FILE]
-                          [--no-update] [--no-wait] NAME
+                          [--no-update] [--test] [--no-wait] NAME
 
 Create the StandaloneVM HVM qube NAME and boot it from the Guix System
 installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
@@ -110,6 +111,10 @@ Options:
                         #:channel-commits; Guix alone from /guix-commit if
                         that's all it publishes), so the install and
                         updates match its builds.
+      --test            with --unattended: after the first update, run
+                        qubes-guix-test (next to this script) on NAME: a
+                        throwaway AppVM for a template, else NAME itself.
+                        Its failures make this exit non-zero.
       --no-update       with --unattended: skip the first update. Normally,
                         once installed (built with the installer's own Guix,
                         for speed), NAME is started and 'qubes-guix-update
@@ -186,6 +191,7 @@ while [ $# -gt 0 ]; do
         --substitutes) [ $# -ge 2 ] || die "$1 needs a value"; subs_file=$2; shift 2;;
         --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
         --no-update) first_update=0; shift;;
+        --test)     run_test=1; shift;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
         --dry-run)  dry_run=1; shift;;
         -h|--help)  usage; exit 0;;
@@ -520,6 +526,11 @@ EOF
                 if [ "$template" = 1 ]; then
                     qvm-shutdown --wait "$name"
                     echo "$name is ready: shut down, updated. Base AppVMs on it."
+                fi
+                if [ "$run_test" = 1 ]; then
+                    echo "Testing $name: qubes-guix-test"
+                    "$(dirname "$0")/qubes-guix-test" "$name" ||
+                        { echo "$prog: qubes-guix-test found problems (above)" >&2; exit 1; }
                 fi
             else
                 echo "$prog: the update in $name failed; it's running, at the installer's Guix." >&2

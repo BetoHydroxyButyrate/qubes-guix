@@ -1,0 +1,316 @@
+#!/bin/bash
+# qubes-guix-test — run in dom0. Smoke-tests a Guix qube's Qubes integration.
+#
+#   qubes-guix-test [options] QUBE
+#
+# QUBE a TemplateVM: a throwaway AppVM is made from it (test-guix-<pid>),
+# tested, and removed. Any other Guix qube (AppVM, StandaloneVM) is tested
+# in place, and left as it was (started if it was off, shut down again).
+#
+# Each check prints PASS, FAIL or SKIP; the exit status is the number of
+# FAILs (0: all good). Safe on a daily-use dom0: it touches only the test
+# qube (and, with --split-*, asks the vault qubes as any client would).
+#
+# Options:
+#   -n, --netvm QUBE   the test AppVM's netvm (default: the system default;
+#                      'none' for no network: the network checks are skipped)
+#   --split-gpg        also check split-gpg2 (gpg -K lists a secret key);
+#                      needs the qubes.Gpg2 policy, and the split-gpg2-client
+#                      service is turned on in the test AppVM
+#   --split-ssh        also check split-ssh (ssh-add -l lists a key); needs
+#                      the qubes.SshAgent policy (the test AppVM is tagged
+#                      split-ssh, which the README's policy allows)
+#   --memory MiB       the test AppVM's memory (default 4000); maxmem is set
+#                      higher (MiB + 2000) so memory balancing is tested
+#   --keep             don't remove the test AppVM afterwards
+#   -h, --help
+#
+# What it checks, in order: start (and boot time); qrexec; QubesDB; the
+# features the agent requested (on the template); no failed Shepherd
+# services; network (address, gateway, DNS + HTTPS); the network coming
+# back after a netvm change (the qube's vif is replaced, as when its netvm
+# restarts); data through qrexec (1 MiB, checksummed); qvm-copy-to-vm
+# (qubes.Filecopy); the trusted-channels link; memory balancing (meminfo in
+# xenstore); GUI (a terminal window appears in dom0); split-gpg2 and
+# split-ssh (optional); and a clean shutdown.
+
+set -uo pipefail
+
+prog=${0##*/}
+netvm=default
+split_gpg=0
+split_ssh=0
+memory=4000
+keep=0
+
+die() { echo "$prog: $*" >&2; exit 2; }
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        -n|--netvm) [ $# -ge 2 ] || die "$1 needs a value"; netvm=$2; shift 2;;
+        --split-gpg) split_gpg=1; shift;;
+        --split-ssh) split_ssh=1; shift;;
+        --memory) [ $# -ge 2 ] || die "$1 needs a value"; memory=$2; shift 2;;
+        --keep) keep=1; shift;;
+        -h|--help) usage; exit 0;;
+        -*) die "unknown option $1 (see --help)";;
+        *) break;;
+    esac
+done
+[ $# -eq 1 ] || { usage >&2; exit 2; }
+target=$1
+
+command -v qvm-run >/dev/null 2>&1 || die "run this in dom0"
+qvm-check -q "$target" 2>/dev/null || die "no qube named '$target'"
+case $memory in ''|*[!0-9]*) die "--memory: a number of MiB";; esac
+
+# --- results -------------------------------------------------------------
+
+passes=0 fails=0 skips=0
+results=()
+pass() { passes=$((passes + 1)); results+=("PASS  $1${2:+  ($2)}"); echo "PASS  $1${2:+  ($2)}"; }
+fail() { fails=$((fails + 1));   results+=("FAIL  $1${2:+  ($2)}"); echo "FAIL  $1${2:+  ($2)}"; }
+skip() { skips=$((skips + 1));   results+=("SKIP  $1${2:+  ($2)}"); echo "SKIP  $1${2:+  ($2)}"; }
+
+# Run a command in the test qube as the default user (as root with -u
+# root), no GUI, capturing stdout; a time limit so a hung check can't hang
+# the run.
+in_qube() {
+    local user=()
+    if [ "${1:-}" = -u ]; then user=(-u "$2"); shift 2; fi
+    timeout "${QGT_TIMEOUT:-60}" qvm-run -q --no-gui --pass-io "${user[@]}" "$vm" "$*" 2>/dev/null
+}
+
+# --- the qube under test -----------------------------------------------
+
+made=0
+was_running=0
+klass=$(qvm-prefs "$target" klass)
+template=$target
+if [ "$klass" = TemplateVM ]; then
+    vm="test-guix-$$"
+    case $netvm in
+        default) netvm=$(qubes-prefs default_netvm 2>/dev/null || true);;
+        none) netvm=;;
+    esac
+    echo "Making $vm from $target$( [ -n "$netvm" ] && echo ", netvm $netvm" || echo ', no netvm')"
+    qvm-create --template "$target" --label gray \
+        --property virt_mode=hvm --property kernel='' \
+        --property memory="$memory" --property maxmem=$((memory + 2000)) \
+        --property qrexec_timeout=300 \
+        "$vm" || die "couldn't create $vm"
+    made=1
+    qvm-prefs "$vm" netvm "$netvm"
+    qvm-service "$vm" meminfo-writer on
+    [ "$split_gpg" = 1 ] && qvm-service "$vm" split-gpg2-client on
+    [ "$split_ssh" = 1 ] && qvm-tags "$vm" add split-ssh
+else
+    vm=$target
+    template=$(qvm-prefs "$vm" template 2>/dev/null || echo "$vm")
+    qvm-check -q --running "$vm" 2>/dev/null && was_running=1
+    echo "Testing $vm in place ($klass)"
+fi
+
+cleanup() {
+    if [ "$made" = 1 ] && [ "$keep" = 0 ]; then
+        qvm-kill "$vm" >/dev/null 2>&1 || true
+        qvm-remove -f "$vm" >/dev/null 2>&1 || true
+    elif [ "$made" = 0 ] && [ "$was_running" = 0 ]; then
+        qvm-shutdown --wait --timeout 60 "$vm" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+# --- checks --------------------------------------------------------------
+
+# Start, and how long until qrexec answers.
+t0=$(date +%s)
+if qvm-check -q --running "$vm" 2>/dev/null; then
+    skip "start" "already running"
+elif qvm-start "$vm" >/dev/null 2>&1; then
+    pass "start" "$(( $(date +%s) - t0 ))s"
+else
+    fail "start" "qvm-start failed; see /var/log/xen/console/guest-$vm.log"
+    exit 1
+fi
+
+if [ "$(in_qube echo qrexec-ok)" = qrexec-ok ]; then
+    pass "qrexec (qubes.VMShell)"
+else
+    fail "qrexec (qubes.VMShell)" "no answer from the qube; the rest can't run"
+    exit 1
+fi
+
+name=$(in_qube qubesdb-read /name)
+[ "$name" = "$vm" ] && pass "QubesDB" || fail "QubesDB" "qubesdb-read /name gave '$name'"
+
+# The agent's feature requests are applied on the template (or standalone).
+missing=
+for f in qrexec gui os-distribution; do
+    v=$(qvm-features "$template" "$f" 2>/dev/null) || v=
+    [ -n "$v" ] || missing="$missing $f"
+done
+os=$(qvm-features "$template" os-distribution 2>/dev/null || true)
+if [ -n "$missing" ]; then
+    fail "features" "$template lacks:$missing"
+elif [ "$os" != guix ]; then
+    fail "features" "os-distribution is '$os', not guix"
+else
+    pass "features" "on $template"
+fi
+
+# Shepherd services that failed to start: 'herd status' lists them under a
+# "Failed to start:" heading. (One-shot services show as stopped: fine.)
+failed=$(in_qube -u root 'herd status 2>&1' |
+         awk '/[Ff]ailed to start:/{f=1; next} /^[^ ]/{f=0} f && NF {print $NF}' |
+         sort -u | xargs)
+[ -z "$failed" ] && pass "Shepherd services" || fail "Shepherd services" "failed: $failed"
+
+# Network.
+net_ok() {
+    # address on eth0, the gateway answers, and a name resolves and takes
+    # an HTTPS connection (bash's /dev/tcp: no curl needed)
+    in_qube 'ip -4 -o addr show eth0 | grep -q inet &&
+             gw=$(qubesdb-read /qubes-gateway) && ping -c1 -W3 "$gw" >/dev/null &&
+             timeout 10 bash -c "exec 3<>/dev/tcp/qubes-os.org/443" && echo net-ok'
+}
+cur_netvm=$(qvm-prefs "$vm" netvm 2>/dev/null || true)
+if [ -z "$cur_netvm" ]; then
+    skip "network" "no netvm"
+    skip "network after a netvm change" "no netvm"
+else
+    if [ "$(net_ok)" = net-ok ]; then
+        pass "network" "via $cur_netvm"
+        # Detach and reattach the netvm: the qube's vif goes and a new one
+        # comes, as when the netvm restarts. qubes-network-watch must set
+        # eth0 up again by itself.
+        qvm-prefs "$vm" netvm '' && sleep 3 && qvm-prefs "$vm" netvm "$cur_netvm"
+        ok=0
+        for _ in $(seq 1 15); do
+            sleep 2
+            [ "$(net_ok)" = net-ok ] && { ok=1; break; }
+        done
+        [ "$ok" = 1 ] && pass "network after a netvm change" ||
+            fail "network after a netvm change" "eth0 not set up again within 30s (herd status qubes-network-watch)"
+    else
+        fail "network" "no address, gateway, DNS or HTTPS via $cur_netvm"
+        skip "network after a netvm change" "network didn't work to begin with"
+    fi
+fi
+
+# Data through qrexec, both ways, checksummed.
+tmp=$(mktemp -d)
+head -c 1048576 /dev/urandom > "$tmp/data"
+want=$(sha256sum < "$tmp/data" | cut -d' ' -f1)
+got=$(timeout 60 qvm-run -q --no-gui --pass-io "$vm" 'cat > /tmp/qgt-data; sha256sum < /tmp/qgt-data' < "$tmp/data" 2>/dev/null | cut -d' ' -f1)
+back=$(in_qube 'cat /tmp/qgt-data' | sha256sum | cut -d' ' -f1)
+if [ "$got" = "$want" ] && [ "$back" = "$want" ]; then
+    pass "qrexec data (1 MiB each way)"
+else
+    fail "qrexec data (1 MiB each way)" "checksum mismatch"
+fi
+
+# qubes.Filecopy (qfile-unpacker) from dom0.
+if command -v qvm-copy-to-vm >/dev/null 2>&1; then
+    cp "$tmp/data" "$tmp/qgt-filecopy"
+    if qvm-copy-to-vm "$vm" "$tmp/qgt-filecopy" >/dev/null 2>&1; then
+        got=$(in_qube 'sha256sum < ~/QubesIncoming/dom0/qgt-filecopy' | cut -d' ' -f1)
+        [ "$got" = "$want" ] && pass "qvm-copy (qubes.Filecopy)" ||
+            fail "qvm-copy (qubes.Filecopy)" "file missing or different in ~/QubesIncoming/dom0"
+        in_qube 'rm -f ~/QubesIncoming/dom0/qgt-filecopy; rmdir ~/QubesIncoming/dom0 ~/QubesIncoming 2>/dev/null' >/dev/null
+    else
+        fail "qvm-copy (qubes.Filecopy)" "qvm-copy-to-vm failed"
+    fi
+else
+    skip "qvm-copy (qubes.Filecopy)" "no qvm-copy-to-vm in dom0"
+fi
+rm -rf "$tmp"
+in_qube 'rm -f /tmp/qgt-data' >/dev/null
+
+# ~/.config/guix/trusted-channels.scm should be the link qubes-guix makes,
+# so the user's pulls trust the system's channels as they change.
+link=$(in_qube 'readlink ~/.config/guix/trusted-channels.scm')
+case $link in
+    /etc/guix/trusted-channels.scm) pass "trusted-channels link";;
+    '') skip "trusted-channels link" "none (an older install, or the user's own file)";;
+    *) fail "trusted-channels link" "points to $link";;
+esac
+
+# Memory balancing: meminfo-writer reports to xenstore.
+if [ "$(qvm-prefs "$vm" maxmem)" -gt "$(qvm-prefs "$vm" memory)" ] &&
+   [ "$(qvm-service "$vm" meminfo-writer 2>/dev/null)" = on ]; then
+    xid=$(qvm-prefs "$vm" xid)
+    mi=
+    for _ in $(seq 1 10); do
+        mi=$(sudo -n xenstore-read "/local/domain/$xid/memory/meminfo" 2>/dev/null) && [ -n "$mi" ] && break
+        sleep 3
+    done
+    [ -n "$mi" ] && pass "memory balancing" "meminfo: $mi" ||
+        fail "memory balancing" "nothing in /local/domain/$xid/memory/meminfo (herd status qubes-meminfo-writer)"
+else
+    skip "memory balancing" "not enabled for $vm"
+fi
+
+# GUI: a terminal, and its window in dom0. Qubes titles windows "[qube] …".
+if [ "$(qvm-features "$template" gui 2>/dev/null)" != 1 ]; then
+    skip "GUI" "no GUI agent"
+elif ! command -v xdotool >/dev/null 2>&1; then
+    skip "GUI" "no xdotool in dom0"
+else
+    term=$(in_qube 'for t in xterm xfce4-terminal alacritty; do command -v $t >/dev/null && { echo $t; break; }; done')
+    if [ -z "$term" ]; then
+        skip "GUI" "no xterm, xfce4-terminal or alacritty in the qube"
+    else
+        qvm-run -q "$vm" "$term" >/dev/null 2>&1 &
+        win=
+        for _ in $(seq 1 20); do
+            sleep 2
+            win=$(xdotool search --name "^\[$vm\]" 2>/dev/null | head -n1) && [ -n "$win" ] && break
+        done
+        if [ -n "$win" ]; then
+            pass "GUI" "$term window"
+            in_qube "pkill -x $term" >/dev/null || true
+        else
+            fail "GUI" "no [$vm] window within 40s (herd status qubes-gui-agent)"
+        fi
+    fi
+fi
+
+# Split GPG and SSH: through the qube's GUI session, as the user's own
+# programs would (qvm-run runs commands there).
+if [ "$split_gpg" = 1 ]; then
+    if in_qube 'gpg -K 2>/dev/null' | grep -q '^\(sec\|ssb\)'; then
+        pass "split-gpg2" "gpg -K lists a key"
+    else
+        fail "split-gpg2" "gpg -K lists no secret key (policy? vault running? pubkey imported?)"
+    fi
+fi
+if [ "$split_ssh" = 1 ]; then
+    keys=$(in_qube 'echo "${SSH_AUTH_SOCK:-unset}"; ssh-add -l')
+    sock=$(printf '%s\n' "$keys" | head -n1)
+    if printf '%s\n' "$keys" | sed -n 2p | grep -qi 'sha256\|md5'; then
+        pass "split-ssh" "ssh-add -l lists a key"
+    else
+        fail "split-ssh" "no key via SSH_AUTH_SOCK=$sock (policy? vault agent?)"
+    fi
+fi
+
+# Clean shutdown, timed.
+if [ "$made" = 1 ] || [ "$was_running" = 0 ]; then
+    t0=$(date +%s)
+    if qvm-shutdown --wait --timeout 90 "$vm" >/dev/null 2>&1; then
+        pass "shutdown" "$(( $(date +%s) - t0 ))s"
+    else
+        fail "shutdown" "not off within 90s"
+    fi
+else
+    skip "shutdown" "$vm was running before the test; left running"
+fi
+
+# --- summary ---------------------------------------------------------------
+
+echo
+echo "$vm ($( [ "$made" = 1 ] && echo "from $target" || echo "$klass")): $passes passed, $fails failed, $skips skipped"
+[ "$made" = 1 ] && [ "$keep" = 1 ] && echo "Kept $vm (--keep); remove it with: qvm-remove -f $vm"
+exit "$fails"

@@ -171,6 +171,17 @@ exec ~a \"$@\"
                 (symlink (search-input-file
                           inputs "/etc/qubes-rpc/qubes.WaitForSession")
                          svc))))
+          ;; qubes.GetAppmenus stats /rw for its "rw-only" persistence check,
+          ;; whatever the persistence. A StandaloneVM has no /rw, so every
+          ;; menu refresh logged "stat: cannot statx '/rw'" in dom0. Only
+          ;; rw-only (AppVMs) uses the value, and they have /rw.
+          (add-after 'link-wait-for-session 'quiet-getappmenus
+            (lambda _
+              (let ((svc (string-append #$output
+                                        "/etc/qubes-rpc/qubes.GetAppmenus")))
+                (when (file-exists? svc)
+                  (substitute* svc
+                    (("stat -c %D /rw\\)") "stat -c %D /rw 2>/dev/null)"))))))
           ;; qubes.StartApp needs qubesagent + pyxdg + PyGObject + qubesdb on
           ;; its path; python-qubesagent ships it as a wrapped program.
           ;; (Symlink to a regular file: fine for the agent's readlink check.)

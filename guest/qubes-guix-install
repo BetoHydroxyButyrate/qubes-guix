@@ -161,6 +161,8 @@ EOF
     # --- 2. config.scm ------------------------------------------------------
 
     say "Writing $target/etc/config.scm"
+    # Keep in step with qubes-reference-os in qubes/installer.scm: the
+    # offline ISO carries that system's packages so this one needs none.
     cat > "$target/etc/config.scm" <<EOF
 ;; Written by qubes-guix-install. This is the operating system
 ;; configuration: edit it, then 'sudo guix system reconfigure /etc/config.scm'

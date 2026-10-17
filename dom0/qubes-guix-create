@@ -1,8 +1,11 @@
 #!/bin/bash
 # qubes-guix-create — run in dom0. Creates a Guix System qube and boots it
-# from the Guix installer ISO.
+# from an installer ISO: the qubes-guix one (iso/qubes-guix-iso), which dom0
+# drives over qrexec, or the stock Guix one.
 #
 #   qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+#   qubes-guix-create --unattended [options] NAME ISO_VM:ISO_PATH ...
+#                                   # create and install, in one go
 #
 # Part of the qubes-guix channel: https://github.com/BetoHydroxyButyrate/qubes-guix
 
@@ -39,12 +42,15 @@ first_update=1
 run_test=0
 run_now=0
 branch=main
+branch_given=0
+qubes_iso=auto
 repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
 dry_run=0
 
 usage() {
     cat <<EOF
 Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+       $prog --unattended [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
        $prog --bootstrap [--template] [--branch B] [--packages FILE] NAME
        $prog --finish-install [--template] [--branch B] [--packages FILE]
@@ -54,8 +60,12 @@ Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
                           [--guix-commit C] [--substitutes FILE]
                           [--no-update] [--test] [--no-wait] NAME
 
-Create the StandaloneVM HVM qube NAME and boot it from the Guix System
-installer ISO at ISO_PATH in the qube ISO_VM (or dom0:/path).
+Create the StandaloneVM HVM qube NAME and boot it from the installer ISO
+at ISO_PATH in the qube ISO_VM (or dom0:/path). With the qubes-guix
+installer ISO (iso/qubes-guix-iso), the installer has its network and the
+qrexec agent, and dom0 drives it with qvm-run: no GRUB edit, no typing into
+its console. With the stock Guix ISO, the steps are printed. Given an ISO,
+--unattended creates the qube and installs it in one go (qubes-guix ISO).
 
   VCPUS    virtual CPUs                         (default $vcpus)
   MEMORY   initial memory, MiB                  (default $memory)
@@ -69,6 +79,10 @@ Options:
   -n, --netvm QUBE      network qube            (default: the system default)
   -t, --template        make a TemplateVM (AppVMs can be based on it)
                         instead of a StandaloneVM
+      --qubes-iso       ISO_PATH is the qubes-guix installer ISO: dom0 waits
+                        for its qrexec agent (assumed with --unattended, or
+                        when the file name contains 'qubes-guix')
+      --stock-iso       ISO_PATH is the stock Guix installer ISO
       --dry-run         print the dom0 commands, change nothing; with the
                         typing modes below, print what would be typed
       --type-network    for a running NAME without its Qubes agent (the
@@ -89,8 +103,11 @@ Options:
       --run             with --finish-install: run that command too, rather
                         than leaving it for you to review and type
       --unattended      the whole install, unattended, instead of the
-                        installer's dialogs: run it at the installer's first
-                        screen (after the GRUB 'nomodeset' step). Asks here
+                        installer's dialogs. On the qubes-guix ISO, over
+                        qrexec, its output shown here (with an ISO given,
+                        right after creating NAME). On the stock ISO, run it
+                        at the installer's first screen (after the GRUB
+                        'nomodeset' step), and it types. Asks here
                         for a password for the user and root (stored as a
                         hash; --no-password: none), then types into VT3 the
                         network setup, a clone of this repository and
@@ -148,10 +165,12 @@ Options:
                         with a warning, not an error.
   -b, --branch B        the qubes-guix branch that --bootstrap,
                         --finish-install and --unattended clone and build
-                        from                               (default main)
+                        from (default main; on the qubes-guix ISO, its own
+                        scripts and branch, without cloning)
   -h, --help            this help
 
-Example:
+Examples:
+  $prog --unattended guix work:/home/user/qubes-guix-installer.iso
   $prog guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
   $prog guix untrusted:/home/user/guix.iso 4 4000 16000
 EOF
@@ -192,7 +211,9 @@ while [ $# -gt 0 ]; do
         --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
         --no-update) first_update=0; shift;;
         --test)     run_test=1; shift;;
-        -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
+        -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; branch_given=1; shift 2;;
+        --qubes-iso) qubes_iso=1; shift;;
+        --stock-iso) qubes_iso=0; shift;;
         --dry-run)  dry_run=1; shift;;
         -h|--help)  usage; exit 0;;
         --)         shift; args+=("$@"); break;;
@@ -366,9 +387,96 @@ printf 'nameserver %s\\n' $dns > /etc/resolv.conf; \
 ip -br addr show \$IF; ip route"
 }
 
+# --- the qubes-guix installer ISO: driven over qrexec --------------------
+
+# Whether qube $1 answers qrexec as root. The qubes-guix installer ISO
+# (iso/qubes-guix-iso) runs the agent, the stock Guix installer doesn't.
+has_qrexec() {
+    [ "$(qvm-features "$1" qrexec 2>/dev/null)" = 1 ] || return 1
+    timeout 30 qvm-run -q -u root --no-gui --pass-io "$1" true >/dev/null 2>&1
+}
+
+# The qubes channel branch for a job in the installer: -b if given, else the
+# one the ISO's guix has (so its prebuilt Qubes packages are used), else main.
+# Shell lines, run in the qube, that set B.
+guest_branch_lines() {
+    if [ "$branch_given" = 1 ]; then
+        printf "B='%s'\n" "$branch"
+    else
+        # shellcheck disable=SC2016  # expanded in the qube
+        printf '%s\n' \
+            'B=$(guix describe 2>/dev/null | awk '"'"'NF == 2 && $1 !~ /:$/ { n = $1 } $1 == "branch:" && n == "qubes" { print $2; exit }'"'"')' \
+            '[ -n "$B" ] || B=main'
+    fi
+}
+
+# Shell lines, run in the qube first, that get the guest scripts: the ISO's
+# copy in /root/qubes-guix, or with -b a fresh clone of that branch.
+guest_repo_lines() {
+    local d=/root/qubes-guix
+    if [ "$branch_given" = 1 ]; then
+        printf '%s\n' "rm -rf $d; git clone -q -b $branch $repo_url $d"
+    fi
+    printf '%s\n' "[ -f $d/guest/qubes-guix-install ] || { echo \"$d/guest is missing: is $name running the qubes-guix installer ISO?\" >&2; exit 1; }"
+}
+
+# Run CMD (shell lines) as root in qube NAME over qrexec, detached from this
+# terminal (an install outlives a closed dom0 window), and follow its log
+# here. PRELUDE runs first, in the foreground: it writes the files CMD
+# needs. With POWEROFF=1 the qube powers off once CMD succeeds.
+# Sets job_status: CMD's exit status, or "off" if the qube went off first.
+qrexec_job() {
+    local name=$1 job=$2 prelude=$3 cmd=$4 poweroff=$5
+    local log=/root/$job.log st=/root/$job.status runner=/root/$job.sh
+    local off=':'
+    [ "$poweroff" = 1 ] &&
+        off='sleep 5; herd stop cow-store /mnt >/dev/null 2>&1; umount /mnt 2>/dev/null; halt'
+    local script="set -eu
+$prelude
+rm -f $st
+cat > $runner <<'QGRUN'
+{
+$cmd
+}
+s=\$?
+echo \$s > $st
+[ \$s = 0 ] && { $off; }
+QGRUN
+setsid sh $runner > $log 2>&1 < /dev/null &
+echo \$! > /root/$job.pid"
+    job_status=
+    if [ "$dry_run" = 1 ]; then
+        echo "Dry run: would run as root in $name, over qrexec:"
+        printf '%s\n' "$script" | sed 's/^/  | /'
+        job_status=0
+        return 0
+    fi
+    printf '%s\n' "$script" | qvm-run -q -u root --pass-io --no-gui "$name" 'sh -s' ||
+        die "couldn't start $job in $name"
+    echo "Following its log ($log in $name). Ctrl+C stops this script, not the"
+    echo "$job; to follow it again:  qvm-run -u root --pass-io $name 'tail -f $log'"
+    qvm-run -q -u root --pass-io --no-gui "$name" \
+        "tail -n +1 --pid=\$(cat /root/$job.pid) -F $log 2>/dev/null" || true
+    # The log ended: the job is done, or the qube went off with it.
+    while qvm-check -q --running "$name" 2>/dev/null; do
+        job_status=$(timeout 30 qvm-run -q -u root --pass-io --no-gui "$name" \
+                         "cat $st 2>/dev/null" 2>/dev/null) || job_status=
+        if [ -n "$job_status" ] && { [ "$job_status" != 0 ] || [ "$poweroff" = 0 ]; }; then
+            return 0
+        fi
+        sleep 10
+    done
+    job_status=${job_status:-off}
+}
+
 if [ "$type_network" = 1 ]; then
     [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
     name=${args[0]}
+    if [ "$dry_run" = 0 ] && has_qrexec "$name"; then
+        echo "$name answers qrexec (the qubes-guix ISO): its network comes from QubesDB."
+        qvm-run -q -u root --pass-io --no-gui "$name" 'ip -br addr; ip route' || true
+        exit 0
+    fi
     qube_net "$name"
     # The first non-loopback interface: eth0 in the installer, maybe not
     # after it. NetworkManager (installed system) would fight a static setup.
@@ -430,11 +538,68 @@ EOF
     exit 0
 fi
 
-if [ "$install" = 1 ]; then
-    [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }
-    name=${args[0]}
+# --- --unattended -------------------------------------------------------
+
+# After an unattended install has powered NAME off: a template loses its
+# netvm; NAME starts from its disk; the first update; the test.
+start_installed() {
+    if [ "$template" = 1 ]; then
+        # Like other templates: no network; updates (guix pull,
+        # substitutes) go through the Qubes updates proxy.
+        echo "$name is off. As a template it now gets no netvm (updates go through"
+        echo "the updates proxy). To give it one back:  qvm-prefs $name netvm <qube>"
+        qvm-prefs "$name" netvm ''
+    fi
+    echo "Starting $name."
+    echo "Installed in $(elapsed)."
+    # dom0 only starts a qube's qrexec daemon, and qvm-start only waits
+    # for it, if the qube has the qrexec feature. A new qube doesn't: the
+    # agent asks for it on its first boot, too late for this start. The
+    # installed system has the agent, so set it now (setting it before
+    # the install would make qvm-start wait for, and kill, a stock
+    # installer; the qubes-guix ISO has it set already).
+    qvm-features "$name" qrexec 1
+    qvm-start "$name"
+    if [ "$first_update" = 1 ]; then
+        # The install built with the installer's Guix (fast: substitutes).
+        # Now bring the system to the Guix it follows: the head, or the
+        # --guix-commit lock recorded in its config.scm.
+        echo "Updating $name: qubes-guix-update -r (pull to $( [ -n "$guix_commit" ] && echo "the locked commit" || echo 'the head'), then reconfigure)."
+        echo "This is long: it builds the Qubes packages against that Guix. Output follows."
+        if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r'; then
+            echo "Updated in $(elapsed) in all."
+            if [ "$template" = 1 ]; then
+                qvm-shutdown --wait "$name"
+                echo "$name is ready: shut down, updated. Base AppVMs on it."
+            fi
+            if [ "$run_test" = 1 ]; then
+                echo "Testing $name: qubes-guix-test"
+                "$(dirname "$0")/qubes-guix-test" "$name" ||
+                    { echo "$prog: qubes-guix-test found problems (above)" >&2; exit 1; }
+            fi
+        else
+            echo "$prog: the update in $name failed; it's running, at the installer's Guix." >&2
+            echo "Look at the output above; rerun it in $name with:  qubes-guix-update -r" >&2
+            exit 1
+        fi
+    else
+        echo "Started. Check from dom0:  qvm-run -u root --pass-io $name 'herd status qrexec-agent'"
+    fi
+}
+
+elapsed() { local s=$(( $(date +%s) - t0 )); printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60)); }
+
+# The unattended install of the running installer in qube $name: over
+# qrexec on the qubes-guix ISO, else typed into the stock installer's VT3.
+unattended() {
     detect_template "$name"
-    qube_net "$name"
+    local via_qrexec=0
+    if [ "$dry_run" = 1 ]; then
+        [ "$qubes_iso" = 1 ] && via_qrexec=1
+    elif has_qrexec "$name"; then
+        via_qrexec=1
+    fi
+    [ "$via_qrexec" = 1 ] || qube_net "$name"
     tz=$(timedatectl show -p Timezone --value 2>/dev/null) || tz=
     [ -n "$tz" ] || tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
     [ -n "$tz" ] || tz=UTC
@@ -456,32 +621,63 @@ if [ "$install" = 1 ]; then
     read_packages
     # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
     d=/root/qubes-guix
-    cmd="sh $d/guest/qubes-guix-install --host-name $(echo "$name" | tr '_' '-') --timezone $tz --locale $locale -b $branch --poweroff"
-    [ "$template" = 1 ] && cmd="$cmd --template"
-    [ "$force" = 1 ] && cmd="$cmd --force"
-    [ -n "$hash" ] && cmd="$cmd --password-hash '$hash'"
-    [ -n "$packages" ] && cmd="$cmd --packages '$packages'"
+    iargs="--host-name $(echo "$name" | tr '_' '-') --timezone $tz --locale $locale"
+    [ "$template" = 1 ] && iargs="$iargs --template"
+    [ "$force" = 1 ] && iargs="$iargs --force"
+    [ -n "$hash" ] && iargs="$iargs --password-hash '$hash'"
+    [ -n "$packages" ] && iargs="$iargs --packages '$packages'"
     if [ -n "$guix_commit" ]; then
         case $guix_commit in
             server) ;;
             *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash (or 'server')";;
         esac
-        cmd="$cmd --guix-commit $guix_commit"
+        iargs="$iargs --guix-commit $guix_commit"
     fi
-    t0=$(date +%s)
-    elapsed() { local s=$(( $(date +%s) - t0 )); printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60)); }
+    t0=${t0:-$(date +%s)}
     read_channels
     ch_lines=
     if [ -n "$channels_text" ]; then
         ch_lines="$(channels_heredoc /root/qubes-guix-channels.scm)"
-        cmd="$cmd --channels /root/qubes-guix-channels.scm"
+        iargs="$iargs --channels /root/qubes-guix-channels.scm"
     fi
     read_substitutes
     su_lines=
     if [ -n "$subs_text" ]; then
         su_lines="$(subs_heredoc /root/qubes-guix-substitutes)"
-        cmd="$cmd --substitutes /root/qubes-guix-substitutes"
+        iargs="$iargs --substitutes /root/qubes-guix-substitutes"
     fi
+    what="($( [ "$template" = 1 ] && echo 'template, ')timezone $tz, user 'user'$( [ -n "$hash" ] || echo ', no password'))"
+
+    if [ "$via_qrexec" = 1 ]; then
+        echo "$name runs the qubes-guix installer: installing over qrexec $what."
+        echo "It partitions /dev/xvda, writes config.scm and runs guix system init"
+        echo "with the ISO's Guix (its Qubes packages are prebuilt), then powers off."
+        qrexec_job "$name" qubes-guix-install \
+            "$(guest_repo_lines)
+$ch_lines
+$su_lines" \
+            "$(guest_branch_lines)
+sh $d/guest/qubes-guix-install $iargs -b \"\$B\"" 1
+        if [ "$dry_run" = 1 ]; then
+            echo "(dry run: would then start $name from its disk$( [ "$first_update" = 1 ] && echo ", run qubes-guix-update -r in it"))"
+            return 0
+        fi
+        case $job_status in
+            0|off) ;;
+            *) die "the install in $name failed (exit $job_status). $name is still running
+the installer: see /root/qubes-guix-install.log there, e.g.
+  qvm-run -u root --pass-io $name 'tail -n 50 /root/qubes-guix-install.log'
+Fix the cause and rerun:  $prog --unattended $name   (it resumes)";;
+        esac
+        if [ "$wait_start" = 1 ]; then
+            start_installed
+        else
+            echo "$name is installed and off. Start it:  qvm-start $name"
+        fi
+        return 0
+    fi
+
+    cmd="sh $d/guest/qubes-guix-install $iargs -b $branch --poweroff"
     type_into "$name" "set +H
 $(net_cmds)
 $ch_lines
@@ -489,7 +685,7 @@ $su_lines
 rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $cmd"
     cat <<EOF
 $typed into $name's console (VT3): the network setup, then a clone of branch
-$branch and guest/qubes-guix-install ($( [ "$template" = 1 ] && echo 'template, ')timezone $tz, user 'user'$( [ -n "$hash" ] || echo ', no password')).
+$branch and guest/qubes-guix-install $what.
 It partitions /dev/xvda, builds a Guix with the qubes channel and the system
 (an hour or more), then powers $name off. Watch VT3 for errors.
 EOF
@@ -499,50 +695,15 @@ EOF
         echo "Waiting for $name to power off, to start it from its disk (Ctrl+C: stop"
         echo "waiting; then start it yourself with: qvm-start $name)."
         while qvm-check -q --running "$name" 2>/dev/null; do sleep 15; done
-        if [ "$template" = 1 ]; then
-            # Like other templates: no network; updates (guix pull,
-            # substitutes) go through the Qubes updates proxy.
-            echo "$name is off. As a template it now gets no netvm (updates go through"
-            echo "the updates proxy). To give it one back:  qvm-prefs $name netvm <qube>"
-            qvm-prefs "$name" netvm ''
-        fi
-        echo "Starting $name."
-        echo "Installed in $(elapsed)."
-        # dom0 only starts a qube's qrexec daemon, and qvm-start only waits
-        # for it, if the qube has the qrexec feature. A new qube doesn't: the
-        # agent asks for it on its first boot, too late for this start. The
-        # installed system has the agent, so set it now (setting it before
-        # the install would make qvm-start wait for, and kill, the installer).
-        qvm-features "$name" qrexec 1
-        qvm-start "$name"
-        if [ "$first_update" = 1 ]; then
-            # The install built with the installer's Guix (fast: substitutes).
-            # Now bring the system to the Guix it follows: the head, or the
-            # --guix-commit lock recorded in its config.scm.
-            echo "Updating $name: qubes-guix-update -r (pull to $( [ -n "$guix_commit" ] && echo "the locked commit" || echo 'the head'), then reconfigure)."
-            echo "This is long: it builds the Qubes packages against that Guix. Output follows."
-            if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r'; then
-                echo "Updated in $(elapsed) in all."
-                if [ "$template" = 1 ]; then
-                    qvm-shutdown --wait "$name"
-                    echo "$name is ready: shut down, updated. Base AppVMs on it."
-                fi
-                if [ "$run_test" = 1 ]; then
-                    echo "Testing $name: qubes-guix-test"
-                    "$(dirname "$0")/qubes-guix-test" "$name" ||
-                        { echo "$prog: qubes-guix-test found problems (above)" >&2; exit 1; }
-                fi
-            else
-                echo "$prog: the update in $name failed; it's running, at the installer's Guix." >&2
-                echo "Look at the output above; rerun it in $name with:  qubes-guix-update -r" >&2
-                exit 1
-            fi
-        else
-            echo "Started. Check from dom0:  qvm-run -u root --pass-io $name 'herd status qrexec-agent'"
-        fi
+        start_installed
     else
         echo "When it's off:  qvm-start $name"
     fi
+}
+
+if [ "$install" = 1 ] && [ ${#args[@]} -eq 1 ]; then
+    name=${args[0]}
+    unattended
     exit 0
 fi
 
@@ -552,23 +713,45 @@ if [ "$finish_install" = 1 ]; then
     detect_template "$name"
     # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
     d=/root/qubes-guix
-    cmd="sh $d/guest/qubes-guix-finish-install"
-    [ "$template" = 1 ] && cmd="$cmd --template"
-    cmd="$cmd -b $branch"
+    fargs=
+    [ "$template" = 1 ] && fargs="--template"
     read_packages
-    [ -n "$packages" ] && cmd="$cmd --packages '$packages'"
+    [ -n "$packages" ] && fargs="$fargs --packages '$packages'"
     read_channels
     ch_lines=
     if [ -n "$channels_text" ]; then
         ch_lines="$(channels_heredoc /root/qubes-guix-channels.scm)"
-        cmd="$cmd --channels /root/qubes-guix-channels.scm"
+        fargs="$fargs --channels /root/qubes-guix-channels.scm"
     fi
     read_substitutes
     su_lines=
     if [ -n "$subs_text" ]; then
         su_lines="$(subs_heredoc /root/qubes-guix-substitutes)"
-        cmd="$cmd --substitutes /root/qubes-guix-substitutes"
+        fargs="$fargs --substitutes /root/qubes-guix-substitutes"
     fi
+    # The qubes-guix ISO: run it over qrexec (--run is implied: nothing is
+    # typed into a root shell), then restart NAME from its disk. dom0 does
+    # the restart: a reboot inside the qube would boot the ISO again.
+    if { [ "$dry_run" = 1 ] && [ "$qubes_iso" = 1 ]; } ||
+       { [ "$dry_run" = 0 ] && has_qrexec "$name"; }; then
+        echo "$name answers qrexec (the qubes-guix ISO): making the installed system a qube."
+        qrexec_job "$name" qubes-guix-finish-install \
+            "$(guest_repo_lines)
+$ch_lines
+$su_lines" \
+            "$(guest_branch_lines)
+sh $d/guest/qubes-guix-finish-install $fargs -b \"\$B\" && sync" 0
+        [ "$dry_run" = 1 ] && exit 0
+        [ "$job_status" = 0 ] ||
+            die "finish-install in $name failed (exit $job_status): see
+/root/qubes-guix-finish-install.log there; /mnt/etc/config.scm is unchanged."
+        echo "Done. Restarting $name from its disk."
+        qvm-shutdown --wait --timeout 180 "$name"
+        qvm-start "$name"
+        echo "$name is up: check with  qvm-run -u root --pass-io $name 'herd status'"
+        exit 0
+    fi
+    cmd="sh $d/guest/qubes-guix-finish-install${fargs:+ $fargs} -b $branch"
     # The installer's shell is root, and its network was set up by
     # --type-network. git isn't in the installer image: guix shell fetches it.
     if [ "$run_now" = 1 ]; then
@@ -624,6 +807,20 @@ case $iso in
 esac
 [ -n "$iso_vm" ] || die "ISO must be ISO_VM:/absolute/path"
 case $iso_path in *.iso) ;; *) echo "$prog: warning: '$iso_path' doesn't end in .iso" >&2;; esac
+# Which installer: the qubes-guix ISO runs the qrexec agent, so dom0 must
+# wait for it (the qrexec feature); a stock installer would be killed at
+# qrexec_timeout for not answering.
+if [ "$qubes_iso" = auto ]; then
+    case ${iso_path##*/} in
+        *qubes-guix*) qubes_iso=1;;
+        *) if [ "$install" = 1 ]; then qubes_iso=1; else qubes_iso=0; fi;;
+    esac
+fi
+if [ "$install" = 1 ] && [ "$qubes_iso" = 0 ]; then
+    die "--unattended with an ISO needs the qubes-guix installer ISO (iso/qubes-guix-iso).
+With the stock Guix ISO: create the qube, do the GRUB step, then run
+  $prog --unattended $name"
+fi
 
 is_uint "$vcpus"  && [ "$vcpus" -ge 1 ]     || die "VCPUS must be a positive integer"
 is_uint "$memory" && [ "$memory" -ge 1024 ] || die "MEMORY must be at least 1024 (MiB)"
@@ -707,8 +904,45 @@ else
     run qvm-service "$name" meminfo-writer off
 fi
 
+if [ "$qubes_iso" = 1 ]; then
+    # qvm-start then waits for the installer's qrexec agent (up to
+    # qrexec_timeout), so everything after it can use qvm-run.
+    run qvm-features "$name" qrexec 1
+    echo "Booting the qubes-guix installer; waiting for its qrexec agent."
+fi
 run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
 created=0           # it exists and boots: keep it from here on
+
+if [ "$install" = 1 ]; then
+    t0=$(date +%s)
+    unattended
+    exit 0
+fi
+
+if [ "$qubes_iso" = 1 ]; then
+    [ "$dry_run" = 1 ] && { echo; echo "(dry run: nothing was changed)"; exit 0; }
+    opts="$( [ "$template" = 1 ] && echo ' --template')$( [ "$branch_given" = 1 ] && echo " -b $branch")"
+    cat <<EOF
+
+$name is running the qubes-guix installer, with its network and qrexec
+agent up. Either:
+
+- unattended, in dom0:
+    $prog --unattended$opts $name
+  It asks for a password, partitions, installs and powers off, then starts
+  $name from its disk and updates it.
+
+- or with the installer's dialogs, in $name's console window. Its network
+  step may find no device to configure: continue, the network is already
+  up. At 'Installation complete', DON'T reboot; in dom0:
+    $prog --finish-install$opts $name
+  It makes the new system a qube, then restarts $name from its disk.
+
+A root shell: the console's VT3, or from dom0
+  qvm-run -u root --pass-io $name 'COMMAND'
+EOF
+    exit 0
+fi
 
 # --- what the installer needs -------------------------------------------
 

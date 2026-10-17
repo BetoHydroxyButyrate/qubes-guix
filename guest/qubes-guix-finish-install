@@ -5,7 +5,9 @@
 #   1. wraps /mnt/etc/config.scm in (qubes-operating-system ...)
 #      (the original is kept as /mnt/etc/config.scm.pre-qubes);
 #   2. checks it, then rebuilds /mnt with 'guix system init', using a Guix
-#      that includes the qubes channel (guix time-machine).
+#      that includes the qubes channel: the installer's own on the
+#      qubes-guix installer ISO (iso/qubes-guix-iso), else one built with
+#      guix time-machine.
 # The first boot then already has the Qubes agents, its network from QubesDB,
 # passwordless sudo, and the qubes channel in /etc/guix/channels.scm.
 #
@@ -14,7 +16,8 @@
 # --template: the qube is a TemplateVM (qubes-guix-create --template).
 # -b BRANCH:  the channel branch to build from and to record (default main).
 # --build-commit C: build with Guix at commit C; "installer" is the
-#             installer's own commit (substitutes for nearly everything),
+#             installer's own commit (substitutes for nearly everything;
+#             on the qubes-guix ISO, the Qubes packages are already built),
 #             "latest" the current master. Only for this build. Default:
 #             the --guix-commit lock if given (so the first update has
 #             nothing to rebuild; with --substitutes, the commit your
@@ -108,6 +111,25 @@ elsewhere (e.g. /root/qubes-guix) and run it from there";;
 esac
 herd start cow-store "$target" >/dev/null 2>&1 || true
 
+# Guix's cache (channel checkouts, the time-machine's builds) on the target's
+# disk too, under /tmp (which is now the target's): guix.git alone would
+# take a good part of the installer's RAM. The qubes-guix ISO built with
+# --offline carries the channels' checkouts: start from those, so nothing
+# is fetched (git writes into them, hence a copy).
+XDG_CACHE_HOME=${QUBES_GUIX_CACHE:-/tmp/qubes-guix-cache}
+export XDG_CACHE_HOME
+seed=/etc/qubes-guix-cache
+if [ -d "$seed" ] && [ ! -d "$XDG_CACHE_HOME/guix/checkouts" ]; then
+    say "Copying the channels' git checkouts from the ISO"
+    for e in "$seed"/checkouts/* "$seed"/authentication; do
+        [ -e "$e" ] || continue
+        rel=${e#"$seed"/}
+        mkdir -p "$XDG_CACHE_HOME/guix/$(dirname "$rel")"
+        cp -r "$(readlink -f "$e")" "$XDG_CACHE_HOME/guix/$rel"
+    done
+    chmod -R u+w "$XDG_CACHE_HOME/guix"
+fi
+
 for f in wrap-config.guile channels.scm.txt; do
     [ -f "$here/$f" ] || die "$f missing next to $prog"
 done
@@ -181,11 +203,40 @@ if [ "$build_commit" = default ]; then
         build_commit=installer
     fi
 fi
+# A field (branch, commit) of channel $1 in the running Guix ('guix
+# describe'); empty if it doesn't have that channel.
+described() {
+    guix describe 2>/dev/null | awk -v ch="$1" -v f="$2:" '
+        NF == 2 && $1 !~ /:$/ { name = $1 }
+        $1 == f && name == ch { print $2; exit }'
+}
+installer_commit=$(described guix commit)
 case $build_commit in
-    installer) build_commit=$(guix describe 2>/dev/null | sed -n 's/^ *commit: //p' | head -n1);;
+    installer) build_commit=$installer_commit;;
     latest) build_commit=;;
 esac
-if [ -n "$build_commit" ]; then
+
+# The qubes-guix ISO: the installer's own guix already includes the qubes
+# channel, and its store has the Qubes packages built with it. Build with it
+# directly (no time-machine: no Guix to build, nor the agents) when it's
+# what this build asks for: Guix at the installer's commit, the qubes
+# channel on the same branch (and at the server's commit, if locked to
+# one), and no extra channels.
+iso_guix=0
+iso_qubes=$(described qubes commit)
+if [ -n "$iso_qubes" ] && [ -n "$build_commit" ] &&
+   [ "$build_commit" = "$installer_commit" ] &&
+   [ "$(described qubes branch)" = "$branch" ] &&
+   [ -z "${QUBES_CHANNELS_FILE:-}" ]; then
+    server_qubes=$(printf '%s\n' "$server_commits" | awk '$1 == "qubes" {print $2; exit}')
+    if [ -z "$server_qubes" ] || [ "$server_qubes" = "$iso_qubes" ]; then
+        iso_guix=1
+    fi
+fi
+if [ "$iso_guix" = 1 ]; then
+    say "Building with the installer's own Guix ($installer_commit), which has the
+qubes channel ($branch, $iso_qubes): the Qubes packages are already built"
+elif [ -n "$build_commit" ]; then
     case $build_commit in
         *[!0-9a-f]*) die "--build-commit: '$build_commit' isn't a commit hash";;
     esac
@@ -258,9 +309,21 @@ case $status in
     *) die "couldn't wrap $config (unchanged)";;
 esac
 
-say "Checking it with the qubes channel ($branch). The first run builds a Guix: slow."
-if ! guix time-machine ${subs:+"--substitute-urls=$subs"} -C "$channels" -- \
-        system build ${subs:+"--substitute-urls=$subs"} --dry-run "$new" >/dev/null; then
+# guix, with the qubes channel: the installer's, or one time-machine builds.
+qguix() {
+    if [ "$iso_guix" = 1 ]; then
+        guix "$@"
+    else
+        guix time-machine ${subs:+"--substitute-urls=$subs"} -C "$channels" -- "$@"
+    fi
+}
+
+if [ "$iso_guix" = 1 ]; then
+    say "Checking it with the qubes channel ($branch)"
+else
+    say "Checking it with the qubes channel ($branch). The first run builds a Guix: slow."
+fi
+if ! qguix system build ${subs:+"--substitute-urls=$subs"} --dry-run "$new" >/dev/null; then
     cp "$new" /root/config.scm.qubes-failed
     die "the wrapped configuration doesn't evaluate; $config is unchanged.
 The attempted version is in /root/config.scm.qubes-failed"
@@ -270,8 +333,7 @@ fi
 cp "$new" "$config"
 
 say "Rebuilding $target as a qube (guix system init; builds the Qubes agents)"
-guix time-machine ${subs:+"--substitute-urls=$subs"} -C "$channels" -- \
-    system init ${subs:+"--substitute-urls=$subs"} "$config" "$target"
+qguix system init ${subs:+"--substitute-urls=$subs"} "$config" "$target"
 
 cat <<EOF
 

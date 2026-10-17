@@ -37,6 +37,8 @@ qubes/packages/split-gpg.scm    qubes-split-gpg2-client
 qubes/packages/split-ssh.scm    qubes-split-ssh-client
 qubes/services/agent.scm        qubes-guest-service-type — the integration
 qubes/system.scm                qubes-operating-system — adds all of it to any operating-system
+qubes/installer.scm             qubes-installation-os — the qubes-guix installer ISO
+iso/qubes-guix-iso              build that ISO (on any x86_64 Guix)
 dom0/qubes-guix-create          dom0: create the qube and boot the installer
 guest/qubes-guix-install        installer shell: unattended install (disk, config.scm, then finish-install)
 guest/qubes-guix-finish-install installer, before the first reboot: config.scm + guix system init
@@ -129,16 +131,52 @@ A local desktop (e.g. XFCE on `:0`) can coexist: the Qubes GUI agent runs its ow
           (ctap-backend "sys-usb")     ; #f: no U2F/FIDO2 proxy
           (split-gpg2 qubes-split-gpg2-client)  ; #f: no split-gpg2 client
           (split-ssh qubes-split-ssh-client)    ; #f: no split-ssh client
-          (default-menu-items '("xfce4-terminal.desktop" "thunar.desktop"))))
+          (default-menu-items '("xfce4-terminal.desktop" "thunar.desktop"))
+          (features-request? #t)))      ; #f: don't advertise features to
+                                       ; dom0 (the installer ISO)
                                        ; what dom0 shows in the Qubes menu by
                                        ; default (only the installed ones)
 ```
 
 Package fields (`qrexec`, `qubesdb`, `core-agent`, `gui-agent`, `ctap`) can be overridden too.
 
+## The qubes-guix installer ISO
+
+*New, not yet tested.* `iso/qubes-guix-iso` builds an installer ISO for Qubes (`qubes/installer.scm`). It's the Guix installer plus a headless Qubes agent: QubesDB, the qrexec agent, and the network from QubesDB. Under Qubes, that removes every manual step of the stock ISO:
+- **No GRUB edit:** `nomodeset` is on its kernel command line.
+- **No network setup:** the address, gateway and DNS come from QubesDB, as in any qube.
+- **No typing into the console:** dom0 drives the install with `qvm-run -u root`, and the output shows in the dom0 terminal.
+- **Nothing to build for the Qubes agents:** the ISO's `guix` already includes the qubes channel, and its store has the Qubes packages built by that Guix. `qubes-guix-finish-install` uses that Guix directly, instead of `guix time-machine`.
+
+The guest scripts are on the ISO, in `/root/qubes-guix/guest`, and so is git. The installer's own dialogs (tty1) still work for a manual install.
+
+Build it on an x86_64 Guix, such as a Guix qube or your substitute server:
+
+```
+qubes-guix/iso/qubes-guix-iso                     # qubes-guix-installer.iso, at the head of main
+qubes-guix/iso/qubes-guix-iso --server https://guix-subs.example   # at the commits your server last built
+qubes-guix/iso/qubes-guix-iso -b template --offline -o /tmp/qgi.iso
+```
+
+`--server URL` builds every channel at the commits the server last built (its `/channel-commits`, as [guix-subs](https://github.com/BetoHydroxyButyrate/guix-subs) publishes) and fetches from it first. Nearly everything then comes from your server, and so does the rest of an install, such as Xfce. `--guix-commit` and `--qubes-commit` pin those channels by hand. `--offline` also puts into the ISO everything the default unattended install needs, and the channels' git checkouts, so that install needs no network at all; the ISO grows by a few GiB. Next to the ISO, `FILE.channels` records the channels it was built from. `-L DIR` builds from a checkout with your current Guix, for testing; that ISO's guix lacks the qubes channel, so installs from it fall back to `guix time-machine`.
+
+Then, in dom0, one command creates the qube and installs it:
+
+```
+./qubes-guix-create --unattended guix work:/home/user/qubes-guix-installer.iso     # add --template for a template
+```
+
+It asks for the password, creates the qube, and boots the ISO. dom0 waits for the installer's qrexec agent (the `qrexec` feature is set first). Then it runs `guest/qubes-guix-install` in it, detached, and follows the log; Ctrl+C stops following, not the install. When the install powers the qube off, it starts the qube from its disk, runs the first `qubes-guix-update -r`, and shuts a template down, as below. Without `-b`, the install uses the ISO's own scripts and its channel branch, which is what its prebuilt packages match. `-b BRANCH` clones that branch instead. The packages, channels and substitutes files work as for the stock ISO.
+
+Without `--unattended`, it creates the qube, boots the ISO and prints the two ways on: `--unattended NAME`, or the installer's dialogs followed by `--finish-install NAME`. Over qrexec, `--finish-install` runs straight away and then restarts the qube from its disk, because a reboot inside the qube would boot the ISO again. The installer's network step may find no device to configure (connman is gone, since the agent provides `networking`): continue, the network is up.
+
+dom0 recognises the ISO by a file name containing `qubes-guix`, or from `--unattended`. Otherwise pass `--qubes-iso` (or `--stock-iso`). It matters because dom0 waits up to `qrexec_timeout` for the agent of a qube with the `qrexec` feature, then kills it. The stock ISO has no agent.
+
+The installer never sends its features to dom0 (`features-request? #f` in `qubes-guest-configuration`). dom0 keeps the first `qrexec` and `gui` values a qube gives, and the installer's `gui=0` would have stuck to the installed system.
+
 ## Creating the qube (dom0)
 
-`dom0/qubes-guix-create` creates the qube and boots it from the Guix System installer ISO. Download the ISO from [guix.gnu.org](https://guix.gnu.org/en/download/) into any qube, then copy the script into dom0. Read it first: anything you copy into dom0 runs with full control of the machine.
+`dom0/qubes-guix-create` creates the qube and boots it from an installer ISO: the qubes-guix one (above), or the stock Guix System installer ISO, which this section is about. Download the ISO from [guix.gnu.org](https://guix.gnu.org/en/download/) into any qube, then copy the script into dom0. Read it first: anything you copy into dom0 runs with full control of the machine.
 
 ```
 # dom0 — <qube> is where you cloned this repository

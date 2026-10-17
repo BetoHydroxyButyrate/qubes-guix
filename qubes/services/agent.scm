@@ -80,6 +80,12 @@
   ;; volatile volume, the hostname from qubesdb, and updates through
   ;; qubes.UpdatesProxy. Needs a single-partition root (no separate /home).
   (template? qubes-guest-template? (default #f))
+  ;; #f: don't advertise this qube's features to dom0 (qubes.FeaturesRequest).
+  ;; For the installer ISO: dom0 never lets a qube change qrexec or gui once
+  ;; set, so an installer asking for gui=0 would leave the installed system
+  ;; without its GUI; and the first qrexec advertisement fires dom0's
+  ;; template-postinstall (app menus), which only the installed system should.
+  (features-request? qubes-guest-features-request? (default #t))
   ;; Desktop files (basenames) dom0 puts in the Qubes menu by default for
   ;; this qube and the AppVMs based on it (feature default-menu-items).
   ;; Only those present in the system profile are requested. Without it,
@@ -318,16 +324,20 @@ done
 "))
 
 (define (qubes-extra-shepherd-services config)
-  (list
-   (shepherd-service
-    (documentation "Advertise this qube's capabilities to dom0
+  (append
+   (if (qubes-guest-features-request? config)
+       (list
+        (shepherd-service
+         (documentation "Advertise this qube's capabilities to dom0
 (qvm-features: qrexec, vmexec, gui, os, memory hotplug...).")
-    (provision '(qubes-features-request))
-    (requirement '(qrexec-agent qubesdb-daemon))
-    (one-shot? #t)
-    (start #~(lambda _
-               (zero? (system* #$(file-append bash-minimal "/bin/sh")
-                               #$(qubes-features-script config))))))
+         (provision '(qubes-features-request))
+         (requirement '(qrexec-agent qubesdb-daemon))
+         (one-shot? #t)
+         (start #~(lambda _
+                    (zero? (system* #$(file-append bash-minimal "/bin/sh")
+                                    #$(qubes-features-script config)))))))
+       '())
+   (list
    (shepherd-service
     (documentation "Report memory usage to xenstore for dom0's memory
 balancer (qmemman).")
@@ -366,7 +376,7 @@ balancer (qmemman).")
               (if (eq? running #t)
                   #f
                   (apply (make-kill-destructor) running args))))
-    (respawn? #t))))
+    (respawn? #t)))))
 
 (define (qubes-ctap-shepherd-service config)
   (let ((qdb     (qubesdb-read-path config))

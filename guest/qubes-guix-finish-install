@@ -334,6 +334,17 @@ case $status in
     *) die "couldn't wrap $config (unchanged)";;
 esac
 
+# The installer's Guix trusts only its own channels, so the time-machine
+# warned "channel 'beto' is not trusted" for each extra channel (only a
+# warning, for a local channels file). These are the channels this install
+# was given: trust them, for this installer's root only (and not over a
+# trusted-channels.scm of its own). Introductions are still checked.
+guix_config=${XDG_CONFIG_HOME:-${HOME:-/root}/.config}/guix
+if [ "$iso_guix" != 1 ] && [ ! -e "$guix_config/trusted-channels.scm" ]; then
+    mkdir -p "$guix_config"
+    cp "$channels" "$guix_config/trusted-channels.scm"
+fi
+
 # guix, with the qubes channel: the installer's, or one time-machine builds.
 qguix() {
     if [ "$iso_guix" = 1 ]; then

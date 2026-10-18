@@ -122,7 +122,9 @@ Options:
       --guix-commit C   with --unattended: lock the qube's Guix at commit C
                         (#:guix-commit in its config.scm; move it later with
                         qubes-guix-update --guix-commit C, or --head).
-                        Default: follow the head. 'server': every channel
+                        Default: 'server' when there are substitute servers
+                        (--substitutes), else follow the head; 'head'
+                        follows the head either way. 'server': every channel
                         at the commits the first --substitutes server last
                         built (its /channel-commits, recorded as
                         #:channel-commits; Guix alone from /guix-commit if
@@ -592,7 +594,8 @@ start_installed() {
             fi
         else
             echo "$prog: the update in $name failed; it's running, at the installer's Guix." >&2
-            echo "Look at the output above; rerun it in $name with:  qubes-guix-update -r" >&2
+            echo "Look at the output above. To rerun it, from dom0:" >&2
+            echo "  qvm-run -u root --pass-io --no-gui $name 'qubes-guix-update -r' </dev/null" >&2
             exit 1
         fi
     else
@@ -651,13 +654,6 @@ unattended() {
     [ "$force" = 1 ] && iargs="$iargs --force"
     [ -n "$hash" ] && iargs="$iargs --password-hash '$hash'"
     [ -n "$packages" ] && iargs="$iargs --packages '$packages'"
-    if [ -n "$guix_commit" ]; then
-        case $guix_commit in
-            server) ;;
-            *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash (or 'server')";;
-        esac
-        iargs="$iargs --guix-commit $guix_commit"
-    fi
     t0=${t0:-$(date +%s)}
     read_channels
     ch_lines=
@@ -670,7 +666,21 @@ unattended() {
     if [ -n "$subs_text" ]; then
         su_lines="$(subs_heredoc /root/qubes-guix-substitutes)"
         iargs="$iargs --substitutes /root/qubes-guix-substitutes"
+        # With your own server, lock to what it last built unless told
+        # otherwise: its builds are then what the qube runs, and nothing is
+        # built locally (the first update included).
+        if [ -z "$guix_commit" ]; then
+            guix_commit=server
+            echo "Locking $name to the commits your substitute server last built"
+            echo "(--guix-commit head: follow the head instead)."
+        fi
     fi
+    case $guix_commit in
+        ''|head) guix_commit=;;
+        server) ;;
+        *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash ('server' or 'head')";;
+    esac
+    [ -n "$guix_commit" ] && iargs="$iargs --guix-commit $guix_commit"
     what="($( [ "$template" = 1 ] && echo 'template, ')timezone $tz, user 'user'$( [ -n "$hash" ] || echo ', no password'))"
 
     if [ "$via_qrexec" = 1 ]; then

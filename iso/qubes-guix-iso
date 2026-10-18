@@ -16,7 +16,9 @@
 #   --server URL          every channel at the commits URL last built (its
 #                         /channel-commits, as published by guix-subs), and
 #                         URL first for substitutes: so nearly everything
-#                         comes from that server
+#                         comes from that server. Default: the first url in
+#                         dom0/qubes-guix-substitutes, if it has one, unless
+#                         a commit is given; --no-server: none
 #   --substitute-urls "U ..."  substitute servers, before the defaults
 #   --offline             also put in the ISO what a default unattended
 #                         install needs, and the channels' git checkouts:
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
         --guix-commit) need "$@"; guix_commit=$2; shift 2;;
         --qubes-commit) need "$@"; qubes_commit=$2; shift 2;;
         --server) need "$@"; server=${2%/}; shift 2;;
+        --no-server) server=none; shift;;
         --substitute-urls) need "$@"; subs=$2; shift 2;;
         --offline) offline='#t'; shift;;
         -L|--load-path) need "$@"; load_path=$(cd "$2" && pwd); shift 2;;
@@ -73,6 +76,18 @@ command -v guix >/dev/null 2>&1 || die "guix not found"
 case $branch in *[!A-Za-z0-9._/-]*|'') die "bad branch name '$branch'";; esac
 [ -z "$guix_commit" ] || is_commit "$guix_commit" || die "--guix-commit: not a full commit hash"
 [ -z "$qubes_commit" ] || is_commit "$qubes_commit" || die "--qubes-commit: not a full commit hash"
+
+# The server: the one installs use (dom0/qubes-guix-substitutes), so the
+# ISO's prebuilt packages are its builds, and an install locked to it
+# (qubes-guix-create's default with a server) can use the ISO's guix as is.
+if [ -z "$server" ] && [ -z "$load_path" ] && [ -z "$guix_commit" ] &&
+   [ -z "$qubes_commit" ] && [ -f "$here/dom0/qubes-guix-substitutes" ]; then
+    server=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$here/dom0/qubes-guix-substitutes" | head -n1)
+    server=${server%/}
+    [ -n "$server" ] &&
+        echo "Server (from dom0/qubes-guix-substitutes; --no-server: none): $server"
+fi
+[ "$server" = none ] && server=
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -159,6 +174,11 @@ fi
 case $iso in
     /gnu/store/*.iso) ;;
     *)
+        if grep -q 'qubes installer' "$tmp/err" 2>/dev/null && [ -n "$server" ]; then
+            die "the qubes commit $server last built has no (qubes installer) module:
+the server is older than the ISO support. Rebuild it from current qubes-guix,
+or build without it (--no-server)."
+        fi
         if grep -q 'qubes installer' "$tmp/err" 2>/dev/null; then
             die "the qubes channel it built from has no (qubes installer) module: that
 branch ('$branch' at $url) predates the ISO support. Push the commit that adds

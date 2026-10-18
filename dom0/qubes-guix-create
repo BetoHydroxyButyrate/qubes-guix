@@ -43,6 +43,8 @@ guix_commit=
 first_update=1
 run_test=0
 appvm_template=
+split_ssh=0
+split_gpg=0
 run_now=0
 branch=main
 branch_given=0
@@ -55,8 +57,8 @@ usage() {
 Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --unattended [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
-       $prog --appvm TEMPLATE [-l COLOUR] [-n NETVM] [--test] NAME
-                              [MEMORY [MAXMEM]]
+       $prog --appvm TEMPLATE [-l COLOUR] [-n NETVM] [--split-ssh]
+                              [--split-gpg] [--test] NAME [MEMORY [MAXMEM]]
        $prog --bootstrap [--template] [--branch B] [--packages FILE] NAME
        $prog --finish-install [--template] [--branch B] [--packages FILE]
                               [--run] NAME
@@ -77,13 +79,17 @@ its console. With the stock Guix ISO, the steps are printed. Given an ISO,
   MAXMEM   memory-balancing maximum, MiB        (default: = MEMORY)
            MAXMEM > MEMORY turns memory balancing on, but slows every
            boot (Xen populate-on-demand); keep the gap small.
+           (Qubes ties the meminfo-writer service to maxmem: setting the
+           service resets maxmem to 0, so only maxmem is set here.)
 
 An AppVM on a Guix template (--appvm) needs what Qubes doesn't give an
 AppVM by default: HVM, its kernel from the template's disk (kernel ''), more
-memory than 400 MiB, a longer qrexec timeout, and memory balancing (maxmem
-and the meminfo-writer service). --appvm TEMPLATE creates NAME with all of
-that (MEMORY default 2000, MAXMEM default MEMORY + 4000; MAXMEM = MEMORY:
-no balancing); with --test, then runs qubes-guix-test on it.
+memory than 400 MiB, a longer qrexec timeout, and memory balancing (maxmem).
+--appvm TEMPLATE creates NAME with all of that (MEMORY default 2000, MAXMEM
+default MEMORY + 4000; MAXMEM = MEMORY: no balancing). --split-ssh tags it
+split-ssh (the README's qubes.SshAgent policy allows that tag); --split-gpg
+turns on its split-gpg2-client service. With --test, then runs
+qubes-guix-test on it (checking those too).
 
 Options:
   -l, --label COLOUR    window label            (default $label)
@@ -226,6 +232,8 @@ while [ $# -gt 0 ]; do
         --no-update) first_update=0; shift;;
         --test)     run_test=1; shift;;
         --appvm)    [ $# -ge 2 ] || die "$1 needs a TEMPLATE"; appvm_template=$2; shift 2;;
+        --split-ssh) split_ssh=1; shift;;
+        --split-gpg) split_gpg=1; shift;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; branch_given=1; shift 2;;
         --qubes-iso) qubes_iso=1; shift;;
         --stock-iso) qubes_iso=0; shift;;
@@ -520,21 +528,39 @@ if [ -n "$appvm_template" ]; then
     echo "Creating $name: AppVM on $appvm_template, HVM, $memory-$maxmem MiB"
     run qvm-create --template "$appvm_template" --label "$label" \
         --property virt_mode=hvm "$name"
-    # One property at a time, after the create: qvm-create's --property
-    # maxmem has been seen to leave 0 (no memory balancing).
+    # Memory balancing is maxmem alone (0: off). Not the meminfo-writer
+    # service: Qubes derives it from maxmem, and setting it resets maxmem
+    # to 0.
+    [ "$maxmem" -gt "$memory" ] || maxmem=0
     run qvm-prefs "$name" kernel ''
     run qvm-prefs "$name" memory "$memory"
     run qvm-prefs "$name" maxmem "$maxmem"
     run qvm-prefs "$name" qrexec_timeout 300
     [ -n "$netvm" ] && run qvm-prefs "$name" netvm "$netvm"
-    if [ "$maxmem" -gt "$memory" ]; then
-        run qvm-features "$name" service.meminfo-writer 1
+    [ "$split_ssh" = 1 ] && run qvm-tags "$name" add split-ssh
+    [ "$split_gpg" = 1 ] && run qvm-service "$name" split-gpg2-client on
+    # Its Qubes menu: the template's default-menu-items (what the Guix agent
+    # asked for: the usual applications that the template has), as Qubes
+    # does for a new AppVM when it can; set here so it doesn't depend on
+    # dom0 having read them in time.
+    items=$(qvm-features "$appvm_template" default-menu-items 2>/dev/null) || items=
+    if [ -n "$items" ]; then
+        menu=$(mktemp)
+        printf '%s\n' $items > "$menu"
+        echo "Menu: $items"
+        run qvm-appmenus --set-whitelist "$menu" "$name"
+        run qvm-appmenus --update "$name"
+        rm -f "$menu"
     else
-        run qvm-features "$name" service.meminfo-writer 0
+        echo "$prog: note: $appvm_template has no default-menu-items: add $name's menu
+items in its Settings (Applications)" >&2
     fi
     if [ "$run_test" = 1 ] && [ "$dry_run" = 0 ]; then
-        echo "Testing $name: qubes-guix-test"
-        "$(dirname "$0")/qubes-guix-test" "$name" ||
+        test_args=()
+        [ "$split_ssh" = 1 ] && test_args+=(--split-ssh)
+        [ "$split_gpg" = 1 ] && test_args+=(--split-gpg)
+        echo "Testing $name: qubes-guix-test ${test_args[*]}"
+        "$(dirname "$0")/qubes-guix-test" "${test_args[@]}" "$name" ||
             { echo "$prog: qubes-guix-test found problems (above)" >&2; exit 1; }
     else
         echo "Created. Start it with:  qvm-start $name"
@@ -641,6 +667,10 @@ start_installed() {
         echo "This is long: it builds the Qubes packages against that Guix. Output follows."
         if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r' </dev/null; then
             echo "Updated in $(elapsed) in all."
+            # The Qubes menu: dom0 reads the updated system's applications
+            # (the update also sends them; this doesn't depend on policy).
+            qvm-sync-appmenus "$name" >/dev/null 2>&1 ||
+                echo "$prog: note: qvm-sync-appmenus $name failed; refresh its applications in its Settings" >&2
             if [ "$template" = 1 ]; then
                 qvm-shutdown --wait "$name"
                 echo "$name is ready: shut down, updated. Base AppVMs on it."
@@ -992,13 +1022,11 @@ run qvm-features "$name" skip-update 1
 # so it can do without a netvm once installed. The guest reads this at boot.
 [ "$template" = 1 ] && run qvm-service "$name" updates-proxy-setup on
 
-# Memory balancing. It only takes effect once the agent runs
-# meminfo-writer; until then the qube simply has MEMORY.
-if [ "$maxmem" -gt "$memory" ]; then
-    run qvm-service "$name" meminfo-writer on
-else
-    run qvm-service "$name" meminfo-writer off
-fi
+# Memory balancing is maxmem alone (set above; 0 here: off). It only takes
+# effect once the agent runs meminfo-writer; until then the qube simply has
+# MEMORY. Not the meminfo-writer service: Qubes derives it from maxmem, and
+# setting it resets maxmem to 0.
+[ "$maxmem" -gt "$memory" ] || run qvm-prefs "$name" maxmem 0
 
 if [ "$qubes_iso" = 1 ]; then
     # qvm-start then waits for the installer's qrexec agent (up to

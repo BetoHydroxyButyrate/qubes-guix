@@ -274,4 +274,18 @@ fi
 
 if [ "$reconfigure" = 1 ]; then
     "$current" system reconfigure ${downgrades:+"$downgrades"} "$config"
+
+    # The Qubes menu, as other templates' package managers do after an
+    # install: advertise default-menu-items again (from the new system's
+    # applications), and send dom0 the list of applications
+    # (qubes.SyncAppMenus, fed by qubes.GetAppmenus). Without it, dom0's
+    # list is whatever it read at the first boot.
+    herd start qubes-features-request >/dev/null 2>&1 || true
+    if @QREXEC_CLIENT_VM@ dom0 qubes.SyncAppMenus @GET_APPMENUS@ \
+           </dev/null >/dev/null 2>&1; then
+        echo "$prog: sent dom0 this qube's applications (the Qubes menu)"
+    else
+        echo "$prog: note: couldn't send dom0 the applications for the Qubes
+menu (policy?); in dom0: qvm-sync-appmenus <this qube>" >&2
+    fi
 fi

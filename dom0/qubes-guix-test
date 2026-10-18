@@ -129,9 +129,8 @@ if [ "$klass" = TemplateVM ]; then
         "$vm" || die "couldn't create $vm"
     made=1
     qvm-prefs "$vm" netvm "$netvm"
-    qvm-features "$vm" service.meminfo-writer 1
-    # Again, now: qvm-create's --property maxmem has been seen to leave 0
-    # ("include in memory balancing" off).
+    # Memory balancing is maxmem alone: Qubes derives the meminfo-writer
+    # service from it (and setting the service resets maxmem to 0).
     qvm-prefs "$vm" maxmem $((memory + 2000)) ||
         echo "$prog: warning: couldn't set $vm's maxmem: no memory balancing test" >&2
     [ "$split_gpg" = 1 ] && qvm-service "$vm" split-gpg2-client on
@@ -268,13 +267,10 @@ case $link in
     *) fail "trusted-channels link" "points to $link";;
 esac
 
-# Memory balancing: meminfo-writer reports to xenstore. The service as the
-# feature qvm-service sets (service.NAME): its own output varies between
-# Qubes versions.
+# Memory balancing: meminfo-writer reports to xenstore. On when maxmem >
+# memory (Qubes runs the service by maxmem).
 mem=$(qvm-prefs "$vm" memory) maxmem=$(qvm-prefs "$vm" maxmem)
-mw=$(qvm-features "$vm" service.meminfo-writer 2>/dev/null) || mw=
-case $mw in on|1|True|true) mw=on;; esac
-if [ "$maxmem" -gt "$mem" ] && [ "$mw" = on ]; then
+if [ "$maxmem" -gt "$mem" ]; then
     xid=$(qvm-prefs "$vm" xid)
     mi=
     for _ in $(seq 1 10); do
@@ -284,7 +280,7 @@ if [ "$maxmem" -gt "$mem" ] && [ "$mw" = on ]; then
     [ -n "$mi" ] && pass "memory balancing" "meminfo: $mi" ||
         fail "memory balancing" "nothing in /local/domain/$xid/memory/meminfo (herd status qubes-meminfo-writer)"
 else
-    skip "memory balancing" "not enabled for $vm: memory $mem, maxmem $maxmem, meminfo-writer '${mw:-unset}'"
+    skip "memory balancing" "not enabled for $vm: memory $mem, maxmem $maxmem"
 fi
 
 # GUI: a terminal, and its window in dom0, whose title names the qube.

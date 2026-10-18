@@ -820,6 +820,12 @@ exec guix \"$@\"
                  (substitute* update
                    (("@SH@") #$(file-append bash-minimal "/bin/sh"))
                    (("@QUBESDB_READ@") #$(qubesdb-read-path config))
+                   (("@QREXEC_CLIENT_VM@")
+                    #$(file-append (qubes-guest-qrexec config)
+                                   "/usr/bin/qrexec-client-vm"))
+                   (("@GET_APPMENUS@")
+                    #$(file-append (qubes-guest-core-agent config)
+                                   "/etc/qubes-rpc/qubes.GetAppmenus"))
                    (("@WRAP_CONFIG@") wrap))
                  (copy-file #$(pguix-script config)
                             (string-append bin "/pguix"))

@@ -393,7 +393,7 @@ ip -br addr show \$IF; ip route"
 # (iso/qubes-guix-iso) runs the agent, the stock Guix installer doesn't.
 has_qrexec() {
     [ "$(qvm-features "$1" qrexec 2>/dev/null)" = 1 ] || return 1
-    timeout 30 qvm-run -q -u root --no-gui --pass-io "$1" true >/dev/null 2>&1
+    timeout 30 qvm-run -q -u root --no-gui --pass-io "$1" true </dev/null >/dev/null 2>&1
 }
 
 # The qubes channel branch for a job in the installer: -b if given, else the
@@ -456,11 +456,11 @@ echo \$! > /root/$job.pid"
     echo "Following its log ($log in $name). Ctrl+C stops this script, not the"
     echo "$job; to follow it again:  qvm-run -u root --pass-io $name 'tail -f $log'"
     qvm-run -q -u root --pass-io --no-gui "$name" \
-        "tail -n +1 --pid=\$(cat /root/$job.pid) -F $log 2>/dev/null" || true
+        "tail -n +1 --pid=\$(cat /root/$job.pid) -F $log 2>/dev/null" </dev/null || true
     # The log ended: the job is done, or the qube went off with it.
     while qvm-check -q --running "$name" 2>/dev/null; do
         job_status=$(timeout 30 qvm-run -q -u root --pass-io --no-gui "$name" \
-                         "cat $st 2>/dev/null" 2>/dev/null) || job_status=
+                         "cat $st 2>/dev/null" </dev/null 2>/dev/null) || job_status=
         if [ -n "$job_status" ] && { [ "$job_status" != 0 ] || [ "$poweroff" = 0 ]; }; then
             return 0
         fi
@@ -474,7 +474,7 @@ if [ "$type_network" = 1 ]; then
     name=${args[0]}
     if [ "$dry_run" = 0 ] && has_qrexec "$name"; then
         echo "$name answers qrexec (the qubes-guix ISO): its network comes from QubesDB."
-        qvm-run -q -u root --pass-io --no-gui "$name" 'ip -br addr; ip route' || true
+        qvm-run -q -u root --pass-io --no-gui "$name" 'ip -br addr; ip route' </dev/null || true
         exit 0
     fi
     qube_net "$name"
@@ -566,7 +566,7 @@ start_installed() {
         # --guix-commit lock recorded in its config.scm.
         echo "Updating $name: qubes-guix-update -r (pull to $( [ -n "$guix_commit" ] && echo "the locked commit" || echo 'the head'), then reconfigure)."
         echo "This is long: it builds the Qubes packages against that Guix. Output follows."
-        if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r'; then
+        if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r' </dev/null; then
             echo "Updated in $(elapsed) in all."
             if [ "$template" = 1 ]; then
                 qvm-shutdown --wait "$name"
@@ -587,6 +587,32 @@ start_installed() {
     fi
 }
 
+# The password for 'user' and root, into $hash (crypt(3), from openssl): asked
+# before anything slow happens, so nobody has to wait at the terminal.
+ask_password() {
+    hash_asked=1
+    hash=
+    if [ "$no_password" = 0 ] && [ "$dry_run" = 1 ]; then
+        hash='<hash of the password you would be asked for>'
+    elif [ "$no_password" = 0 ]; then
+        command -v openssl >/dev/null 2>&1 ||
+            die "openssl not found in dom0 (needed to hash the password); or use --no-password"
+        [ -t 0 ] || die "no terminal to ask for the password on; use --no-password"
+        # A qvm-run with this terminal as its stdin (an earlier run of this
+        # script, say) can leave it non-blocking, and read then fails with
+        # "Resource temporarily unavailable".
+        python3 -c 'import fcntl, os; f = fcntl.fcntl(0, fcntl.F_GETFL); fcntl.fcntl(0, fcntl.F_SETFL, f & ~os.O_NONBLOCK)' 2>/dev/null || true
+        while :; do
+            read -rsp "Password for 'user' and root in $name: " pw1; echo
+            read -rsp "Again: " pw2; echo
+            [ -n "$pw1" ] && [ "$pw1" = "$pw2" ] && break
+            echo "Empty, or they don't match; again."
+        done
+        hash=$(printf '%s\n' "$pw1" | openssl passwd -6 -stdin)
+        unset pw1 pw2
+    fi
+}
+
 elapsed() { local s=$(( $(date +%s) - t0 )); printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60)); }
 
 # The unattended install of the running installer in qube $name: over
@@ -603,21 +629,7 @@ unattended() {
     tz=$(timedatectl show -p Timezone --value 2>/dev/null) || tz=
     [ -n "$tz" ] || tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
     [ -n "$tz" ] || tz=UTC
-    hash=
-    if [ "$no_password" = 0 ] && [ "$dry_run" = 1 ]; then
-        hash='<hash of the password you would be asked for>'
-    elif [ "$no_password" = 0 ]; then
-        command -v openssl >/dev/null 2>&1 ||
-            die "openssl not found in dom0 (needed to hash the password); or use --no-password"
-        while :; do
-            read -rsp "Password for 'user' and root in $name: " pw1; echo
-            read -rsp "Again: " pw2; echo
-            [ -n "$pw1" ] && [ "$pw1" = "$pw2" ] && break
-            echo "Empty, or they don't match; again."
-        done
-        hash=$(printf '%s\n' "$pw1" | openssl passwd -6 -stdin)
-        unset pw1 pw2
-    fi
+    [ -n "${hash_asked:-}" ] || ask_password
     read_packages
     # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
     d=/root/qubes-guix
@@ -843,10 +855,13 @@ else
         run qvm-start "$iso_vm"
     fi
     if [ "$dry_run" = 0 ] || qvm-check -q --running "$iso_vm" 2>/dev/null; then
-        qvm-run -q --pass-io --no-gui --no-shell "$iso_vm" test -f "$iso_path" ||
+        qvm-run -q --pass-io --no-gui --no-shell "$iso_vm" test -f "$iso_path" </dev/null ||
             die "no such file in $iso_vm: $iso_path"
     fi
 fi
+
+# --unattended: the password now, not after the boot.
+[ "$install" = 1 ] && ask_password
 
 # --- create -------------------------------------------------------------
 

@@ -207,6 +207,21 @@ run() {
 
 is_uint() { case $1 in ''|*[!0-9]*) return 1;; esac; }
 
+# as_desktop CMD...: run CMD as dom0's desktop user. The Qubes menu
+# (qvm-appmenus, qvm-sync-appmenus) lives in that user's home; as root it
+# fails or writes root's menus, which nobody sees. The user: sudo's caller,
+# else whoever runs qubes-guid (the GUI daemon drawing the qubes' windows).
+as_desktop() {
+    local u
+    if [ "$(id -u)" != 0 ]; then "$@"; return; fi
+    u=${SUDO_USER:-}
+    [ -n "$u" ] && [ "$u" != root ] ||
+        u=$(ps -o user= -C qubes-guid 2>/dev/null | grep -vx root | head -n1)
+    [ -n "$u" ] || u=$(getent group qubes | cut -d: -f4 | cut -d, -f1)
+    [ -n "$u" ] || { echo "$prog: no desktop user found for: $*" >&2; return 1; }
+    runuser -u "$u" -- "$@"
+}
+
 # --- arguments ---------------------------------------------------------
 
 args=()
@@ -562,9 +577,11 @@ if [ -n "$appvm_template" ]; then
     if [ -n "$items" ]; then
         menu=$(mktemp)
         printf '%s\n' $items > "$menu"
+        chmod 644 "$menu"
         echo "Menu: $items"
-        run qvm-appmenus --set-whitelist "$menu" "$name"
-        run qvm-appmenus --update "$name"
+        run as_desktop qvm-appmenus --set-whitelist "$menu" "$name" ||
+            echo "$prog: note: couldn't set $name's menu: add its items in its Settings (Applications)" >&2
+        run as_desktop qvm-appmenus --update "$name" || true
         rm -f "$menu"
     else
         echo "$prog: note: $appvm_template has no default-menu-items: add $name's menu
@@ -682,9 +699,10 @@ start_installed() {
         echo "This is long: it builds the Qubes packages against that Guix. Output follows."
         if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r' </dev/null; then
             echo "Updated in $(elapsed) in all."
-            # The Qubes menu: dom0 reads the updated system's applications
-            # (the update also sends them; this doesn't depend on policy).
-            qvm-sync-appmenus "$name" >/dev/null 2>&1 ||
+            # The Qubes menu: dom0 reads the updated system's applications.
+            # The update sends them too (qubes.SyncAppMenus); this is for when
+            # dom0's policy refused that.
+            as_desktop qvm-sync-appmenus "$name" >/dev/null 2>&1 ||
                 echo "$prog: note: qvm-sync-appmenus $name failed; refresh its applications in its Settings" >&2
             if [ "$template" = 1 ]; then
                 qvm-shutdown --wait "$name"

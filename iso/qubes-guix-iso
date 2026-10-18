@@ -13,13 +13,18 @@
 #   -b, --branch B        qubes channel branch          (default main)
 #   --guix-commit C       Guix at commit C              (default: latest)
 #   --qubes-commit C      the qubes channel at commit C (default: branch head)
+#   --substitutes FILE    substitute servers, as for qubes-guix-create: "url
+#                         URL" lines (and "key ..." lines, which must already
+#                         be authorized here). Default: the checkout's
+#                         dom0/qubes-guix-substitutes, if it has a url.
+#                         They're tried before the default servers.
+#   --substitute-urls "U ..."  more substitute servers, by URL
 #   --server URL          every channel at the commits URL last built (its
 #                         /channel-commits, as published by guix-subs), and
 #                         URL first for substitutes: so nearly everything
-#                         comes from that server. Default: the first url in
-#                         dom0/qubes-guix-substitutes, if it has one, unless
-#                         a commit is given; --no-server: none
-#   --substitute-urls "U ..."  substitute servers, before the defaults
+#                         comes from that server. Default: the first url of
+#                         the substitutes file, unless a commit is given;
+#                         --no-server: build at the branch head
 #   --offline             also put in the ISO what a default unattended
 #                         install needs, and the channels' git checkouts:
 #                         that install then needs no network (a bigger ISO)
@@ -45,6 +50,7 @@ guix_commit=
 qubes_commit=
 server=
 subs=
+subs_file=
 offline='#f'
 load_path=
 out=qubes-guix-installer.iso
@@ -61,7 +67,12 @@ while [ $# -gt 0 ]; do
         --qubes-commit) need "$@"; qubes_commit=$2; shift 2;;
         --server) need "$@"; server=${2%/}; shift 2;;
         --no-server) server=none; shift;;
-        --substitute-urls) need "$@"; subs=$2; shift 2;;
+        --substitutes) need "$@"; [ -f "$2" ] || die "no such file: $2"
+                       subs_file=$2; shift 2;;
+        --substitute-urls) need "$@"
+                           # A file here means --substitutes FILE.
+                           if [ -f "$2" ]; then subs_file=$2; else subs="$subs $2"; fi
+                           shift 2;;
         --offline) offline='#t'; shift;;
         -L|--load-path) need "$@"; load_path=$(cd "$2" && pwd); shift 2;;
         -o|--output) need "$@"; out=$2; shift 2;;
@@ -77,15 +88,40 @@ case $branch in *[!A-Za-z0-9._/-]*|'') die "bad branch name '$branch'";; esac
 [ -z "$guix_commit" ] || is_commit "$guix_commit" || die "--guix-commit: not a full commit hash"
 [ -z "$qubes_commit" ] || is_commit "$qubes_commit" || die "--qubes-commit: not a full commit hash"
 
-# The server: the one installs use (dom0/qubes-guix-substitutes), so the
+# Substitute servers: the file's urls (all of them: e.g. guix-subs' own
+# builds, then its caches of bordeaux and ci), then --substitute-urls.
+[ -n "$subs_file" ] || [ ! -f "$here/dom0/qubes-guix-substitutes" ] ||
+    subs_file=$here/dom0/qubes-guix-substitutes
+file_urls=
+if [ -n "$subs_file" ]; then
+    file_urls=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$subs_file" | xargs)
+    [ -n "$file_urls" ] && echo "Substitute servers (from $subs_file): $file_urls"
+    # Their keys must be authorized here, by root: say so, rather than
+    # letting each substitute be refused.
+    sed -n 's/^[[:space:]]*key[[:space:]]\{1,\}//p' "$subs_file" | while IFS= read -r k; do
+        q=$(printf '%s\n' "$k" | sed -n 's/.*(q #\([0-9A-Fa-f]*\)#).*/\1/p')
+        [ -n "$q" ] || continue
+        grep -qi "$q" /etc/guix/acl 2>/dev/null ||
+            echo "$prog: warning: a key in $subs_file isn't authorized here; as root:
+  echo '$k' | guix archive --authorize" >&2
+    done
+fi
+subs=$(printf "%s %s" "$file_urls" "$subs" | xargs)
+for u in $subs; do
+    case $u in
+        http://*|https://*) ;;
+        *) die "not a substitute server URL: '$u' (a file of servers: --substitutes FILE)";;
+    esac
+done
+
+# The server whose commits to build at: the first one installs use, so the
 # ISO's prebuilt packages are its builds, and an install locked to it
 # (qubes-guix-create's default with a server) can use the ISO's guix as is.
 if [ -z "$server" ] && [ -z "$load_path" ] && [ -z "$guix_commit" ] &&
-   [ -z "$qubes_commit" ] && [ -f "$here/dom0/qubes-guix-substitutes" ]; then
-    server=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$here/dom0/qubes-guix-substitutes" | head -n1)
+   [ -z "$qubes_commit" ] && [ -n "$file_urls" ]; then
+    server=${file_urls%% *}
     server=${server%/}
-    [ -n "$server" ] &&
-        echo "Server (from dom0/qubes-guix-substitutes; --no-server: none): $server"
+    echo "Building at the commits $server last built (--no-server: at the head)"
 fi
 [ "$server" = none ] && server=
 
@@ -129,7 +165,7 @@ if [ -n "$server" ]; then
     done < "$file"
     echo "Channels at the commits $server last built:"
     sed 's/^/  /' "$file"
-    subs="$server $subs"
+    case " $subs " in *" $server "*|*" $server/ "*) ;; *) subs="$server $subs";; esac
 fi
 [ -n "$guix_commit" ] && pins="(guix . \"$guix_commit\") $pins"
 [ -n "$qubes_commit" ] && pins="(qubes . \"$qubes_commit\") $pins"

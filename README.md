@@ -321,7 +321,14 @@ qvm-create --template guix-tmpl --label red \
     --property memory=4000 --property maxmem=4000 work
 ```
 
-An AppVM needs `virt_mode hvm` (the default is PVH) and memory set. The default 400 MiB is too little for Guix.
+An AppVM needs more than Qubes gives one by default: `virt_mode hvm` (the default is PVH), its kernel from the template's disk (`kernel ''`), more than the default 400 MiB, a longer `qrexec_timeout`, and, for memory balancing, `maxmem` above `memory` and the `meminfo-writer` service. `qubes-guix-create --appvm` sets all of that:
+
+```
+qubes-guix-create --appvm guix-tmpl -n sys-firewall work            # 2000 MiB, balancing up to 6000
+qubes-guix-create --appvm guix-tmpl --test work 4000 8000           # then test it with qubes-guix-test
+```
+
+Set by hand with `qvm-prefs` after `qvm-create`, not with `qvm-create --property maxmem=…`: that has been seen to leave `maxmem` at 0, so the qube isn't balanced ("Include in memory balancing" unticked).
 
 Keep the template's netvm until the updates proxy works. dom0 normally enables `updates-proxy-setup` for templates; if not, run `qvm-service guix-tmpl updates-proxy-setup on`. Start the template and check `herd status qubes-updates-proxy` in it. guix-daemon should then have the proxy in its environment: `sudo cat /proc/$(pgrep -o guix-daemon)/environ | tr '\0' '\n' | grep proxy`. Only then, if you want the template offline, run `qvm-prefs guix-tmpl netvm ''`. Substitutes then come through the proxy. `guix pull` fetches git in your own process, not through the daemon, so offline it needs `http_proxy` and `https_proxy` set to `http://127.0.0.1:8082` (tested: libgit2 honours them). `qubes-guix-update` does that for you (see Updating), and so does `pguix`: `pguix pull`, `pguix time-machine …` and so on run `guix` with the proxy set whenever the qube has `updates-proxy-setup`, and run plain `guix` otherwise. Commands that go through guix-daemon, such as `guix install`, `guix shell` and `guix build`, need nothing: the daemon already uses the proxy.
 

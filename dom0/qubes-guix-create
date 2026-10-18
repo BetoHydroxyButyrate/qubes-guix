@@ -6,6 +6,8 @@
 #   qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
 #   qubes-guix-create --unattended [options] NAME ISO_VM:ISO_PATH ...
 #                                   # create and install, in one go
+#   qubes-guix-create --appvm TEMPLATE [options] NAME [MEMORY [MAXMEM]]
+#                                   # an AppVM on a Guix template
 #
 # Part of the qubes-guix channel: https://github.com/BetoHydroxyButyrate/qubes-guix
 
@@ -40,6 +42,7 @@ subs_file=
 guix_commit=
 first_update=1
 run_test=0
+appvm_template=
 run_now=0
 branch=main
 branch_given=0
@@ -52,6 +55,8 @@ usage() {
 Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --unattended [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
+       $prog --appvm TEMPLATE [-l COLOUR] [-n NETVM] [--test] NAME
+                              [MEMORY [MAXMEM]]
        $prog --bootstrap [--template] [--branch B] [--packages FILE] NAME
        $prog --finish-install [--template] [--branch B] [--packages FILE]
                               [--run] NAME
@@ -72,6 +77,13 @@ its console. With the stock Guix ISO, the steps are printed. Given an ISO,
   MAXMEM   memory-balancing maximum, MiB        (default: = MEMORY)
            MAXMEM > MEMORY turns memory balancing on, but slows every
            boot (Xen populate-on-demand); keep the gap small.
+
+An AppVM on a Guix template (--appvm) needs what Qubes doesn't give an
+AppVM by default: HVM, its kernel from the template's disk (kernel ''), more
+memory than 400 MiB, a longer qrexec timeout, and memory balancing (maxmem
+and the meminfo-writer service). --appvm TEMPLATE creates NAME with all of
+that (MEMORY default 2000, MAXMEM default MEMORY + 4000; MAXMEM = MEMORY:
+no balancing); with --test, then runs qubes-guix-test on it.
 
 Options:
   -l, --label COLOUR    window label            (default $label)
@@ -213,6 +225,7 @@ while [ $# -gt 0 ]; do
         --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
         --no-update) first_update=0; shift;;
         --test)     run_test=1; shift;;
+        --appvm)    [ $# -ge 2 ] || die "$1 needs a TEMPLATE"; appvm_template=$2; shift 2;;
         -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; branch_given=1; shift 2;;
         --qubes-iso) qubes_iso=1; shift;;
         --stock-iso) qubes_iso=0; shift;;
@@ -483,6 +496,51 @@ echo \$! > /root/$job.pid"
     done
     job_status=${job_status:-off}
 }
+
+# --- an AppVM on a Guix template (--appvm) -----------------------------
+
+if [ -n "$appvm_template" ]; then
+    [ ${#args[@]} -ge 1 ] && [ ${#args[@]} -le 3 ] || { usage >&2; exit 2; }
+    name=${args[0]}
+    memory=${args[1]:-2000}
+    is_uint "$memory" || die "MEMORY must be an integer (MiB)"
+    maxmem=${args[2]:-$((memory + 4000))}
+    is_uint "$maxmem" || die "MAXMEM must be an integer (MiB)"
+    [ "$maxmem" -ge "$memory" ] || die "MAXMEM ($maxmem) is less than MEMORY ($memory)"
+    [[ $name =~ ^[a-zA-Z][a-zA-Z0-9_.-]{0,30}$ ]] ||
+        die "invalid qube name '$name' (letter first; letters, digits, _ . -; max 31)"
+    qvm-check -q "$name" 2>/dev/null && die "a qube named '$name' already exists"
+    [ "$(qvm-prefs "$appvm_template" klass 2>/dev/null)" = TemplateVM ] ||
+        die "'$appvm_template' isn't a TemplateVM"
+    [ "$(qvm-features "$appvm_template" os-distribution 2>/dev/null)" = guix ] ||
+        echo "$prog: warning: $appvm_template doesn't report os-distribution guix (not started since its install?)" >&2
+    if [ -n "$netvm" ]; then
+        qvm-check -q "$netvm" 2>/dev/null || die "network qube '$netvm' doesn't exist"
+    fi
+    echo "Creating $name: AppVM on $appvm_template, HVM, $memory-$maxmem MiB"
+    run qvm-create --template "$appvm_template" --label "$label" \
+        --property virt_mode=hvm "$name"
+    # One property at a time, after the create: qvm-create's --property
+    # maxmem has been seen to leave 0 (no memory balancing).
+    run qvm-prefs "$name" kernel ''
+    run qvm-prefs "$name" memory "$memory"
+    run qvm-prefs "$name" maxmem "$maxmem"
+    run qvm-prefs "$name" qrexec_timeout 300
+    [ -n "$netvm" ] && run qvm-prefs "$name" netvm "$netvm"
+    if [ "$maxmem" -gt "$memory" ]; then
+        run qvm-features "$name" service.meminfo-writer 1
+    else
+        run qvm-features "$name" service.meminfo-writer 0
+    fi
+    if [ "$run_test" = 1 ] && [ "$dry_run" = 0 ]; then
+        echo "Testing $name: qubes-guix-test"
+        "$(dirname "$0")/qubes-guix-test" "$name" ||
+            { echo "$prog: qubes-guix-test found problems (above)" >&2; exit 1; }
+    else
+        echo "Created. Start it with:  qvm-start $name"
+    fi
+    exit 0
+fi
 
 if [ "$type_network" = 1 ]; then
     [ ${#args[@]} -eq 1 ] || { usage >&2; exit 2; }

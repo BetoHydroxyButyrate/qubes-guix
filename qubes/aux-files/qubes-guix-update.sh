@@ -88,6 +88,9 @@ listening; see: herd status qubes-updates-proxy"
     https_proxy=$http_proxy
     export http_proxy https_proxy
     echo "$prog: through the Qubes updates proxy ($http_proxy)"
+    proxy=1
+else
+    proxy=0
 fi
 
 # Root's pulled Guix once there is one, else the system's.
@@ -97,6 +100,44 @@ guix=$current
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+# One test request through the updates proxy before the pull. When dom0's
+# policy denies qubes.UpdatesProxy, the qrexec client's "Request refused"
+# comes back where the HTTP answer should be, and the pull dies with a
+# backtrace ("http parser error", "Bad Response-Line"): say why instead.
+if [ "$proxy" = 1 ]; then
+    cat > "$tmp/probe.scm" <<'PROBE'
+(use-modules (ice-9 rdelim))
+(display
+ (catch #t
+   (lambda ()
+     (let ((s (socket PF_INET SOCK_STREAM 0)))
+       (false-if-exception (setsockopt s SOL_SOCKET SO_RCVTIMEO '(60 . 0)))
+       (connect s AF_INET (inet-pton AF_INET "127.0.0.1") 8082)
+       (display "CONNECT git.guix.gnu.org:443 HTTP/1.1\r\nHost: git.guix.gnu.org:443\r\n\r\n" s)
+       (force-output s)
+       (let ((line (read-line s)))
+         (close-port s)
+         (if (eof-object? line) "" (string-trim-right line #\return)))))
+   (lambda _ "")))
+(newline)
+PROBE
+    answer=$("$guix" repl -- "$tmp/probe.scm" 2>/dev/null) || answer=
+    case $answer in
+        HTTP/*' 200'*) ;;
+        'Request refused'*)
+            die "dom0's policy refuses this qube's updates proxy calls
+(qubes.UpdatesProxy answered 'Request refused'). dom0's default policy allows
+them for templates (@type:TemplateVM). For a qube of another class, add a rule
+for it in /etc/qubes/policy.d, or give it a netvm and turn the proxy off:
+  qvm-prefs <qube> netvm <netvm>; qvm-service <qube> updates-proxy-setup off";;
+        *)
+            echo "$prog: warning: a test request through the updates proxy got:
+  ${answer:-no answer}
+The UpdateVM may not reach the Internet (or the proxy isn't running there):
+the pull may fail." >&2;;
+    esac
+fi
 
 # --guix-commit server: the commits the substitute server last built, one
 # "NAME COMMIT" line per channel (its /channel-commits), or Guix's alone

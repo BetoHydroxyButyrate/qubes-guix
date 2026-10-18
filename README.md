@@ -4,25 +4,25 @@ A [Guix](https://guix.gnu.org) channel that turns **Guix System** into a properl
 
 Status: a daily-driven StandaloneVM (HVM) on Qubes R4.3. Everything below has been verified unless it says otherwise.
 
-| Feature | Status |
-|---|---|
-| qrexec (`qvm-run`, services, user switching via PAM) | ✅ |
-| QubesDB | ✅ |
-| File copy (`qvm-copy` both ways, receive into `~/QubesIncoming`) | ✅ |
-| Seamless GUI (windows, clipboard, keyboard incl. full Apple layout, app menus, window icons) | ✅ |
-| Monitor layout changes | ✅ |
-| Audio out and microphone (PulseAudio vchan sink/source) | ✅ |
-| Networking from QubesDB (IP, gateway, DNS) | ✅ |
-| `qvm-shutdown` / `qvm-restart` | ✅ |
-| Memory balancing (meminfo-writer, memory hotplug) | ✅ |
-| Feature advertisement (`qvm-features`, Services tab) | ✅ |
-| U2F **and** FIDO2/passkeys via the CTAP proxy (sys-usb) | ✅ |
-| split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube) | ✅ |
-| Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`) | 🚧 written, not yet tested |
-| split-ssh client (`ssh`, `git` over SSH with keys in a vault qube) | 🚧 written, not yet tested |
-| TemplateVM / AppVM based on a Guix template | 🚧 written, not yet tested |
-| PVH | ❌ not yet |
-| Qubes Update tool | ❌ by design (use `guix pull` + reconfigure; see below) |
+| Feature                                                                                      | Status                                                  |
+|----------------------------------------------------------------------------------------------|---------------------------------------------------------|
+| qrexec (`qvm-run`, services, user switching via PAM)                                         | ✅                                                      |
+| QubesDB                                                                                      | ✅                                                      |
+| File copy (`qvm-copy` both ways, receive into `~/QubesIncoming`)                             | ✅                                                      |
+| Seamless GUI (windows, clipboard, keyboard incl. full Apple layout, app menus, window icons) | ✅                                                      |
+| Monitor layout changes                                                                       | ✅                                                      |
+| Audio out and microphone (PulseAudio vchan sink/source)                                      | ✅                                                      |
+| Networking from QubesDB (IP, gateway, DNS)                                                   | ✅                                                      |
+| `qvm-shutdown` / `qvm-restart`                                                               | ✅                                                      |
+| Memory balancing (meminfo-writer, memory hotplug)                                            | ✅                                                      |
+| Feature advertisement (`qvm-features`, Services tab)                                         | ✅                                                      |
+| U2F **and** FIDO2/passkeys via the CTAP proxy (sys-usb)                                      | ✅                                                      |
+| split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube)                         | ✅                                                      |
+| Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`)                     | 🚧 written, not yet tested                              |
+| split-ssh client (`ssh`, `git` over SSH with keys in a vault qube)                           | 🚧 written, not yet tested                              |
+| TemplateVM / AppVM based on a Guix template                                                  | 🚧 written, not yet tested                              |
+| PVH                                                                                          | ❌ not yet                                              |
+| Qubes Update tool                                                                            | ❌ by design (use `guix pull` + reconfigure; see below) |
 
 ## What's in the channel
 

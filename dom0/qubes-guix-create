@@ -271,10 +271,23 @@ type_into() {
 
 # A TemplateVM gets the template setup whether or not --template was given:
 # forgetting it gives a template without /rw, /home or the updates proxy.
+# For an existing qube: --template follows its class. A TemplateVM is set
+# up as a template even without --template; --template on any other class
+# is refused: the template setup (no netvm afterwards, updates through
+# qubes.UpdatesProxy, which dom0's policy allows for @type:TemplateVM)
+# would leave a StandaloneVM or AppVM unable to update.
 detect_template() {
-    if [ "$(qvm-prefs "$1" klass 2>/dev/null)" = TemplateVM ] && [ "$template" = 0 ]; then
-        echo "$1 is a TemplateVM: setting it up as a template (--template)."
-        template=1
+    local klass
+    klass=$(qvm-prefs "$1" klass 2>/dev/null) || die "no qube named '$1'"
+    if [ "$klass" = TemplateVM ]; then
+        if [ "$template" = 0 ]; then
+            echo "$1 is a TemplateVM: setting it up as a template (--template)."
+            template=1
+        fi
+    elif [ "$template" = 1 ]; then
+        die "$1 is a $klass, not a TemplateVM: --template needs one. Leave out
+--template to set it up as a $klass, or make a TemplateVM (qubes-guix-create
+--template NAME) and install there."
     fi
 }
 

@@ -12,7 +12,10 @@
 #
 #   -b, --branch B        qubes channel branch          (default main)
 #   --guix-commit C       Guix at commit C              (default: latest)
-#   --qubes-commit C      the qubes channel at commit C (default: branch head)
+#   --qubes-commit C      the qubes channel at commit C (default: branch
+#                         head; with --server, the server's). 'head': the
+#                         branch head, also with --server (whose commits
+#                         the other channels keep)
 #   --substitutes FILE    substitute servers, as for qubes-guix-create: "url
 #                         URL" lines (and "key ..." lines, which must already
 #                         be authorized here). Default: the checkout's
@@ -48,6 +51,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 branch=main
 guix_commit=
 qubes_commit=
+qubes_head=
 server=
 subs=
 subs_file=
@@ -86,7 +90,8 @@ done
 command -v guix >/dev/null 2>&1 || die "guix not found"
 case $branch in *[!A-Za-z0-9._/-]*|'') die "bad branch name '$branch'";; esac
 [ -z "$guix_commit" ] || is_commit "$guix_commit" || die "--guix-commit: not a full commit hash"
-[ -z "$qubes_commit" ] || is_commit "$qubes_commit" || die "--qubes-commit: not a full commit hash"
+[ -z "$qubes_commit" ] || [ "$qubes_commit" = head ] || is_commit "$qubes_commit" ||
+    die "--qubes-commit: not a full commit hash (or 'head')"
 
 # Substitute servers: the file's urls (all of them: e.g. guix-subs' own
 # builds, then its caches of bordeaux and ci), then --substitute-urls.
@@ -118,7 +123,7 @@ done
 # ISO's prebuilt packages are its builds, and an install locked to it
 # (qubes-guix-create's default with a server) can use the ISO's guix as is.
 if [ -z "$server" ] && [ -z "$load_path" ] && [ -z "$guix_commit" ] &&
-   [ -z "$qubes_commit" ] && [ -n "$file_urls" ]; then
+   { [ -z "$qubes_commit" ] || [ "$qubes_commit" = head ]; } && [ -n "$file_urls" ]; then
     server=${file_urls%% *}
     server=${server%/}
     echo "Building at the commits $server last built (--no-server: at the head)"
@@ -132,7 +137,17 @@ trap 'rm -rf "$tmp"' EXIT
 # there has this checkout's HEAD (else the ISO wouldn't have what you see
 # here, or no (qubes installer) at all).
 url=$(sed -n 's/.*(url "\(.*\)").*/\1/p' "$here/guest/channels.scm.txt" | head -n1)
-if [ -z "$load_path" ] && [ -z "$qubes_commit" ] && [ -z "$server" ] &&
+# --qubes-commit head: the branch head on the repository, pinned (so it
+# wins over the server's commit for qubes).
+if [ "$qubes_commit" = head ]; then
+    qubes_commit=$(git ls-remote "$url" "refs/heads/$branch" 2>/dev/null | cut -f1)
+    is_commit "$qubes_commit" || die "couldn't find branch '$branch' at $url"
+    echo "qubes at the head of $branch: $qubes_commit"
+    qubes_head=1
+fi
+# The checkout against the qubes commit the ISO is built from: the branch
+# head (no commit and no server, or --qubes-commit head).
+if [ -z "$load_path" ] && { [ -n "$qubes_head" ] || { [ -z "$qubes_commit" ] && [ -z "$server" ]; }; } &&
    command -v git >/dev/null 2>&1 && git -C "$here" rev-parse -q --verify HEAD >/dev/null 2>&1; then
     local_head=$(git -C "$here" rev-parse HEAD)
     remote_head=$(git ls-remote "$url" "refs/heads/$branch" 2>/dev/null | cut -f1) || remote_head=
@@ -165,6 +180,21 @@ if [ -n "$server" ]; then
     done < "$file"
     echo "Channels at the commits $server last built:"
     sed 's/^/  /' "$file"
+    # The ISO's (qubes installer) and its options come from the qubes commit
+    # it's built at: with the server's, a checkout ahead of it isn't what
+    # gets built. Stop rather than build an ISO without your changes (or
+    # fail on an option the older commit doesn't know).
+    server_qubes=$(awk '$1 == "qubes" {print $2; exit}' "$file")
+    if [ -z "$qubes_commit" ] && [ -n "$server_qubes" ] &&
+       local_head=$(git -C "$here" rev-parse -q --verify HEAD 2>/dev/null) &&
+       [ "$server_qubes" != "$local_head" ] &&
+       git -C "$here" merge-base --is-ancestor "$server_qubes" "$local_head" 2>/dev/null; then
+        die "$server last built qubes-guix at $server_qubes, but this checkout is
+at $local_head, which is newer: the ISO would be built from the server's
+older commit. Either rebuild $server from current qubes-guix first, or
+build qubes at the branch head (pushed) and the other channels at the
+server's commits:  --qubes-commit head"
+    fi
     case " $subs " in *" $server "*|*" $server/ "*) ;; *) subs="$server $subs";; esac
 fi
 [ -n "$guix_commit" ] && pins="(guix . \"$guix_commit\") $pins"
@@ -219,6 +249,11 @@ fi
 case $iso in
     /gnu/store/*.iso) ;;
     *)
+        if grep -q 'Unrecognized keyword' "$tmp/err" 2>/dev/null; then
+            die "the qubes commit the ISO was built from doesn't know an option this
+script passes (#:substitutes-file, say): it's older than this checkout.
+Rebuild your server from current qubes-guix, or use --qubes-commit head."
+        fi
         if grep -q 'qubes installer' "$tmp/err" 2>/dev/null && [ -n "$server" ]; then
             die "the qubes commit $server last built has no (qubes installer) module:
 the server is older than the ISO support. Rebuild it from current qubes-guix,

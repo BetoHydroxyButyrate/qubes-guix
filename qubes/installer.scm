@@ -47,6 +47,7 @@
   #:use-module ((qubes packages split-gpg) #:select (qubes-split-gpg2-client))
   #:use-module ((qubes packages split-ssh) #:select (qubes-split-ssh-client))
   #:use-module (srfi srfi-1)
+  #:use-module (ice-9 rdelim)
   #:export (qubes-installation-os
             qubes-reference-os))
 
@@ -144,13 +145,33 @@ The guest scripts are in /root/qubes-guix/guest.
 
 ")
 
+(define (substitutes-file-lines file key)
+  "The values of FILE's lines that start with KEY (\"url\" or \"key\"), in the
+format of dom0/qubes-guix-substitutes."
+  (call-with-input-file file
+    (lambda (port)
+      (let loop ((acc '()))
+        (let ((line (read-line port)))
+          (if (eof-object? line)
+              (reverse acc)
+              (let ((line (string-trim-both line)))
+                (loop (if (string-prefix? (string-append key " ") line)
+                          (cons (string-trim (substring line
+                                                        (string-length key)))
+                                acc)
+                          acc)))))))))
+
 (define* (qubes-installation-os #:key
                                 (branch "main")
-                                (offline? #f))
+                                (offline? #f)
+                                (substitutes-file #f))
   "The Guix installer, as a headless qube (see this module's commentary).
 BRANCH is the qubes channel branch recorded in its /etc/guix/channels.scm.
 With OFFLINE?, it also holds what a default install needs, and the channel
-checkouts."
+checkouts. SUBSTITUTES-FILE (dom0/qubes-guix-substitutes' format): the
+installer's guix-daemon uses those servers, and the file is kept as
+/etc/qubes-guix-substitutes, which qubes-guix-finish-install records in the
+installed system (and locks it to the ISO's commits)."
   (let ((base (qubes-operating-system
                (operating-system
                  (inherit installation-os)
@@ -166,7 +187,15 @@ checkouts."
                  (packages (cons git
                                  (operating-system-packages installation-os))))
                #:config %installer-config
-               #:channel-branch branch)))
+               #:channel-branch branch
+               #:extra-substitute-urls
+               (if substitutes-file
+                   (substitutes-file-lines substitutes-file "url")
+                   '())
+               #:extra-authorized-keys
+               (if substitutes-file
+                   (substitutes-file-lines substitutes-file "key")
+                   '()))))
     (operating-system
       (inherit base)
       (services
@@ -193,6 +222,13 @@ checkouts."
                          (list qubes-gui-agent qubes-ctap
                                qubes-split-gpg2-client
                                qubes-split-ssh-client)))
+        (if substitutes-file
+            (list (simple-service
+                   'qubes-guix-substitutes etc-service-type
+                   (list (list "qubes-guix-substitutes"
+                               (local-file substitutes-file
+                                           "qubes-guix-substitutes")))))
+            '())
         (if offline?
             (list (simple-service 'qubes-reference-system gc-root-service-type
                                   (list (qubes-reference-os branch)))

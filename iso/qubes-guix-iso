@@ -173,7 +173,16 @@ fi
 # Extra servers go before the default ones, which stay as the fallback.
 all_subs=
 [ -n "$subs" ] && all_subs="--substitute-urls=$subs https://bordeaux.guix.gnu.org https://ci.guix.gnu.org"
-expr="((@ (qubes installer) qubes-installation-os) #:branch \"$branch\" #:offline? $offline)"
+# The ISO carries the substitutes file: its daemon uses the servers, and
+# installs record them (and lock to the ISO's commits) without dom0's file.
+subs_arg=
+if [ -n "$subs_file" ] && [ -n "$file_urls" ]; then
+    abs_subs=$(cd "$(dirname "$subs_file")" && pwd)/${subs_file##*/}
+    # shellcheck disable=SC1003
+    case $abs_subs in *'"'*|*'\'*) die "odd characters in $abs_subs";; esac
+    subs_arg=" #:substitutes-file \"$abs_subs\""
+fi
+expr="((@ (qubes installer) qubes-installation-os) #:branch \"$branch\" #:offline? $offline$subs_arg)"
 set -- system image -t iso9660 $dry_run ${all_subs:+"$all_subs"} -e "$expr"
 
 if [ -n "$load_path" ]; then

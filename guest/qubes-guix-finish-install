@@ -152,6 +152,31 @@ sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$cha
 # --guix-commit server: ask the first substitute server which commits it
 # last built: every channel's (its /channel-commits, "NAME COMMIT" lines),
 # or Guix's alone (/guix-commit, from servers that publish only that).
+# The qubes-guix ISO built with a substitutes file carries it, as
+# /etc/qubes-guix-substitutes, and its guix-daemon already uses those
+# servers. Without --substitutes, use them (they're recorded in config.scm,
+# so updates use them too); and without a lock, lock to the ISO's own
+# commits: the server's builds when the ISO was made, which its store holds.
+# The install then builds nothing, and nor does the first update.
+iso_subs=/etc/qubes-guix-substitutes
+if [ -z "$subs_file" ] && [ -s "$iso_subs" ]; then
+    subs_file=$iso_subs
+    say "Substitute servers from the ISO: $(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$iso_subs" | xargs)"
+    if [ -z "${QUBES_GUIX_COMMIT:-}" ] && [ -z "${QUBES_CHANNEL_COMMITS:-}" ] &&
+       [ -z "${QUBES_CHANNELS_FILE:-}" ]; then
+        iso_commits=$(guix describe 2>/dev/null | awk '
+            NF == 2 && $1 !~ /:$/ { name = $1 }
+            $1 == "commit:" && (name == "guix" || name == "qubes") { print name, $2 }')
+        if [ "$(printf '%s\n' "$iso_commits" | grep -c .)" = 2 ]; then
+            QUBES_CHANNEL_COMMITS=$iso_commits
+            export QUBES_CHANNEL_COMMITS
+            say "Locking to the ISO's commits (qubes-guix-update --guix-commit
+server moves it to the server's latest build, --head to the head):
+$iso_commits"
+        fi
+    fi
+fi
+
 server_commits=
 if [ "${QUBES_GUIX_COMMIT:-}" = server ]; then
     [ -n "$subs_file" ] || die "--guix-commit server needs --substitutes"

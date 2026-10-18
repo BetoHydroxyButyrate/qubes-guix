@@ -18,6 +18,7 @@ Status: a daily-driven StandaloneVM (HVM) on Qubes R4.3. Everything below has be
 | Feature advertisement (`qvm-features`, Services tab) | ✅ |
 | U2F **and** FIDO2/passkeys via the CTAP proxy (sys-usb) | ✅ |
 | split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube) | ✅ |
+| Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`) | 🚧 written, not yet tested |
 | split-ssh client (`ssh`, `git` over SSH with keys in a vault qube) | 🚧 written, not yet tested |
 | TemplateVM / AppVM based on a Guix template | 🚧 written, not yet tested |
 | PVH | ❌ not yet |
@@ -47,6 +48,7 @@ PORT-NOTES.md                   the porting log: every problem hit and why thing
 ```
 
 The service runs everything under Shepherd. That covers QubesDB, the qrexec agent, the GUI agent, networking, feature advertisement, meminfo-writer and the CTAP proxy. It also provides:
+- the block-device export: upstream's udev rule and scripts, so the qube's disks, USB drives and loop devices are listed by `qvm-block` in dom0, and `qvm-start --cdrom=QUBE:/path.iso` works with an ISO kept in a Guix qube;
 - PAM stacks;
 - `/etc/qubes-rpc`;
 - the setuid `qfile-unpacker`;

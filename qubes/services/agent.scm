@@ -98,8 +98,10 @@
                                  "org.xfce.mousepad.desktop"))))
 
 (define %xen-modules
-  ;; xen-privcmd is the critical one (libxenctrl's xencall).
-  '("xen-privcmd" "xenfs" "xen-evtchn" "xen-gntdev" "xen-gntalloc"))
+  ;; xen-privcmd is the critical one (libxenctrl's xencall). xen-blkback:
+  ;; for block devices this qube exports (qvm-block, qvm-start --cdrom).
+  '("xen-privcmd" "xenfs" "xen-evtchn" "xen-gntdev" "xen-gntalloc"
+    "xen-blkback"))
 
 ;; Unprivileged vchan servers (qvm-copy, the GUI agent) need these; the
 ;; default user is in "qubes" (upstream linux-utils udev-qubes-misc.rules).
@@ -125,6 +127,52 @@
               "KERNEL==\"xen/privcmd\", MODE=\"0660\", GROUP=\"qubes\"\n"
               "KERNEL==\"xen/xenbus\", MODE=\"0660\", GROUP=\"qubes\"\n"
               "KERNEL==\"xen/hypercall\", MODE=\"0660\", GROUP=\"qubes\"\n")))
+
+;; Block devices for dom0 (qvm-block; qvm-start --cdrom=QUBE:/file.iso, whose
+;; losetup in this qube must then show up there): upstream's
+;; udev-qubes-block.rules and its two scripts, from the linux-utils source,
+;; which write each device to QubesDB (/qubes-block-devices/NAME). Their
+;; absolute paths are made store paths, and the scripts get a PATH: udev runs
+;; them with almost none. (refresh_another re-runs the script as $0, hence
+;; a real shebang.)
+(define (qubes-block-udev-rule config)
+  ;; A directory as udev-service-type takes it: lib/udev/rules.d/ with the
+  ;; rule, and the scripts it runs in lib/qubes/.
+  (let ((src (package-source qubes-linux-utils))
+        (qubesdb (qubes-guest-qubesdb config)))
+    (computed-file
+     "qubes-block-udev"
+     (with-imported-modules '((guix build utils))
+       #~(begin
+           (use-modules (guix build utils))
+           (let* ((rules (string-append #$output "/lib/udev/rules.d"))
+                  (scripts (string-append #$output "/lib/qubes"))
+                  (rule (string-append rules "/99-qubes-block.rules"))
+                  (path (string-join
+                         (map (lambda (p) (string-append p "/bin"))
+                              (list #$qubesdb #$coreutils #$util-linux
+                                    #$grep #$sed #$eudev #$kmod #$glibc
+                                    #$lvm2))
+                         ":")))
+             (mkdir-p rules)
+             (mkdir-p scripts)
+             (for-each
+              (lambda (script)
+                (let ((file (string-append scripts "/" script)))
+                  (copy-file (string-append #$src "/udev/" script) file)
+                  (substitute* file
+                    (("^#!.*")
+                     (string-append "#!" #$bash "/bin/bash\n"
+                                    "export PATH=" path "\n"
+                                    "mkdir -p /run/qubes\n"))
+                    (("/sbin/dmsetup") (string-append #$lvm2 "/sbin/dmsetup"))
+                    (("/sbin/modprobe") (string-append #$kmod "/bin/modprobe")))
+                  (chmod file #o555)))
+              '("udev-block-add-change" "udev-block-remove"))
+             (copy-file (string-append #$src "/udev/udev-qubes-block.rules")
+                        rule)
+             (substitute* rule
+               (("/usr/lib/qubes/") (string-append scripts "/")))))))))
 
 ;; qrexec-agent and qubes-gui-runuser both open PAM sessions as root for the
 ;; target user; same minimal stack as upstream (rootok + unix).
@@ -338,6 +386,16 @@ done
                                     #$(qubes-features-script config)))))))
        '())
    (list
+   (shepherd-service
+    (documentation "Announce the block devices present at boot to dom0
+(qvm-block): udev's first pass ran before QubesDB was up.")
+    (provision '(qubes-block-devices))
+    (requirement '(qubesdb-daemon udev))
+    (one-shot? #t)
+    (start #~(lambda _
+               (zero? (system* #$(file-append eudev "/bin/udevadm")
+                               "trigger" "--subsystem-match=block"
+                               "--action=change")))))
    (shepherd-service
     (documentation "Report memory usage to xenstore for dom0's memory
 balancer (qmemman).")
@@ -817,7 +875,8 @@ qrexec services, file copy, and (optionally) the seamless GUI agent.")
                              (lambda (config)
                                (append
                                 (list %qubes-xen-udev-rule
-                                      %qubes-mem-hotplug-udev-rule)
+                                      %qubes-mem-hotplug-udev-rule
+                                      (qubes-block-udev-rule config))
                                 (if (qubes-guest-ctap-backend config)
                                     (list %qubes-ctap-udev-rule)
                                     '()))))

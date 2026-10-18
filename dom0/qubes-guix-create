@@ -159,16 +159,16 @@ Options:
                         lock. A template is then shut down, ready.
       --channels FILE   with --unattended, --finish-install, --bootstrap:
                         extra channels, FILE holding (channel ...) forms
-                        (default: qubes-guix-channels next to this
-                        script, if there). They go into config.scm as
+                        (default: qubes-guix-channels in the current
+                        directory, else next to this script). They go into config.scm as
                         #:extra-channels; --unattended and --finish-install
                         also build with them, so --packages can name their
                         packages.
       --substitutes FILE
                         with --unattended, --finish-install: extra
                         substitute servers, e.g. your own 'guix publish' or
-                        cache (default: qubes-guix-substitutes next to this
-                        script, if there). FILE has lines
+                        cache (default: qubes-guix-substitutes in the current
+                        directory, else next to this script). FILE has lines
                           url http://host/...
                           key (public-key (ecc (curve Ed25519) (q #...#)))
                         They're tried before the default servers for the
@@ -180,8 +180,8 @@ Options:
       --packages FILE   with --unattended, --finish-install, --bootstrap:
                         extra packages for config.scm (#:extra-packages),
                         one or more per line, # starts a comment (default:
-                        qubes-guix-packages next to this script, if there;
-                        else just git). Names Guix doesn't have are skipped
+                        qubes-guix-packages in the current directory, else
+                        next to this script; else just git). Names Guix doesn't have are skipped
                         with a warning, not an error.
   -b, --branch B        the qubes-guix branch that --bootstrap,
                         --finish-install and --unattended clone and build
@@ -320,9 +320,20 @@ detect_template() {
 # qubes-guix-channels next to this script. (channel ...) forms, typed into
 # the qube as a file, so: tabs become spaces (a tab would trigger completion),
 # and no line may be the here-document's end marker.
+# The data file NAME (qubes-guix-packages, -channels, -substitutes) when no
+# option names one: in the current directory, else next to this script;
+# nothing if neither has it.
+data_file() {
+    if [ -f "./$1" ]; then
+        echo "$PWD/$1"
+    elif [ -f "$(dirname "$0")/$1" ]; then
+        echo "$(dirname "$0")/$1"
+    fi
+}
+
 read_channels() {
-    if [ -z "$channels_file" ] && [ -f "$(dirname "$0")/qubes-guix-channels" ]; then
-        channels_file=$(dirname "$0")/qubes-guix-channels
+    if [ -z "$channels_file" ]; then
+        channels_file=$(data_file qubes-guix-channels)
     fi
     channels_text=
     if [ -n "$channels_file" ]; then
@@ -351,11 +362,15 @@ channels_heredoc() {
 # "key (public-key ...)" lines (comments and blank lines dropped), checked
 # here: they're typed into a root shell as a file.
 read_substitutes() {
-    if [ -z "$subs_file" ] && [ -f "$(dirname "$0")/qubes-guix-substitutes" ]; then
-        subs_file=$(dirname "$0")/qubes-guix-substitutes
+    if [ -z "$subs_file" ]; then
+        subs_file=$(data_file qubes-guix-substitutes)
     fi
     subs_text=
-    [ -n "$subs_file" ] || return 0
+    if [ -z "$subs_file" ]; then
+        echo "Substitute servers: no qubes-guix-substitutes here or next to $prog"
+        echo "(a qubes-guix ISO built with one brings its own)."
+        return 0
+    fi
     [ -r "$subs_file" ] || die "can't read $subs_file"
     # Comments are whole lines only: keys contain '#'.
     subs_text=$(sed 's/^[[:space:]]*#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' "$subs_file" | expand)
@@ -392,8 +407,8 @@ subs_heredoc() {
 }
 
 read_packages() {
-    if [ -z "$packages_file" ] && [ -f "$(dirname "$0")/qubes-guix-packages" ]; then
-        packages_file=$(dirname "$0")/qubes-guix-packages
+    if [ -z "$packages_file" ]; then
+        packages_file=$(data_file qubes-guix-packages)
     fi
     packages=
     if [ -n "$packages_file" ]; then

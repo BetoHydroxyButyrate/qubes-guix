@@ -75,11 +75,38 @@ skip() { skips=$((skips + 1));   results+=("SKIP  $1${2:+  ($2)}"); echo "SKIP  
 
 # Run a command in the test qube as the default user (as root with -u
 # root), no GUI, capturing stdout; a time limit so a hung check can't hang
-# the run.
+# the run. stdin from /dev/null: 'timeout' runs qvm-run in a background
+# process group, and qvm-run --pass-io reading the terminal from there is
+# stopped (SIGTTIN) until the time limit kills it, with no output.
+# QGT_DEBUG=1 shows qvm-run's errors.
 in_qube() {
     local user=()
     if [ "${1:-}" = -u ]; then user=(-u "$2"); shift 2; fi
-    timeout "${QGT_TIMEOUT:-60}" qvm-run -q --no-gui --pass-io "${user[@]}" "$vm" "$*" 2>/dev/null
+    if [ -n "${QGT_DEBUG:-}" ]; then
+        timeout "${QGT_TIMEOUT:-60}" qvm-run -q --no-gui --pass-io "${user[@]}" "$vm" "$*" </dev/null
+    else
+        timeout "${QGT_TIMEOUT:-60}" qvm-run -q --no-gui --pass-io "${user[@]}" "$vm" "$*" </dev/null 2>/dev/null
+    fi
+}
+
+# Run an X client in dom0 on the desktop's display. As root (sudo -i, or a
+# root login) there's no DISPLAY, or no right to use it: run it as the
+# desktop user instead (sudo's caller, else whoever runs qubes-guid, the
+# GUI daemon that draws the qubes' windows).
+dom0_x() {
+    local display=${DISPLAY:-:0} owner
+    if [ "$(id -u)" != 0 ]; then
+        DISPLAY=$display "$@"
+        return
+    fi
+    owner=${SUDO_USER:-}
+    [ -n "$owner" ] && [ "$owner" != root ] ||
+        owner=$(ps -o user= -C qubes-guid 2>/dev/null | grep -vx root | head -n1)
+    if [ -n "$owner" ]; then
+        runuser -u "$owner" -- env DISPLAY="$display" "$@"
+    else
+        DISPLAY=$display "$@"
+    fi
 }
 
 # --- the qube under test -----------------------------------------------
@@ -252,7 +279,7 @@ else
     skip "memory balancing" "not enabled for $vm"
 fi
 
-# GUI: a terminal, and its window in dom0. Qubes titles windows "[qube] …".
+# GUI: a terminal, and its window in dom0, whose title names the qube.
 if [ "$(qvm-features "$template" gui 2>/dev/null)" != 1 ]; then
     skip "GUI" "no GUI agent"
 elif ! command -v xdotool >/dev/null 2>&1; then
@@ -262,17 +289,24 @@ else
     if [ -z "$term" ]; then
         skip "GUI" "no xterm, xfce4-terminal or alacritty in the qube"
     else
-        qvm-run -q "$vm" "$term" >/dev/null 2>&1 &
+        # A NEW window with the qube's name in its title: one already
+        # there (the qube tested in place, or a dom0 terminal whose title
+        # names it) doesn't count.
+        pattern=${vm//./\\.}
+        before=$(dom0_x xdotool search --name "$pattern" 2>/dev/null | sort)
+        qvm-run -q "$vm" "$term" </dev/null >/dev/null 2>&1 &
         win=
         for _ in $(seq 1 20); do
             sleep 2
-            win=$(xdotool search --name "^\[$vm\]" 2>/dev/null | head -n1) && [ -n "$win" ] && break
+            win=$(dom0_x xdotool search --name "$pattern" 2>/dev/null | sort |
+                  comm -13 <(printf '%s\n' "$before") - | head -n1)
+            [ -n "$win" ] && break
         done
         if [ -n "$win" ]; then
-            pass "GUI" "$term window"
+            pass "GUI" "$term window: $(dom0_x xdotool getwindowname "$win" 2>/dev/null)"
             in_qube "pkill -x $term" >/dev/null || true
         else
-            fail "GUI" "no [$vm] window within 40s (herd status qubes-gui-agent)"
+            fail "GUI" "no new $vm window within 40s (herd status qubes-gui-agent)"
         fi
     fi
 fi

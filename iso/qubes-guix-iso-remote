@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# qubes-guix-iso-remote — build the installer ISO on another machine (e.g.
+# your substitute server), from THIS checkout's HEAD.
+#
+#   qubes-guix-iso-remote [options] [-- QUBES-GUIX-ISO-OPTIONS...]
+#
+# qubes-guix-iso builds the qubes channel from its public repository, at the
+# commits the server last built: work you have here, uncommitted or not
+# pushed, isn't in the ISO, and nothing says so. This, run where you work:
+#  1. stops if qubes/, guest/ or iso/ have uncommitted changes (they're what
+#     the ISO is built from; untracked files count: a new module not added);
+#  2. pushes HEAD to a scratch branch (default 'iso', forced: it's yours to
+#     overwrite), and waits until the channel's repository has it (a mirror,
+#     e.g. Gitea pushing to GitHub, can lag);
+#  3. on HOST, in its checkout: fetches that commit, checks it out (the
+#     checkout must be clean; it goes back to where it was afterwards) and
+#     runs  iso/qubes-guix-iso -b BRANCH --qubes-commit head  plus your
+#     options. So qubes is exactly your HEAD, and the other channels are at
+#     the server's last build (substitutes).
+#
+#   --host HOST       where to build      (default $QUBES_GUIX_ISO_HOST, else guix-subs)
+#   --dir DIR         its checkout        (default: this checkout's path
+#                     relative to your home, e.g. proj/qubes-guix)
+#   -b, --branch B    the scratch branch  (default iso)
+#   --remote R        the git remote to push to (default origin)
+#   --wait SECONDS    how long to wait for the push to reach the channel's
+#                     repository (default 300)
+#   --allow-dirty     build anyway with uncommitted changes (they're NOT in
+#                     the ISO)
+#   -n, --dry-run     check and say what would happen; push and build nothing
+#
+# The commits must be signed by an authorized key, as for any push to the
+# channel: the build authenticates the qubes channel.
+#
+# Examples:
+#   iso/qubes-guix-iso-remote
+#   iso/qubes-guix-iso-remote -- --offline -o qubes-guix-offline.iso
+
+set -euo pipefail
+
+prog=${0##*/}
+die() { echo "$prog: $*" >&2; exit 1; }
+need() { [ $# -ge 2 ] || die "$1 needs a value"; }
+
+host=${QUBES_GUIX_ISO_HOST:-guix-subs}
+dir=
+branch=iso
+remote=origin
+wait_s=300
+allow_dirty=0
+dry_run=0
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --host) need "$@"; host=$2; shift 2;;
+        --dir) need "$@"; dir=$2; shift 2;;
+        -b|--branch) need "$@"; branch=$2; shift 2;;
+        --remote) need "$@"; remote=$2; shift 2;;
+        --wait) need "$@"; wait_s=$2; shift 2;;
+        --allow-dirty) allow_dirty=1; shift;;
+        -n|--dry-run) dry_run=1; shift;;
+        -h|--help) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0;;
+        --) shift; break;;
+        *) die "unknown argument $1 (options for qubes-guix-iso go after --; see --help)";;
+    esac
+done
+case $branch in main|master) die "-b $branch: the scratch branch is force-pushed; use another name";; esac
+case $branch in *[!A-Za-z0-9._/-]*|'') die "bad branch name '$branch'";; esac
+case $wait_s in ''|*[!0-9]*) die "--wait: seconds";; esac
+
+here=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel) ||
+    die "not in a qubes-guix checkout"
+head=$(git -C "$here" rev-parse HEAD)
+url=$(sed -n 's/.*(url "\(.*\)").*/\1/p' "$here/guest/channels.scm.txt" | head -n1)
+[ -n "$url" ] || die "no channel url in guest/channels.scm.txt"
+if [ -z "$dir" ]; then
+    case $here in
+        "$HOME"/*) dir=${here#"$HOME"/};;
+        *) die "$here isn't under your home: give --dir (the checkout on $host)";;
+    esac
+fi
+
+# 1. What the ISO is built from must be committed.
+dirty=$(git -C "$here" status --porcelain -- qubes guest iso)
+if [ -n "$dirty" ]; then
+    if [ "$allow_dirty" = 1 ]; then
+        echo "$prog: warning: these changes are NOT in the ISO (not committed):" >&2
+        printf '%s\n' "$dirty" | sed 's/^/  /' >&2
+    else
+        die "uncommitted changes, which wouldn't be in the ISO:
+$(printf '%s\n' "$dirty" | sed 's/^/  /')
+Commit them (or --allow-dirty to build without them)."
+    fi
+fi
+
+echo "Building qubes at $(git -C "$here" log -1 --format='%h %s' "$head")"
+echo "  via branch '$branch' of $url, on $host:$dir"
+if [ "$dry_run" = 1 ]; then
+    echo "(dry run: would push $head to $remote $branch, then on $host run"
+    echo "  iso/qubes-guix-iso -b $branch --qubes-commit head $*)"
+    exit 0
+fi
+
+# 2. Push, and wait for the channel's repository to have it.
+git -C "$here" push -q -f "$remote" "$head:refs/heads/$branch" ||
+    die "couldn't push to $remote"
+t0=$(date +%s)
+while :; do
+    at=$(git ls-remote "$url" "refs/heads/$branch" 2>/dev/null | cut -f1) || at=
+    [ "$at" = "$head" ] && break
+    [ $(( $(date +%s) - t0 )) -lt "$wait_s" ] ||
+        die "after ${wait_s}s, $url has '$branch' at ${at:-nothing}, not $head
+(is $remote mirrored there? --wait to wait longer)"
+    sleep 10
+done
+
+# 3. Build there, from exactly that commit.
+# shellcheck disable=SC2016 # expanded on HOST
+script='set -eu
+dir=$1 sha=$2 branch=$3 url=$4; shift 4
+cd "$dir"
+[ -z "$(git status --porcelain --untracked-files=no)" ] ||
+    { echo "$(hostname):$dir has uncommitted changes; not touching it" >&2; exit 1; }
+prev=$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)
+git fetch -q "$url" "$branch"
+[ "$(git rev-parse FETCH_HEAD)" = "$sha" ] ||
+    { echo "$url $branch is not at $sha" >&2; exit 1; }
+git checkout -q --detach "$sha"
+status=0
+iso/qubes-guix-iso -b "$branch" --qubes-commit head "$@" || status=$?
+git checkout -q "$prev"
+exit $status'
+# shellcheck disable=SC2029 # the arguments are quoted for HOST's shell
+ssh "$host" "bash -c $(printf '%q' "$script") qubes-guix-iso-remote $(printf '%q ' "$dir" "$head" "$branch" "$url" "$@")" </dev/null
+echo "Built on $host, in $dir: qubes at $head (this checkout's HEAD)."

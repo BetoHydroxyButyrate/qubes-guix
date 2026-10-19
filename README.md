@@ -40,6 +40,7 @@ qubes/services/agent.scm        qubes-guest-service-type — the integration
 qubes/system.scm                qubes-operating-system — adds all of it to any operating-system
 qubes/installer.scm             qubes-installation-os — the qubes-guix installer ISO
 iso/qubes-guix-iso              build that ISO (on any x86_64 Guix)
+iso/qubes-guix-iso-remote       build it on another machine, from this checkout's HEAD
 dom0/qubes-guix-create          dom0: create the qube and boot the installer
 guest/qubes-guix-install        installer shell: unattended install (disk, config.scm, then finish-install)
 guest/qubes-guix-finish-install installer, before the first reboot: config.scm + guix system init
@@ -161,6 +162,13 @@ qubes-guix/iso/qubes-guix-iso -b template --offline -o /tmp/qgi.iso
 ```
 
 `--server URL` builds every channel at the commits the server last built (its `/channel-commits`, as [guix-subs](https://github.com/BetoHydroxyButyrate/guix-subs) publishes) and fetches from it first. Nearly everything then comes from your server, and so does the rest of an install, such as Xfce. The substitute servers come from a file like dom0's, `--substitutes FILE`, by default the checkout's `dom0/qubes-guix-substitutes`: all its `url`s are tried before the default servers (their keys must already be authorized on the build machine). Without `--server`, the file's first `url` is the server; `--no-server` builds at the branch head instead. An install locked to the same server (below) then uses the ISO's Guix as it is. The ISO also carries the substitutes file: its own guix-daemon uses those servers, and an install that gets no substitutes from dom0 uses the ISO's, records them in `config.scm`, and, unless told otherwise, locks to the ISO's own channel commits. So an ISO built from your server installs and updates from it with nothing extra in dom0. The server must be up to date: one that last built qubes-guix from before the ISO support can't build an ISO. `--guix-commit` and `--qubes-commit` pin those channels by hand. `--offline` also puts into the ISO everything the default unattended install needs, and the channels' git checkouts, so that install needs no network at all; the ISO grows by a few GiB. Next to the ISO, `FILE.channels` records the channels it was built from. `-L DIR` builds from a checkout with your current Guix, for testing; that ISO's guix lacks the qubes channel, so installs from it fall back to `guix time-machine`.
+
+The qubes channel comes from its repository, never from a checkout: work you haven't committed and pushed isn't in the ISO, and with `--server` neither is anything newer than the server's last build. To build on a bigger machine (the substitute server) what you're working on elsewhere, run `iso/qubes-guix-iso-remote` in your working checkout. It stops on uncommitted changes in `qubes/`, `guest/` or `iso/` (untracked files too), force-pushes HEAD to a scratch branch (`iso`), waits for the channel's repository to have it (a mirror can lag), then on the build host (`--host`, default `guix-subs`; `--dir`, default the same path under your home) checks that commit out in its checkout and runs `iso/qubes-guix-iso -b iso --qubes-commit head`, plus whatever follows `--`. qubes is then exactly your HEAD, and the other channels are at the server's last build:
+
+```
+iso/qubes-guix-iso-remote                          # on guix-subs, from this HEAD
+iso/qubes-guix-iso-remote -- --offline -o qgi-offline.iso
+```
 
 Then, in dom0, one command creates the qube and installs it:
 

@@ -296,6 +296,30 @@ case $usb in
     *) fail "USB proxy" "no answer";;
 esac
 
+# Block devices for dom0 (qvm-block, qvm-start --cdrom=QUBE:/file.iso): a
+# loop device made here must be listed in dom0, and go when it's removed.
+# (Its udev rule writes it to QubesDB; dom0 reads it from there.)
+loop=$(in_qube -u root 'f=/tmp/qgt-block.img; truncate -s 16M "$f" && losetup -f --show "$f"')
+case $loop in
+    /dev/loop[0-9]*)
+        dev="$vm:${loop#/dev/}"
+        listed() { qvm-block list 2>/dev/null | awk -v d="$dev" '$1 == d {f = 1} END {exit !f}'; }
+        seen=0 gone=0
+        for _ in $(seq 1 15); do listed && { seen=1; break; }; sleep 1; done
+        in_qube -u root "losetup -d $loop; rm -f /tmp/qgt-block.img" >/dev/null || true
+        if [ "$seen" = 1 ]; then
+            for _ in $(seq 1 15); do listed || { gone=1; break; }; sleep 1; done
+        fi
+        if [ "$seen" = 0 ]; then
+            fail "block devices" "$dev not listed by qvm-block (herd status udev; qubesdb-ls /qubes-block-devices)"
+        elif [ "$gone" = 0 ]; then
+            fail "block devices" "$dev still listed after losetup -d"
+        else
+            pass "block devices" "$dev listed in dom0, then removed"
+        fi;;
+    *) fail "block devices" "couldn't make a loop device: ${loop:-no answer}";;
+esac
+
 # GUI: a terminal, and its window in dom0, whose title names the qube.
 if [ "$(qvm-features "$template" gui 2>/dev/null)" != 1 ]; then
     skip "GUI" "no GUI agent"

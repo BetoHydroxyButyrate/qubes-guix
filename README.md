@@ -455,7 +455,7 @@ qubes-guix-test --split-gpg --split-ssh guix-tmpl # also the vault clients
 qubes-guix-create --unattended --template --test …   # the same, after an install
 ```
 
-It checks: start and boot time; qrexec; QubesDB; the features the agent requested; failed Shepherd services; network (address, gateway, DNS and HTTPS); the network coming back after the netvm is detached and reattached (as when the netvm restarts); 1 MiB through qrexec each way, checksummed; `qvm-copy-to-vm` (`qubes.Filecopy`); the trusted-channels link; memory balancing (meminfo in xenstore); the USB proxy (`qubes.USBAttach` and the `vhci-hcd` module present: no device is attached); a terminal window appearing in dom0; split-gpg2 and split-ssh (optional); and a clean shutdown.
+It checks: start and boot time; qrexec; QubesDB; the features the agent requested; failed Shepherd services; network (address, gateway, DNS and HTTPS); the network coming back after the netvm is detached and reattached (as when the netvm restarts); 1 MiB through qrexec each way, checksummed; `qvm-copy-to-vm` (`qubes.Filecopy`); the trusted-channels link; memory balancing (meminfo in xenstore); the USB proxy (`qubes.USBAttach` and the `vhci-hcd` module present: no device is attached); block devices for dom0 (a loop device made in the qube is listed by `qvm-block`, and goes again); a terminal window appearing in dom0; split-gpg2 and split-ssh (optional); and a clean shutdown.
 
 Qubes' own integration tests (`qubes.tests.integ` in dom0, `QUBES_TEST_TEMPLATES=…`) can also run against a Guix template, but they stop qubesd and create and remove qubes: run them only on a machine set aside for testing. Their distribution-specific parts (updates) don't apply to Guix.
 

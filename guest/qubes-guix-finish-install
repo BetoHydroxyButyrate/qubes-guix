@@ -402,7 +402,60 @@ fi
 cp "$new" "$config"
 
 say "Rebuilding $target as a qube (guix system init; builds the Qubes agents)"
-qguix system init ${subs:+"--substitute-urls=$subs"} "$config" "$target"
+# 'guix system init' copies the system from this installer's store to
+# $target. Read from the ISO as an HVM's emulated CD, a stretch of it has
+# been seen to come back wrong once and then stay wrong in the page cache
+# (a fresh read was fine). A compressed (zisofs) file then fails to read:
+# "Input/output error", and the copy stops. An uncompressed one would be
+# copied wrong without a word. So: after a failure, drop the page cache and
+# run it again (it copies what's still missing, redoing a partial item); then
+# check the copy (below).
+attempt=1
+until qguix system init ${subs:+"--substitute-urls=$subs"} "$config" "$target"; do
+    [ "$attempt" -lt 3 ] || die "guix system init failed $attempt times; see the errors above"
+    attempt=$((attempt + 1))
+    say "guix system init failed; dropping the page cache and trying again ($attempt of 3)"
+    sync
+    echo 3 > /proc/sys/vm/drop_caches
+done
+
+# The check: $target's database records each copied item's hash as computed
+# from the copy; this installer's records the same item's hash from when it
+# was built (the ISO's store) or fetched. Any difference is a corrupt copy.
+say "Checking the copy against the installer's store"
+cat > "$tmp/verify.scm" <<'VERIFY'
+(use-modules (sqlite3) (ice-9 match))
+(define (hashes file)
+  (let* ((db (sqlite-open file SQLITE_OPEN_READONLY))
+         (st (sqlite-prepare db "SELECT path, hash FROM ValidPaths"))
+         (table (make-hash-table)))
+    (let loop ()
+      (match (sqlite-step st)
+        (#(path hash) (hash-set! table path hash) (loop))
+        (_ #t)))
+    (sqlite-finalize st)
+    (sqlite-close db)
+    table))
+(match (command-line)
+  ((_ source target)
+   (let* ((src (hashes source))
+          (dst (hashes target))
+          (bad (hash-fold (lambda (path hash bad)
+                            (let ((expected (hash-ref src path)))
+                              (if (and expected (not (string=? expected hash)))
+                                  (cons path bad)
+                                  bad)))
+                          '() dst)))
+     (format #t "~a items copied, ~a checked against this installer's store~%"
+             (hash-count (const #t) dst)
+             (hash-count (lambda (path hash) (hash-ref src path)) dst))
+     (for-each (lambda (path) (format #t "CORRUPT: ~a~%" path)) bad)
+     (exit (if (null? bad) 0 1)))))
+VERIFY
+guix repl -- "$tmp/verify.scm" /var/guix/db/db.sqlite "$target/var/guix/db/db.sqlite" ||
+    die "the copy in $target differs from this installer's store (above): a
+read from the installer's CD came back wrong. Install again (with
+qubes-guix-create: --force)."
 
 cat <<EOF
 

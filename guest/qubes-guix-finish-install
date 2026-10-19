@@ -30,6 +30,11 @@
 #             recorded as #:channel-commits), so the install matches its
 #             builds; Guix alone (its /guix-commit) if it doesn't publish
 #             /channel-commits.
+#             "iso" (the qubes-guix ISO only): Guix and qubes at the
+#             ISO's own commits (what its guix was built from, whose Qubes
+#             packages its store holds), the other channels at the
+#             server's, as "server". For an ISO built from a qubes commit
+#             the server hasn't built yet (iso/qubes-guix-iso-remote).
 # --packages: extra packages, as #:extra-packages (missing ones are skipped).
 # --channels F: extra channels, F holding (channel ...) forms: built with,
 #             and recorded as #:extra-channels.
@@ -177,6 +182,24 @@ $iso_commits"
     fi
 fi
 
+# --guix-commit iso: the ISO's guix and qubes commits; the other channels
+# from the server, if there is one (then as "server", below).
+iso_lock=0
+if [ "${QUBES_GUIX_COMMIT:-}" = iso ]; then
+    iso_lock=1
+    iso_commits=$(guix describe 2>/dev/null | awk '
+        NF == 2 && $1 !~ /:$/ { name = $1 }
+        $1 == "commit:" && (name == "guix" || name == "qubes") { print name, $2 }')
+    [ "$(printf '%s\n' "$iso_commits" | grep -c .)" = 2 ] ||
+        die "--guix-commit iso: this installer's guix has no qubes channel
+(not the qubes-guix ISO?)"
+    if [ -n "$subs_file" ]; then
+        QUBES_GUIX_COMMIT=server
+    else
+        unset QUBES_GUIX_COMMIT
+    fi
+fi
+
 server_commits=
 if [ "${QUBES_GUIX_COMMIT:-}" = server ]; then
     [ -n "$subs_file" ] || die "--guix-commit server needs --substitutes"
@@ -214,6 +237,16 @@ $server_commits"
         say "$server last built Guix $QUBES_GUIX_COMMIT (it publishes no
 /channel-commits): locking Guix alone to it"
     fi
+fi
+if [ "$iso_lock" = 1 ]; then
+    server_commits=$(printf '%s\n%s\n' "$iso_commits" \
+        "$(printf '%s\n' "$server_commits" | awk '$1 != "guix" && $1 != "qubes"')" | grep .)
+    unset QUBES_GUIX_COMMIT
+    QUBES_CHANNEL_COMMITS=$server_commits
+    export QUBES_CHANNEL_COMMITS
+    guix_lock=$(printf '%s\n' "$iso_commits" | awk '$1 == "guix" {print $2; exit}')
+    say "Locking guix and qubes to the ISO's commits$( [ -n "$subs_file" ] && echo ', the others to the server'"'"'s'):
+$server_commits"
 fi
 [ -n "${guix_lock:-}" ] || guix_lock=${QUBES_GUIX_COMMIT:-}
 if [ "$build_commit" = default ] && [ -n "$guix_lock" ]; then

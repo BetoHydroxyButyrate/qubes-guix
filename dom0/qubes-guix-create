@@ -140,9 +140,13 @@ Options:
       --guix-commit C   with --unattended: lock the qube's Guix at commit C
                         (#:guix-commit in its config.scm; move it later with
                         qubes-guix-update --guix-commit C, or --head).
-                        Default: 'server' when there are substitute servers
-                        (--substitutes), else follow the head; 'head'
-                        follows the head either way. 'server': every channel
+                        Default: 'iso' from the qubes-guix ISO, else 'server'
+                        when there are substitute servers (--substitutes),
+                        else follow the head; 'head' follows the head
+                        either way. 'iso': Guix and qubes at the ISO's own
+                        commits (what it was built from: e.g. your HEAD, with
+                        iso/qubes-guix-iso-remote), the other channels as
+                        'server'. 'server': every channel
                         at the commits the first --substitutes server last
                         built (its /channel-commits, recorded as
                         #:channel-commits; Guix alone from /guix-commit if
@@ -796,8 +800,15 @@ unattended() {
         iargs="$iargs --substitutes /root/qubes-guix-substitutes"
         # With your own server, lock to what it last built unless told
         # otherwise: its builds are then what the qube runs, and nothing is
-        # built locally (the first update included).
-        if [ -z "$guix_commit" ]; then
+        # built locally (the first update included). From the qubes-guix
+        # ISO: to the ISO's guix and qubes (which may be newer than the
+        # server's build: iso/qubes-guix-iso-remote), the rest the server's.
+        if [ -z "$guix_commit" ] && [ "$via_qrexec" = 1 ]; then
+            guix_commit=iso
+            echo "Locking $name to the ISO's guix and qubes commits, and the other"
+            echo "channels to your server's last build (--guix-commit server: all"
+            echo "the server's; head: follow the head)."
+        elif [ -z "$guix_commit" ]; then
             guix_commit=server
             echo "Locking $name to the commits your substitute server last built"
             echo "(--guix-commit head: follow the head instead)."
@@ -806,7 +817,9 @@ unattended() {
     case $guix_commit in
         ''|head) guix_commit=;;
         server) ;;
-        *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash ('server' or 'head')";;
+        iso) [ "$via_qrexec" = 1 ] ||
+                 die "--guix-commit iso: only from the qubes-guix ISO (this installer isn't)";;
+        *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash ('server', 'iso' or 'head')";;
     esac
     [ -n "$guix_commit" ] && iargs="$iargs --guix-commit $guix_commit"
     what="($( [ "$template" = 1 ] && echo 'template, ')timezone $tz, user 'user'$( [ -n "$hash" ] || echo ', no password'))"

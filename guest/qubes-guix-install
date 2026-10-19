@@ -30,7 +30,8 @@
 #   --channels FILE     extra channels, FILE holding (channel ...) forms
 #                       (#:extra-channels)
 #   --guix-commit C     lock the system's Guix at commit C (#:guix-commit);
-#                       default: follow the head
+#                       default: follow the head. 'server' and 'iso': see
+#                       qubes-guix-finish-install
 #   --substitutes FILE  extra substitute servers ("url URL", "key (public-key
 #                       ...)" lines): used for the install, and recorded
 #                       in config.scm

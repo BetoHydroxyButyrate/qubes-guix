@@ -21,7 +21,7 @@ Status: a daily-driven StandaloneVM (HVM) on Qubes R4.3. Everything below has be
 | Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`)                     | 🚧 written, not yet tested                              |
 | split-ssh client (`ssh`, `git` over SSH with keys in a vault qube)                           | ✅                                                      |
 | TemplateVM / AppVM based on a Guix template                                                  | ✅                                                      |
-| USB devices from sys-usb (`qvm-usb attach`, the devices widget)                              | 🚧 written, not yet tested                              |
+| USB devices from sys-usb (`qvm-usb attach`, the devices widget)                              | ✅                                                      |
 | PVH                                                                                          | ❌ not yet                                              |
 | Qubes Update tool                                                                            | ❌ by design (use `guix pull` + reconfigure; see below) |
 
@@ -417,6 +417,33 @@ A USB device in sys-usb can be attached to a Guix qube as to any other: the devi
 - **Detach:** the widget, or `qvm-usb detach QUBE sys-usb:BUSID`.
 
 Only the qube side is packaged: a Guix qube can receive USB devices, not be the USB backend (sys-usb).
+
+Tested with a YubiKey's smart card (PIV, `yubico-piv-tool -a status`). Smart cards need `pcscd`, which isn't part of qubes-guix, and Guix's pcsc-lite asks polkit whether a user may use the reader. polkit doesn't know pcsc-lite's actions unless they're registered, so every client is refused, root included ("Action org.debian.pcsc-lite.access_pcsc is not registered"). In `config.scm`:
+
+```scheme
+(use-service-modules dbus security-token)
+(use-package-modules security-token)       ; pcsc-lite
+
+(define pcsc-polkit-rule                   ; members of "users" may use readers and cards
+  (file-union "pcsc-polkit-rule"
+    `(("share/polkit-1/rules.d/50-pcsc.rules"
+       ,(plain-file "50-pcsc.rules" "\
+polkit.addRule(function(action, subject) {
+  if ((action.id == \"org.debian.pcsc-lite.access_pcsc\" ||
+       action.id == \"org.debian.pcsc-lite.access_card\") &&
+      subject.isInGroup(\"users\")) {
+    return polkit.Result.YES;
+  }
+});
+")))))
+
+;; in (services ...):
+(service pcscd-service-type)
+(simple-service 'pcsc-polkit polkit-service-type
+                (list pcsc-lite pcsc-polkit-rule))
+```
+
+After the reconfigure, polkit (started on demand by D-Bus, not a Shepherd service) must reread its actions: reboot, or `sudo pkill polkitd; sudo herd restart pcscd`. While a key is attached to a qube, sys-usb doesn't have it: U2F/FIDO2 through the CTAP proxy needs it detached again.
 
 ## Testing a qube
 

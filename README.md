@@ -19,8 +19,9 @@ Status: a daily-driven StandaloneVM (HVM) on Qubes R4.3. Everything below has be
 | U2F **and** FIDO2/passkeys via the CTAP proxy (sys-usb)                                      | ✅                                                      |
 | split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube)                         | ✅                                                      |
 | Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`)                     | 🚧 written, not yet tested                              |
-| split-ssh client (`ssh`, `git` over SSH with keys in a vault qube)                           | 🚧 written, not yet tested                              |
-| TemplateVM / AppVM based on a Guix template                                                  | 🚧 written, not yet tested                              |
+| split-ssh client (`ssh`, `git` over SSH with keys in a vault qube)                           | ✅                                                      |
+| TemplateVM / AppVM based on a Guix template                                                  | ✅                                                      |
+| USB devices from sys-usb (`qvm-usb attach`, the devices widget)                              | 🚧 written, not yet tested                              |
 | PVH                                                                                          | ❌ not yet                                              |
 | Qubes Update tool                                                                            | ❌ by design (use `guix pull` + reconfigure; see below) |
 
@@ -36,6 +37,7 @@ qubes/packages/gui.scm          qubes-gui-common, qubes-gui-agent (Xorg drivers,
 qubes/packages/ctap.scm         qubes-ctap (U2F/FIDO2 proxy, frontend)
 qubes/packages/split-gpg.scm    qubes-split-gpg2-client
 qubes/packages/split-ssh.scm    qubes-split-ssh-client
+qubes/packages/usb-proxy.scm    qubes-usb-proxy (qubes.USBAttach: USB devices from sys-usb)
 qubes/services/agent.scm        qubes-guest-service-type — the integration
 qubes/system.scm                qubes-operating-system — adds all of it to any operating-system
 qubes/installer.scm             qubes-installation-os — the qubes-guix installer ISO
@@ -134,6 +136,7 @@ A local desktop (e.g. XFCE on `:0`) can coexist: the Qubes GUI agent runs its ow
           (ctap-backend "sys-usb")     ; #f: no U2F/FIDO2 proxy
           (split-gpg2 qubes-split-gpg2-client)  ; #f: no split-gpg2 client
           (split-ssh qubes-split-ssh-client)    ; #f: no split-ssh client
+          (usb-proxy qubes-usb-proxy)           ; #f: no USB devices from sys-usb
           (default-menu-items '("xfce4-terminal.desktop" "thunar.desktop"))
           (features-request? #t)))      ; #f: don't advertise features to
                                        ; dom0 (the installer ISO)
@@ -405,6 +408,16 @@ The SSH keys stay in a vault qube; Guix qubes use them through its `ssh-agent`, 
   ```
 - **Guix qube:** nothing. `ssh-add -l` lists the vault's keys (after a prompt, with `ask`). If the session already has `SSH_AUTH_SOCK` (another agent), that one is used instead.
 
+### USB devices (qvm-usb)
+
+A USB device in sys-usb can be attached to a Guix qube as to any other: the devices widget, or in dom0 `qvm-usb attach QUBE sys-usb:BUSID` (`qvm-usb` lists them). The device then appears in the qube as a local USB device. It goes over qrexec (`qubes.USBAttach` here, `qubes.USB` in sys-usb) into the kernel's USB/IP virtual host controller, `vhci-hcd`, which is loaded on the first attach.
+
+- **dom0, sys-usb:** nothing beyond the usual Qubes USB setup. Each attach allows itself in dom0's policy for that one call.
+- **Guix qube:** nothing; `qubes-usb-proxy` is in every qube (`(usb-proxy #f)` leaves it out). The kernel must have `vhci-hcd`: `qubes-guix-test` checks it.
+- **Detach:** the widget, or `qvm-usb detach QUBE sys-usb:BUSID`.
+
+Only the qube side is packaged: a Guix qube can receive USB devices, not be the USB backend (sys-usb).
+
 ## Testing a qube
 
 `dom0/qubes-guix-test` (copy it to dom0 next to `qubes-guix-create`) smoke-tests a Guix qube's Qubes integration and prints PASS, FAIL or SKIP for each check; its exit status is the number of failures. Given a template, it makes a throwaway AppVM from it (`test-guix-<pid>`, `--keep` to keep it), tests that, and removes it. Any other Guix qube is tested in place. It only touches the qube under test, so it's safe on a daily-use dom0.
@@ -415,7 +428,7 @@ qubes-guix-test --split-gpg --split-ssh guix-tmpl # also the vault clients
 qubes-guix-create --unattended --template --test …   # the same, after an install
 ```
 
-It checks: start and boot time; qrexec; QubesDB; the features the agent requested; failed Shepherd services; network (address, gateway, DNS and HTTPS); the network coming back after the netvm is detached and reattached (as when the netvm restarts); 1 MiB through qrexec each way, checksummed; `qvm-copy-to-vm` (`qubes.Filecopy`); the trusted-channels link; memory balancing (meminfo in xenstore); a terminal window appearing in dom0; split-gpg2 and split-ssh (optional); and a clean shutdown.
+It checks: start and boot time; qrexec; QubesDB; the features the agent requested; failed Shepherd services; network (address, gateway, DNS and HTTPS); the network coming back after the netvm is detached and reattached (as when the netvm restarts); 1 MiB through qrexec each way, checksummed; `qvm-copy-to-vm` (`qubes.Filecopy`); the trusted-channels link; memory balancing (meminfo in xenstore); the USB proxy (`qubes.USBAttach` and the `vhci-hcd` module present: no device is attached); a terminal window appearing in dom0; split-gpg2 and split-ssh (optional); and a clean shutdown.
 
 Qubes' own integration tests (`qubes.tests.integ` in dom0, `QUBES_TEST_TEMPLATES=…`) can also run against a Guix template, but they stop qubesd and create and remove qubes: run them only on a machine set aside for testing. Their distribution-specific parts (updates) don't apply to Guix.
 

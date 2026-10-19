@@ -37,6 +37,7 @@
   #:use-module (qubes packages ctap)        ; qctap-proxy (U2F/FIDO2)
   #:use-module (qubes packages split-gpg)   ; split-gpg2 client
   #:use-module (qubes packages split-ssh)   ; split-ssh client
+  #:use-module (qubes packages usb-proxy)   ; qubes.USBAttach (qvm-usb)
   #:export (qubes-guest-configuration
             qubes-guest-configuration?
             qubes-guest-network?
@@ -74,6 +75,9 @@
   ;; session; dom0's qubes.SshAgent policy decides which vault (and whether
   ;; to ask), so there's no per-qube service to enable.
   (split-ssh  qubes-guest-split-ssh  (default qubes-split-ssh-client))
+  ;; USB proxy frontend (qubes.USBAttach: qvm-usb attach, the devices
+  ;; widget), or #f. Nothing runs until dom0 attaches a device.
+  (usb-proxy  qubes-guest-usb-proxy  (default qubes-usb-proxy))
   ;; #t: this system is a Qubes TemplateVM, or an AppVM based on one (they
   ;; share this configuration). Adds what upstream's mount-dirs.sh and
   ;; initramfs do: /home on the private volume (/rw/home), swap on the
@@ -765,10 +769,14 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
                               (force-symlink
                                f (string-append "/run/qubes-rpc/" (basename f))))
                             (find-files dir)))
-                '#$(if (qubes-guest-gui? config)
-                       (list (file-append (qubes-guest-gui-agent config)
-                                          "/etc/qubes-rpc"))
-                       '()))))
+                (list #$@(if (qubes-guest-gui? config)
+                             (list (file-append (qubes-guest-gui-agent config)
+                                                "/etc/qubes-rpc"))
+                             '())
+                       #$@(if (qubes-guest-usb-proxy config)
+                              (list (file-append (qubes-guest-usb-proxy config)
+                                                 "/etc/qubes-rpc"))
+                              '())))))
 
 ;; `qubes-guix-update`: guix pull, then optionally reconfigure, through the
 ;; Qubes updates proxy when dom0 enabled updates-proxy-setup for this qube

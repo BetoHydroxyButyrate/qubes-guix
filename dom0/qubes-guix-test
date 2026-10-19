@@ -283,6 +283,19 @@ else
     skip "memory balancing" "not enabled for $vm: memory $mem, maxmem $maxmem"
 fi
 
+# USB proxy: dom0's qvm-usb attach runs qubes.USBAttach here, which needs
+# the kernel's USB/IP host controller. Checked without a device: the service
+# is there, and the module could be loaded.
+usb=$(in_qube -u root 'test -x /run/qubes-rpc/qubes.USBAttach || { echo no-service; exit; }
+LINUX_MODULE_DIRECTORY=/run/booted-system/kernel/lib/modules modprobe -n -q vhci-hcd 2>/dev/null &&
+  echo ok || echo no-module')
+case $usb in
+    ok) pass "USB proxy" "qubes.USBAttach, vhci-hcd";;
+    no-service) skip "USB proxy" "no qubes.USBAttach (usb-proxy #f, or an older qubes-guix)";;
+    no-module) fail "USB proxy" "the kernel has no vhci-hcd module: qvm-usb attach would fail";;
+    *) fail "USB proxy" "no answer";;
+esac
+
 # GUI: a terminal, and its window in dom0, whose title names the qube.
 if [ "$(qvm-features "$template" gui 2>/dev/null)" != 1 ]; then
     skip "GUI" "no GUI agent"

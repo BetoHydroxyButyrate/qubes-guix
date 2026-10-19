@@ -67,6 +67,7 @@
    (ctap-backend #f)
    (split-gpg2 #f)
    (split-ssh #f)
+   (usb-proxy #f)
    (features-request? #f)))
 
 (define (qubes-reference-os branch)

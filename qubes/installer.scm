@@ -12,7 +12,10 @@
 ;;; - its 'guix' already includes the qubes channel, and the Qubes packages a
 ;;;   qube needs are in its store: qubes-guix-finish-install uses that Guix
 ;;;   directly, with nothing to build for the Qubes agents.
-;;; The installer's own dialogs (on tty1) still work, for a manual install.
+;;; The installer's own dialogs (on tty1) still work, for a manual install,
+;;; but only once asked for: tty1 first says that dom0 drives the install,
+;;; so nobody starts the dialogs by accident while an unattended install
+;;; runs (installer-gate).
 ;;;
 ;;; Build it with iso/qubes-guix-iso (a Guix that includes this channel is
 ;;; what puts the channel into the ISO's guix), or by hand:
@@ -32,6 +35,8 @@
 (define-module (qubes installer)
   #:use-module (gnu)
   #:use-module (gnu system install)
+  #:use-module ((gnu services base)
+                #:select (kmscon-service-type kmscon-configuration))
   #:use-module ((gnu packages version-control) #:select (git))
   #:use-module ((gnu services desktop)
                 #:select (%desktop-services xfce-desktop-service-type))
@@ -137,7 +142,8 @@ themselves under Qubes. To install unattended, run in dom0:
 
   qubes-guix-create --unattended NAME
 
-or install with the dialogs on tty1, then, before rebooting:
+or install with the dialogs on tty1 (type 'install' there), then, before
+rebooting:
 
   qubes-guix-create --finish-install --run NAME
 
@@ -160,6 +166,52 @@ format of dom0/qubes-guix-substitutes."
                                                         (string-length key)))
                                 acc)
                           acc)))))))))
+
+(define %gate-text "
+  qubes-guix installer
+
+  Under Qubes, dom0 drives this installer over qrexec: in dom0,
+
+    qubes-guix-create --unattended NAME ISO_VM:ISO_PATH
+
+  installs it, with the progress in dom0's terminal. Nothing to do here.
+
+  For a manual install with the installer's dialogs instead, type
+  install  and Enter. (Not while an unattended install runs.)
+
+")
+
+;; tty1's login program: a notice, and the installer's dialogs (PROGRAM)
+;; only when asked for. The stock ISO starts them at once, which here would
+;; invite a manual install on top of dom0's.
+(define (installer-gate program)
+  (program-file
+   "qubes-installer-gate"
+   #~(begin
+       (use-modules (ice-9 rdelim))
+       (let loop ()
+         (display (string (integer->char 27) #\[ #\H
+                          (integer->char 27) #\[ #\2 #\J))
+         (display #$%gate-text)
+         (display "  > ")
+         (force-output)
+         (let ((line (read-line)))
+           (cond ((eof-object? line) (exit 0))
+                 ((string=? (string-trim-both line) "install")
+                  (execl #$program #$program))
+                 (else (loop))))))))
+
+;; The installer's dialogs run as kmscon's login program on tty1.
+(define (gate-installer services)
+  (define vt (@@ (gnu services base) kmscon-configuration-virtual-terminal))
+  (define login (@@ (gnu services base) kmscon-configuration-login-program))
+  (modify-services services
+    (kmscon-service-type
+     config => (if (equal? (vt config) "tty1")
+                   (kmscon-configuration
+                    (inherit config)
+                    (login-program (installer-gate (login config))))
+                   config))))
 
 (define* (qubes-installation-os #:key
                                 (branch "main")
@@ -199,6 +251,7 @@ installed system (and locks it to the ISO's commits)."
     (operating-system
       (inherit base)
       (services
+       (gate-installer
        (append
         (list
          (simple-service
@@ -235,4 +288,4 @@ installed system (and locks it to the ISO's commits)."
                   (cache-directory-service
                    (append (channel-checkouts) (authentication-cache))))
             '())
-        (operating-system-user-services base))))))
+        (operating-system-user-services base)))))))

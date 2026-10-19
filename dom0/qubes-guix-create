@@ -279,7 +279,7 @@ qube_net() {
 # Qubes GUI daemon ($ arrives as 4, | as \). Keep TEXT free of tabs (they'd
 # trigger completion) and of '!' (bash history expansion).
 type_into() {
-    local name=$1 text=$2 win
+    local name=$1 text=$2 win title
     if [ "$dry_run" = 1 ]; then
         echo "Dry run: would type into $name's console, after Ctrl+Alt+F3 and Enter:"
         printf '%s\n' "$text" | sed 's/^/  | /'
@@ -290,6 +290,13 @@ type_into() {
     echo "Click $name's console window (the cursor is a cross); then hands off"
     echo "keyboard and mouse until the typing stops."
     win=$(xdotool selectwindow) || die "no window selected"
+    # Only into NAME's window: what's typed is a root shell's commands, and
+    # the wrong click (a dom0 terminal, the desktop) would send them there.
+    title=$(xdotool getwindowname "$win" 2>/dev/null) || title=
+    case $title in
+        *"$name"*) ;;
+        *) die "the window clicked ('${title:-no title}') isn't $name's console: nothing typed";;
+    esac
     xdotool key --window "$win" ctrl+alt+F3
     sleep 1
     xdotool windowactivate --sync "$win"

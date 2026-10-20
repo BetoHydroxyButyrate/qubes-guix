@@ -17,7 +17,9 @@ set -euo pipefail
 TUNNEL_PORT=${TUNNEL_PORT:-2222}
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/qubes_ci_ed25519}
 
-ssh -i "$SSH_KEY" -o BatchMode=yes -o HostKeyAlias=qubes-ci-ctl -p "$TUNNEL_PORT" \
+# No host key check: see qubes-ci-run.sh
+ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -p "$TUNNEL_PORT" \
     user@127.0.0.1 "qrexec-client-vm dom0 ci.Dom0Shell" <<'EOF'
 set -e
 # USB sticks show up in sys-usb, not dom0

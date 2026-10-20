@@ -21,7 +21,9 @@ Gitea ──► act_runner (Debian LXC)  ◄──── reverse SSH tunnel ─�
 How it fits together:
 
 - **dom0 stays off the network.** A standalone qube, `ci-ctl`, dials out to
-  the runner and keeps a reverse SSH tunnel open. Nothing needs port
+  the runner and keeps a reverse SSH tunnel open. It's made from a Debian
+  template: Fedora templates enforce SELinux, which blocks the tunnel
+  service from running `ssh`. Nothing needs port
   forwarding through sys-net or sys-firewall.
 - **The runner reaches dom0 through ci-ctl.** It SSHes into ci-ctl over the
   tunnel. A qrexec policy lets ci-ctl, and only ci-ctl, call `ci.Dom0Shell`,
@@ -139,7 +141,7 @@ TUNNEL_PORT=2222
    The install then runs unattended and **wipes `$DISK`**. The kickstart
    only uses `$DISK`, so the sticks are left alone.
 5. **First boot:** the Qubes setup screen appears pre-filled from the
-   kickstart (templates, sys-net, sys-firewall, sys-usb). Press **F12**
+   kickstart (Fedora and Debian templates, Fedora as default, sys-net, sys-firewall, sys-usb). Press **F12**
    (Finish Configuration). Upstream's own OEM test also does this step by
    hand. As far as I can tell it can't be skipped through kickstart alone.
 6. After setup, `qubes-ci-firstboot.service` runs `qubes-ci-setup.sh` by

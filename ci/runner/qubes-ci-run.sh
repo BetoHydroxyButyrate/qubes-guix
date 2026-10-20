@@ -23,9 +23,12 @@ SYSTEM_TESTS=${SYSTEM_TESTS:-}
 CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-600}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
+# ci-ctl gets a new host key with every reinstall, so its key isn't checked:
+# 127.0.0.1:$TUNNEL_PORT can only be opened by the tunnel key (permitlisten
+# in the tunnel user's authorized_keys), which is what vouches for it.
 SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10
-          -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30
-          -o HostKeyAlias=qubes-ci-ctl)
+          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          -o LogLevel=ERROR -o ServerAliveInterval=30)
 ctl()  { ssh "${SSH_OPTS[@]}" -p "$TUNNEL_PORT" user@127.0.0.1 "$@"; }
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
 

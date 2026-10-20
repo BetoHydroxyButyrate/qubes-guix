@@ -23,6 +23,12 @@ PUBKEY_FILE=$3
 TUNNEL_KEY=${4:-}
 TUNNEL_PORT=${TUNNEL_PORT:-2222}
 CTL=ci-ctl
+# ci-ctl is made from a Debian template: Fedora templates run SELinux
+# enforcing, which stops a systemd service from running /usr/bin/ssh.
+# CTL_TEMPLATE overrides; default: the newest installed debian-* template.
+CTL_TEMPLATE=${CTL_TEMPLATE:-$(qvm-ls --raw-data --fields NAME,CLASS |
+    awk -F'|' '$2 == "TemplateVM" && $1 ~ /^debian-[0-9]+/ {print $1}' | sort -V | tail -n1)}
+[ -n "$CTL_TEMPLATE" ] || { echo "no Debian template installed: qvm-template install debian-13-xfce (or set CTL_TEMPLATE)"; exit 1; }
 CI_USER=$(getent group qubes | cut -d: -f4 | cut -d, -f1)
 [ -n "$CI_USER" ] || { echo "cannot find the Qubes desktop user"; exit 1; }
 
@@ -57,8 +63,7 @@ sudo -u "$CI_USER" xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/i
 
 # --- ci-ctl: a standalone qube (so installed packages persist), autostarted
 if ! qvm-check -q "$CTL" 2>/dev/null; then
-    qvm-create --class StandaloneVM --template "$(qubes-prefs default_template)" \
-        --label black "$CTL"
+    qvm-create --class StandaloneVM --template "$CTL_TEMPLATE" --label black "$CTL"
 fi
 qvm-prefs "$CTL" autostart True
 qvm-prefs "$CTL" netvm "$(qubes-prefs default_netvm)"

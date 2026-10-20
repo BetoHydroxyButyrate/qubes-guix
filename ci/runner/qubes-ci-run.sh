@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Runs on the CI runner. Reaches the Qubes CI machine through the reverse
 # SSH tunnel that its ci-ctl qube keeps open, copies the payload in, runs
 # the tests in dom0 (via the ci.Dom0Shell qrexec service) and fetches results.

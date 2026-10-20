@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # One-time setup of a DEDICATED bare-metal Qubes OS 4.3 CI machine.
 #
 # Creates a "ci-ctl" qube that keeps a reverse SSH tunnel open to the CI

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Runs in dom0, in ~/ci-run (pulled there from ci-ctl by qubes-ci-run.sh).
 # Cleans up after the previous run, installs any template RPMs, runs the
 # Qubes integration tests against them, then the project's own dom0-tests.sh.

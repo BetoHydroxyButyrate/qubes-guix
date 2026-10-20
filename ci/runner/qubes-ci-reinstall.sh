@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Makes the Qubes CI machine reinstall itself from the OEM USB stick.
 #
 # Removes Qubes' bootloader from the internal disk's EFI system partition and

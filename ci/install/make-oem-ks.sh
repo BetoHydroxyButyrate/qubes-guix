@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Writes a kickstart file for an unattended Qubes OS 4.3 install of the CI
 # machine, with the CI setup (ci/dom0/qubes-ci-setup.sh) run automatically on
 # first boot.

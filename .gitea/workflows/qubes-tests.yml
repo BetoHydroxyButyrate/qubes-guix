@@ -3,9 +3,9 @@
 # (qubes-guix-create --unattended --template --test) and smoke-tests it
 # (qubes-guix-test).
 #
-# Needs an act_runner with the label "qubes:host" and capacity 1, on an
-# x86_64 Guix machine (it builds the ISO) that ci-ctl's reverse tunnel
-# connects to. See ci/README.md.
+# Needs an act_runner with the label "qubes:host" and capacity 1, on the
+# machine ci-ctl's reverse tunnel connects to, with SSH access to the Guix
+# build host (guix-subs), where the ISO is built. See ci/README.md.
 name: qubes-tests
 
 on:
@@ -39,12 +39,9 @@ jobs:
           done
           echo "the mirror doesn't have $GITHUB_SHA on $GITHUB_REF_NAME after 10 min; trying anyway"
 
-      - name: Build the installer ISO
+      - name: Build the installer ISO on guix-subs
         run: |
-          mkdir -p ci-payload
-          server=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' dom0/qubes-guix-substitutes | head -n1)
-          iso/qubes-guix-iso -b "$GITHUB_REF_NAME" --qubes-commit "$GITHUB_SHA" \
-            ${server:+--server "$server"} -o ci-payload/qubes-guix-installer.iso
+          ci/runner/build-iso-remote.sh "$GITHUB_REF_NAME" "$GITHUB_SHA" ci-payload/qubes-guix-installer.iso
           cp -r dom0 ci-payload/
           cp ci/dom0-tests.sh ci-payload/ 2>/dev/null || true
 

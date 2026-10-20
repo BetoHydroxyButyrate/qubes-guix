@@ -3,14 +3,16 @@
 A dedicated Intel NUC (NUC10FNH) runs Qubes OS 4.3. On every push to
 `main`, Gitea Actions:
 
-1. builds the qubes-guix installer ISO at that commit (`iso/qubes-guix-iso`);
+1. builds the qubes-guix installer ISO at that commit on guix-subs
+   (`iso/qubes-guix-iso`, driven over SSH);
 2. on the NUC, installs a Guix template from it with `dom0/qubes-guix-create
    --unattended --template --test`, which also runs `qubes-guix-test`;
 3. optionally runs Qubes' own integration test modules against the template;
 4. collects the results.
 
 ```
-Gitea ──► act_runner (Guix runner, LAN)  ◄──── reverse SSH tunnel ────┐
+Gitea ──► act_runner (Debian LXC)  ◄──── reverse SSH tunnel ─────────┐
+             │ ssh guix-subs: build the ISO, copy it back             │
              │ ssh -p 2222 127.0.0.1                                  │
              └──────────────► ci-ctl qube ── qrexec ci.Dom0Shell ──► dom0
                               (on the NUC, behind sys-firewall)        runs tests
@@ -37,6 +39,7 @@ on the first run.
 | `install/make-oem-ks.sh` | your workstation | writes the kickstart file for an unattended reinstall |
 | `dom0/qubes-ci-setup.sh` | dom0, once | sets up ci-ctl, the tunnel, the qrexec service and policy, autologin, nose2 |
 | `dom0/run-in-dom0.sh` | dom0, each run | cleans up after the last run, installs templates, runs tests |
+| `runner/build-iso-remote.sh` | runner, each run | syncs guix-subs, builds the ISO there at the pushed commit, copies it back |
 | `runner/qubes-ci-run.sh` | runner, each run | stages the payload in ci-ctl, runs dom0's part, fetches results |
 | `runner/qubes-ci-reinstall.sh` | runner, on demand | wipes the NUC's bootloader and reboots it into the OEM installer |
 | `../.gitea/workflows/qubes-tests.yml` | Gitea | the workflow |
@@ -57,36 +60,60 @@ to sys-usb as usual. With working VT-d nothing special is needed.
 
 ## 2. The runner host
 
-The runner builds the ISO, so it must be an always-on **x86_64 Guix**
-machine on the LAN. Your substitute server (guix-subs) is the natural
-choice: the ISO's packages are its own builds. The NUC dials *in* to it, so
-it needs a stable address and an SSH server.
+A small always-on Linux machine on the LAN, e.g. a Debian trixie LXC on
+Proxmox. It doesn't build anything itself: the ISO is built on guix-subs
+over SSH. The NUC dials *in* to the runner, so the runner needs a stable
+address and an SSH server.
 
-The CI job's user needs `git`, `openssh` and `node` in its profile
-(`guix install git openssh node`). Node is needed by `actions/checkout` and
-`upload-artifact` in host mode. On it:
+**On the runner:**
 
 ```sh
-# the user the CI job runs as: its key logs in to ci-ctl
+apt install -y git openssh-server openssh-client nodejs   # node: actions/checkout and upload-artifact
+
+# as the user act_runner runs as: this key logs in to ci-ctl and to guix-subs
 ssh-keygen -t ed25519 -N '' -f ~/.ssh/qubes_ci_ed25519
+ssh -i ~/.ssh/qubes_ci_ed25519 guix-subs true     # once, to accept its host key
 
+# the user ci-ctl's tunnel logs in as: may only open the 2222 listener
+useradd -m -s /usr/sbin/nologin qubesci-tunnel
+install -d -m 700 -o qubesci-tunnel -g qubesci-tunnel ~qubesci-tunnel/.ssh
 ```
 
-**The tunnel user.** ci-ctl's tunnel logs in as `qubesci-tunnel`, which may
-only open the 2222 listener. On Guix System, declare it in the system config
-and reconfigure:
+The line for `~qubesci-tunnel/.ssh/authorized_keys` comes from step 3. The
+`restrict` and `permitlisten` options in that line do the locking down.
 
-```scheme
-(user-account
-  (name "qubesci-tunnel") (group "users")
-  (home-directory "/home/qubesci-tunnel")
-  (shell (file-append shadow "/sbin/nologin")))
+**On guix-subs**, as the user the runner SSHes in as:
+
+- **Key:** add the runner's `qubes_ci_ed25519.pub` to its
+  `~/.ssh/authorized_keys`.
+- **Checkout:** `~/proj/qubes-guix` (a clone from GitHub) is used as is. The
+  build only fetches into it and works in a throwaway git worktree under
+  `~/ci-iso/`, so the checkout's branch and any local work are untouched.
+- **Sudo:** before building, the runner brings the server up to date with
+  its own build:
+  `sudo -n /etc/guix-subs/build-qubes.sh 2>&1 | sudo -n tee -a /var/log/qubes-builds.log`.
+  That needs passwordless sudo for exactly those two commands. In its
+  `operating-system`, using your user name:
+
+  ```scheme
+  (sudoers-file
+   (plain-file "sudoers"
+     (string-append (plain-file-content %sudoers-specification)
+       "beto ALL=(root) NOPASSWD: /etc/guix-subs/build-qubes.sh, "
+       "/run/current-system/profile/bin/tee -a /var/log/qubes-builds.log\n")))
+  ```
+
+  Or set `ISO_SYNC_CMD` to something else, or to empty to skip this step
+  (see below).
+
+**`/etc/qubes-ci/runner.env`** on the runner (all optional; these are the
+defaults):
+
+```sh
+ISO_HOST=guix-subs              # or user@guix-subs.lan
+ISO_DIR=proj/qubes-guix
+TUNNEL_PORT=2222
 ```
-
-You also need an `openssh-service-type`. Then create
-`~qubesci-tunnel/.ssh/authorized_keys` (mode 600, owned by
-`qubesci-tunnel`) with the line from step 3. The `restrict` and
-`permitlisten` options in that line do the locking down.
 
 ## 3. Install Qubes on the NUC
 
@@ -142,14 +169,25 @@ Download `act_runner` from Gitea's releases onto the runner host, as the CI
 user from step 2. Then:
 
 ```sh
-./act_runner generate-config > config.yaml     # set runner.capacity: 1
+./act_runner generate-config > config.yaml
 ./act_runner register --instance https://gitea.lan --token <token> --labels qubes:host --no-interactive
 ./act_runner daemon --config config.yaml       # make it a systemd service once it works
 ```
 
 Get the token from Repo Settings → Actions → Runners. Actions must also be
-enabled for the repo. `act_runner` is a static binary, so it runs on Guix
-as-is.
+enabled for the repo.
+
+**No Docker needed.** `qubes:host` jobs run directly on the runner. The
+daemon only wants Docker if it has a `docker://` label, and the generated
+defaults are docker labels. Set this in `config.yaml`, which overrides the
+labels saved at registration:
+
+```yaml
+runner:
+  capacity: 1
+  labels:
+    - "qubes:host"
+```
 
 **Smoke test without Gitea**, from a checkout on the runner. The first
 command checks the connection to dom0 without building anything:
@@ -157,20 +195,27 @@ command checks the connection to dom0 without building anything:
 ```sh
 mkdir -p /tmp/payload && ci/runner/qubes-ci-run.sh /tmp/payload /tmp/results
 
-iso/qubes-guix-iso -o /tmp/payload/qubes-guix-installer.iso && cp -r dom0 /tmp/payload/
-ci/runner/qubes-ci-run.sh /tmp/payload /tmp/results
+ci/runner/build-iso-remote.sh main "$(git rev-parse origin/main)" /tmp/payload/qubes-guix-installer.iso
+cp -r dom0 /tmp/payload/ && ci/runner/qubes-ci-run.sh /tmp/payload /tmp/results
 ```
 
-The second pair builds the ISO and runs the full install and test.
+The next two lines build the ISO on guix-subs and run the full install and
+test.
 
 ## What a run does
 
 1. **Waits for the mirror.** The ISO is built from the channel's public
    repository, so the workflow waits until the Gitea push mirror has the
    commit on GitHub.
-2. **Builds the ISO** with `iso/qubes-guix-iso -b BRANCH --qubes-commit SHA
-   --server <first url in dom0/qubes-guix-substitutes>`. qubes is at the
-   pushed commit; the other channels are at what the server last built.
+2. **Builds the ISO on guix-subs** (`runner/build-iso-remote.sh`):
+   - fetches the commit into `~/proj/qubes-guix`;
+   - runs `/etc/guix-subs/build-qubes.sh`, so the server's last-built
+     commits are at the head;
+   - in a worktree at that commit, runs `iso/qubes-guix-iso -b BRANCH
+     --qubes-commit SHA --server <first url in dom0/qubes-guix-substitutes>`.
+     qubes is exactly the pushed commit, and the other channels are at what
+     the server just built;
+   - copies the ISO back to the runner.
 3. **Assembles the payload:** the ISO plus the repo's `dom0/` directory
    (`qubes-guix-create`, `qubes-guix-test` and their package, channel and
    substitute files), and `ci/dom0-tests.sh` if you add one.

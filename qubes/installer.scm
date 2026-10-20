@@ -13,9 +13,10 @@
 ;;;   qube needs are in its store: qubes-guix-finish-install uses that Guix
 ;;;   directly, with nothing to build for the Qubes agents.
 ;;; The installer's own dialogs (on tty1) still work, for a manual install,
-;;; but only once asked for: tty1 first says that dom0 drives the install,
-;;; so nobody starts the dialogs by accident while an unattended install
-;;; runs (installer-gate).
+;;; but only once asked for: tty1 shows a monitor instead (tmux: htop, and
+;;; the network traffic per address), then a notice that dom0 drives the
+;;; install, so nobody starts the dialogs by accident while an unattended
+;;; install runs (installer-gate).
 ;;;
 ;;; Build it with iso/qubes-guix-iso (a Guix that includes this channel is
 ;;; what puts the channel into the ISO's guix), or by hand:
@@ -38,6 +39,8 @@
   #:use-module ((gnu services base)
                 #:select (kmscon-service-type kmscon-configuration))
   #:use-module ((gnu packages version-control) #:select (git))
+  #:use-module ((gnu packages) #:select (specification->package))
+  #:use-module ((gnu packages bash) #:select (bash-minimal))
   #:use-module ((gnu services desktop)
                 #:select (%desktop-services xfce-desktop-service-type))
   #:use-module (guix channels)
@@ -177,19 +180,41 @@ format of dom0/qubes-guix-substitutes."
 
   installs it, with the progress in dom0's terminal. Nothing to do here.
 
-  For a manual install with the installer's dialogs instead, type
-  install  and Enter. (Not while an unattended install runs.)
+  monitor  and Enter: back to the monitor (htop, and the network
+           traffic per address); Ctrl-b d leaves it again.
+  install  and Enter: a manual install with the installer's dialogs
+           instead. (Not while an unattended install runs.)
 
 ")
 
-;; tty1's login program: a notice, and the installer's dialogs (PROGRAM)
-;; only when asked for. The stock ISO starts them at once, which here would
-;; invite a manual install on top of dom0's.
+;; The monitor: a tmux session, htop above and qubes-guix-netacct's traffic
+;; per address below; detaching (C-b d) leaves it running. Its socket under
+;; /run: cow-store hides /tmp once an install starts.
+(define %monitor-session "qubes-guix")
+(define %netacct "/root/qubes-guix/guest/qubes-guix-netacct")
+
+;; tty1's login program: the monitor, then a notice, and the installer's
+;; dialogs (PROGRAM) only when asked for. The stock ISO starts them at once,
+;; which here would invite a manual install on top of dom0's.
 (define (installer-gate program)
+  (define tmux (file-append (specification->package "tmux") "/bin/tmux"))
+  (define htop (file-append (specification->package "htop") "/bin/htop"))
+  (define sh (file-append bash-minimal "/bin/sh"))
   (program-file
    "qubes-installer-gate"
    #~(begin
        (use-modules (ice-9 rdelim))
+       (setenv "PATH" "/run/current-system/profile/bin:/run/current-system/profile/sbin")
+       (setenv "TMUX_TMPDIR" "/run")
+       (define (monitor)
+         (if (zero? (system* #$tmux "has-session" "-t" #$%monitor-session))
+             (system* #$tmux "attach-session" "-t" #$%monitor-session)
+             (system* #$tmux "new-session" "-s" #$%monitor-session #$htop
+                      ";" "split-window" "-v" #$sh #$%netacct "watch"
+                      ";" "set-option" "status-right" "C-b d: leave the monitor "
+                      ";" "set-option" "status-right-length" "40"
+                      ";" "select-pane" "-t" "0")))
+       (monitor)
        (let loop ()
          (display (string (integer->char 27) #\[ #\H
                           (integer->char 27) #\[ #\2 #\J))
@@ -200,6 +225,9 @@ format of dom0/qubes-guix-substitutes."
            (cond ((eof-object? line) (exit 0))
                  ((string=? (string-trim-both line) "install")
                   (execl #$program #$program))
+                 ((string=? (string-trim-both line) "monitor")
+                  (monitor)
+                  (loop))
                  (else (loop))))))))
 
 ;; The installer's dialogs run as kmscon's login program on tty1.
@@ -237,8 +265,13 @@ installed system (and locks it to the ISO's commits)."
                           '("nomodeset")))
                  (issue (string-append (operating-system-issue installation-os)
                                        %issue-addition))
-                 (packages (cons git
-                                 (operating-system-packages installation-os))))
+                 ;; tmux, htop, nftables: the monitor on tty1, and the
+                 ;; traffic per address an install reports at its end.
+                 (packages (append (list git)
+                                   (map specification->package
+                                        '("tmux" "htop" "nftables"))
+                                   (operating-system-packages
+                                    installation-os))))
                #:config %installer-config
                #:channel-branch branch
                #:extra-substitute-urls

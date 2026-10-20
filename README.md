@@ -45,6 +45,7 @@ iso/qubes-guix-iso              build that ISO (on any x86_64 Guix)
 iso/qubes-guix-iso-remote       build it on another machine, from this checkout's HEAD
 dom0/qubes-guix-create          dom0: create the qube and boot the installer
 guest/qubes-guix-install        installer shell: unattended install (disk, config.scm, then finish-install)
+guest/qubes-guix-netacct        network traffic per remote address (nftables): start, report, watch
 guest/qubes-guix-finish-install installer, before the first reboot: config.scm + guix system init
 guest/qubes-guix-setup          guest: channel, guix pull, config.scm, reconfigure
 PORT-NOTES.md                   the porting log: every problem hit and why things are the way they are
@@ -154,7 +155,7 @@ Package fields (`qrexec`, `qubesdb`, `core-agent`, `gui-agent`, `ctap`) can be o
 - **No typing into the console:** dom0 drives the install with `qvm-run -u root`, and the output shows in the dom0 terminal.
 - **Nothing to build for the Qubes agents:** the ISO's `guix` already includes the qubes channel, and its store has the Qubes packages built by that Guix. `qubes-guix-finish-install` uses that Guix directly, instead of `guix time-machine`.
 
-The guest scripts are on the ISO, in `/root/qubes-guix/guest`, and so is git. The installer's own dialogs (tty1) still work for a manual install.
+The guest scripts are on the ISO, in `/root/qubes-guix/guest`, and so is git. The installer's console window (tty1) shows a monitor while it works: tmux with `htop` above and the network traffic per remote address below (`qubes-guix-netacct watch`). Ctrl-b d leaves it for a notice, where `monitor` goes back and `install` starts the installer's own dialogs for a manual install. At the end of an unattended install, or when it stops early, the traffic per address is reported in dom0's terminal; with the stock ISO too (it fetches `nftables` first).
 
 Build it on an x86_64 Guix, such as a Guix qube or your substitute server:
 

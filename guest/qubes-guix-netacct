@@ -1,0 +1,110 @@
+#!/bin/sh
+# qubes-guix-netacct — bytes received and sent per remote IP address, as
+# root, with nftables: an 'inet qgacct' table whose sets count every packet
+# in and out by address (so it costs nothing to leave running).
+#
+#   qubes-guix-netacct start         create the table (if it isn't there)
+#   qubes-guix-netacct report [N]    the N busiest addresses (default 20)
+#   qubes-guix-netacct watch [SECS]  report every SECS seconds (default 2)
+#   qubes-guix-netacct stop          remove the table
+#
+# The qubes-guix installer starts it at boot (the monitor on VT1), and
+# qubes-guix-install reports at the end of an install. nft: from PATH, else
+# through 'guix shell nftables' (slower: fine for start and report).
+
+set -eu
+prog=${0##*/}
+fam=inet name=qgacct
+
+if command -v nft >/dev/null 2>&1; then
+    nft() { command nft "$@"; }
+elif command -v guix >/dev/null 2>&1; then
+    nft() { guix shell -q nftables -- nft "$@"; }
+else
+    echo "$prog: no nft (nftables), and no guix to get it" >&2
+    exit 1
+fi
+
+start() {
+    nft list table "$fam" "$name" >/dev/null 2>&1 && return 0
+    nft -f - <<'EOF'
+table inet qgacct {
+    set rx4 { type ipv4_addr; size 65535; flags dynamic; counter; }
+    set tx4 { type ipv4_addr; size 65535; flags dynamic; counter; }
+    set rx6 { type ipv6_addr; size 65535; flags dynamic; counter; }
+    set tx6 { type ipv6_addr; size 65535; flags dynamic; counter; }
+    chain in {
+        type filter hook input priority -300; policy accept;
+        update @rx4 { ip saddr }
+        update @rx6 { ip6 saddr }
+    }
+    chain out {
+        type filter hook output priority -300; policy accept;
+        update @tx4 { ip daddr }
+        update @tx6 { ip6 daddr }
+    }
+}
+EOF
+}
+
+# The sets as "DIRECTION ADDRESS BYTES" lines.
+counts() {
+    for set in rx4 tx4 rx6 tx6; do
+        nft list set "$fam" "$name" "$set" 2>/dev/null |
+            tr ',{}=\n\t' '      ' |
+            awk -v dir="${set%?}" '{
+                for (i = 1; i <= NF; i++)
+                    if ($(i + 1) == "counter" && $(i + 4) == "bytes")
+                        print dir, $i, $(i + 5)
+            }'
+    done
+}
+
+report() {
+    n=${1:-20}
+    nft list table "$fam" "$name" >/dev/null 2>&1 ||
+        { echo "$prog: not counting (no $fam $name table; '$prog start')"; return 0; }
+    counts | awk -v n="$n" '
+        function human(b) {
+            b += 0
+            if (b >= 1073741824) return sprintf("%.1f GiB", b / 1073741824)
+            if (b >= 1048576)    return sprintf("%.1f MiB", b / 1048576)
+            if (b >= 1024)       return sprintf("%.1f KiB", b / 1024)
+            return b " B"
+        }
+        { if ($1 == "rx") rx[$2] += $3; else tx[$2] += $3; seen[$2] = 1 }
+        END {
+            for (a in seen) { tot[a] = rx[a] + tx[a]; trx += rx[a]; ttx += tx[a] }
+            printf "%12s %12s  %s\n", "received", "sent", "address"
+            k = 0
+            while (k < n) {
+                best = ""
+                for (a in tot) if (best == "" || tot[a] > tot[best]) best = a
+                if (best == "") break
+                printf "%12s %12s  %s\n", human(rx[best]), human(tx[best]), best
+                delete tot[best]; k++
+            }
+            left = 0; for (a in tot) left++
+            if (left) printf "%27s  (%d more)\n", "", left
+            printf "%12s %12s  total\n", human(trx), human(ttx)
+        }'
+}
+
+case ${1:-} in
+    start) start;;
+    report) report "${2:-20}";;
+    watch)
+        start
+        secs=${2:-2}
+        while :; do
+            rows=$(stty size 2>/dev/null | cut -d' ' -f1)
+            case $rows in ''|*[!0-9]*) rows=24;; esac
+            [ "$rows" -gt 10 ] || rows=10
+            out=$(report $((rows - 5)))
+            printf '\033[H\033[2J%s  per-address traffic (every %ss)\n\n%s\n' \
+                "$(date +%T)" "$secs" "$out"
+            sleep "$secs"
+        done;;
+    stop) nft delete table "$fam" "$name" 2>/dev/null || true;;
+    *) sed -n '2,/^$/s/^# \{0,1\}//p' "$0" >&2; exit 2;;
+esac

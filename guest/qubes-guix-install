@@ -109,6 +109,23 @@ case $hash in
     *) die "--password-hash wants a crypt(3) hash (\$6\$...), not a password";;
 esac
 
+# The network traffic per remote address (qubes-guix-netacct, nftables),
+# reported at the end, or when the install stops early. The qubes-guix
+# installer counts from its boot (its monitor on tty1 starts it).
+netacct=0
+netacct_report() {
+    [ "$netacct" = 1 ] || return 0
+    netacct=0
+    say "Network traffic during the install, per address"
+    sh "$here/qubes-guix-netacct" report 25 || true
+}
+if [ -f "$here/qubes-guix-netacct" ] && sh "$here/qubes-guix-netacct" start; then
+    netacct=1
+    trap netacct_report EXIT
+else
+    echo "$prog: note: not counting the network traffic (no nftables?)" >&2
+fi
+
 ping -c1 -W5 bordeaux.guix.gnu.org >/dev/null 2>&1 ||
     getent hosts bordeaux.guix.gnu.org >/dev/null 2>&1 ||
     echo "$prog: warning: no network? (guix needs it: substitutes, the channel)" >&2
@@ -228,6 +245,7 @@ if [ -n "$hash" ]; then
     } > "$target/etc/shadow"
 fi
 
+netacct_report
 sync
 if [ "$poweroff" = 1 ]; then
     say "Installed. Powering off."

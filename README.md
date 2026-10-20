@@ -46,6 +46,7 @@ iso/qubes-guix-iso-remote       build it on another machine, from this checkout'
 dom0/qubes-guix-create          dom0: create the qube and boot the installer
 guest/qubes-guix-install        installer shell: unattended install (disk, config.scm, then finish-install)
 guest/qubes-guix-netacct        network traffic per remote address (nftables): start, report, watch
+guest/qubes-guix-pv-store       installer: read the store from the ISO as a PV disk, not the emulated CD
 guest/qubes-guix-finish-install installer, before the first reboot: config.scm + guix system init
 guest/qubes-guix-setup          guest: channel, guix pull, config.scm, reconfigure
 PORT-NOTES.md                   the porting log: every problem hit and why things are the way they are
@@ -156,6 +157,8 @@ Package fields (`qrexec`, `qubesdb`, `core-agent`, `gui-agent`, `ctap`) can be o
 - **Nothing to build for the Qubes agents:** the ISO's `guix` already includes the qubes channel, and its store has the Qubes packages built by that Guix. `qubes-guix-finish-install` uses that Guix directly, instead of `guix time-machine`.
 
 The guest scripts are on the ISO, in `/root/qubes-guix/guest`, and so is git. The installer's console window (tty1) shows a monitor while it works: tmux with `htop` above and the network traffic per remote address below (`qubes-guix-netacct watch`). Ctrl-b d leaves it for a notice, where `monitor` goes back and `install` starts the installer's own dialogs for a manual install. At the end of an unattended install, or when it stops early, the traffic per address is reported in dom0's terminal; with the stock ISO too (it fetches `nftables` first).
+
+The installer boots from the ISO as an emulated CD (QEMU's IDE, in the qube's stub domain), and reads its store through it. Installing from a 3.3 GiB ISO, stretches of that CD came back wrong, whether the ISO was in another qube or in dom0, and the copy to the new system failed or would have been corrupt. So `qubes-guix-create --unattended NAME ISO_VM:ISO_PATH` also attaches the same ISO, read-only, as a Xen PV disk, and the install (`qubes-guix-pv-store`) reads the store from that instead, bound over `/gnu/store` before anything is copied. `--unattended NAME` alone doesn't know where the ISO is, so it keeps the CD. Either way, `qubes-guix-finish-install` checks every copied item against the installer's own hashes and stops if one differs.
 
 Build it on an x86_64 Guix, such as a Guix qube or your substitute server:
 

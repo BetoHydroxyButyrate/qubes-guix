@@ -530,6 +530,74 @@ guest_repo_lines() {
     printf '%s\n' "[ -f $d/guest/qubes-guix-install ] || { echo \"$d/guest is missing: is $name running the qubes-guix installer ISO?\" >&2; exit 1; }"
 }
 
+# The ISO again, as a read-only PV disk of the installer qube $1: reads
+# through the emulated CD (QEMU's IDE, in the stub domain) have come back
+# wrong, from an ISO in a qube and in dom0 alike, and broke installs.
+# qubes-guix-install (guest/qubes-guix-pv-store) then reads the store from
+# this disk instead. A second loop device on the same file, in the qube (or
+# dom0) holding it: the CD's own is taken. Needs ISO_VM:ISO_PATH (not known
+# for '--unattended NAME' alone: then the CD stays in use). pv_detach undoes
+# it.
+pv_backend='' pv_loop=''
+pv_attach() {
+    local name=$1 loop='' dev
+    if [ -z "${iso_vm:-}" ] || [ -z "${iso_path:-}" ]; then
+        echo "$prog: note: the ISO's location isn't known here, so the install reads its"
+        echo "store from the emulated CD (give NAME ISO_VM:ISO_PATH to avoid that)."
+        return 0
+    fi
+    if [ "$dry_run" = 1 ]; then
+        echo "(dry run: would attach $iso_vm:$iso_path to $name again, read-only, as a PV disk)"
+        return 0
+    fi
+    if [ "$iso_vm" = dom0 ]; then
+        if [ "$(id -u)" = 0 ]; then
+            loop=$(losetup -r -f --show "$iso_path" 2>/dev/null) || loop=
+        else
+            loop=$(sudo losetup -r -f --show "$iso_path" 2>/dev/null) || loop=
+        fi
+    else
+        loop=$(qvm-run -q -u root --pass-io --no-gui "$iso_vm" \
+                   "losetup -r -f --show '$iso_path'" </dev/null 2>/dev/null) || loop=
+    fi
+    case $loop in
+        /dev/loop[0-9]*) ;;
+        *) echo "$prog: note: couldn't make a loop device for the ISO in $iso_vm; the"
+           echo "install reads its store from the emulated CD."
+           return 0;;
+    esac
+    pv_backend=$iso_vm pv_loop=${loop#/dev/}
+    dev=$pv_backend:$pv_loop
+    # dom0 lists it once the backend's udev has announced it.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        qvm-block list 2>/dev/null | awk -v d="$dev" '$1 == d {f = 1} END {exit !f}' && break
+        sleep 1
+    done
+    if qvm-block attach --ro "$name" "$dev"; then
+        echo "Attached the ISO to $name again as a PV disk ($dev, read-only): the install"
+        echo "reads its store from that rather than the emulated CD."
+    else
+        echo "$prog: note: couldn't attach $dev to $name; the install reads its store"
+        echo "from the emulated CD."
+        pv_detach "$name"
+    fi
+}
+pv_detach() {
+    [ -n "$pv_loop" ] || return 0
+    qvm-block detach "$1" "$pv_backend:$pv_loop" >/dev/null 2>&1 || true
+    if [ "$pv_backend" = dom0 ]; then
+        if [ "$(id -u)" = 0 ]; then
+            losetup -d "/dev/$pv_loop" 2>/dev/null || true
+        else
+            sudo losetup -d "/dev/$pv_loop" 2>/dev/null || true
+        fi
+    else
+        qvm-run -q -u root --no-gui "$pv_backend" "losetup -d /dev/$pv_loop" \
+            </dev/null >/dev/null 2>&1 || true
+    fi
+    pv_loop=
+}
+
 # Run CMD (shell lines) as root in qube NAME over qrexec, detached from this
 # terminal (an install outlives a closed dom0 window), and follow its log
 # here. PRELUDE runs first, in the foreground: it writes the files CMD
@@ -853,12 +921,14 @@ unattended() {
         echo "$name runs the qubes-guix installer: installing over qrexec $what."
         echo "It partitions /dev/xvda, writes config.scm and runs guix system init"
         echo "with the ISO's Guix (its Qubes packages are prebuilt), then powers off."
+        pv_attach "$name"
         qrexec_job "$name" qubes-guix-install \
             "$(guest_repo_lines)
 $ch_lines
 $su_lines" \
             "$(guest_branch_lines)
 sh $d/guest/qubes-guix-install $iargs -b \"\$B\"" 1
+        pv_detach "$name"
         if [ "$dry_run" = 1 ]; then
             echo "(dry run: would then start $name from its disk$( [ "$first_update" = 1 ] && echo ", run qubes-guix-update -r in it"))"
             return 0
@@ -1057,6 +1127,7 @@ fi
 created=0
 cleanup() {
     status=$?
+    pv_detach "$name"
     if [ $status -ne 0 ] && [ "$created" = 1 ] && [ "$dry_run" = 0 ]; then
         echo "$prog: failed; removing the half-made qube '$name'" >&2
         qvm-kill "$name" >/dev/null 2>&1 || true

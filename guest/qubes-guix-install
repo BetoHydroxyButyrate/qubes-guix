@@ -130,6 +130,11 @@ ping -c1 -W5 bordeaux.guix.gnu.org >/dev/null 2>&1 ||
     getent hosts bordeaux.guix.gnu.org >/dev/null 2>&1 ||
     echo "$prog: warning: no network? (guix needs it: substitutes, the channel)" >&2
 
+# The store from the ISO's PV disk rather than the emulated CD, if dom0
+# attached one (qubes-guix-create): reads through the CD have come back
+# wrong. Before cow-store starts (in step 3), which restarts guix-daemon.
+[ -f "$here/qubes-guix-pv-store" ] && sh "$here/qubes-guix-pv-store"
+
 # --- 1. disk ----------------------------------------------------------------
 
 # A previous run that got this far but failed later (e.g. in 'guix system

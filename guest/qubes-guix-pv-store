@@ -1,0 +1,63 @@
+#!/bin/sh
+# qubes-guix-pv-store — in the qubes-guix installer, as root, before an
+# install: read the store from the ISO attached as a Xen PV disk instead of
+# the emulated CD.
+#
+# The installer boots from the ISO as an HVM's emulated CD (QEMU's IDE, in
+# the stub domain), and reads its whole store through it. Installing from a
+# 3.3 GiB ISO, stretches of that CD above ~2.4 GiB came back wrong (and so
+# did files copied from them), from an ISO in another qube and from one in
+# dom0 alike. qubes-guix-create therefore also attaches the same ISO,
+# read-only, as a PV disk (blkfront: no QEMU). This finds it (an iso9660
+# disk the size of the CD), mounts it, and binds its /gnu/store over
+# /gnu/store: the same files, so nothing running notices, but every later
+# read goes through the PV disk.
+#
+# It does nothing (and says why) when there's no such disk, or when the
+# store already holds items that aren't on the ISO (they'd be hidden), or
+# once cow-store is up: then the CD stays in use. Run it before cow-store
+# starts: cow-store restarts guix-daemon, which then sees this store too.
+
+set -u
+prog=${0##*/}
+mnt=/run/qubes-guix-iso
+
+note() { echo "$prog: $*; reading the store from the emulated CD" >&2; exit 0; }
+
+[ "$(id -u)" -eq 0 ] || note "not root"
+# /gnu/store is a mount point anyway (Guix's read-only bind of the store);
+# cow-store's overlay (an install already under way) or our own bind are
+# what to look for.
+findmnt -n -o SOURCE /gnu/store 2>/dev/null | grep -q '^/dev/xvd' &&
+    { echo "$prog: the store is already read from the PV disk"; exit 0; }
+findmnt -n -o OPTIONS /gnu/store 2>/dev/null | grep -q guix-inst &&
+    note "cow-store is already up (an install under way)"
+cd_dev=/dev/sr0
+[ -b "$cd_dev" ] || note "no $cd_dev"
+size=$(blockdev --getsize64 "$cd_dev" 2>/dev/null) || note "can't read $cd_dev's size"
+
+pv=
+for b in /sys/block/xvd*; do
+    [ -e "$b" ] || continue
+    dev=/dev/${b##*/}
+    [ "$(blockdev --getsize64 "$dev" 2>/dev/null)" = "$size" ] || continue
+    [ "$(blkid -o value -s TYPE "$dev" 2>/dev/null)" = iso9660 ] || continue
+    pv=$dev
+done
+[ -n "$pv" ] || note "no PV disk holding the ISO (attached by qubes-guix-create)"
+
+# The same ISO? Its volume descriptors (the first 64 KiB after the 32 KiB
+# system area) say which image it is.
+cmp -s -n 98304 "$cd_dev" "$pv" || note "$pv isn't the same image as $cd_dev"
+
+mkdir -p "$mnt"
+mountpoint -q "$mnt" || mount -o ro -t iso9660 "$pv" "$mnt" || note "couldn't mount $pv"
+[ -d "$mnt/gnu/store" ] || { umount "$mnt"; note "$pv has no /gnu/store"; }
+
+# Nothing in the store beyond the ISO's (a bind mount would hide it).
+here=$(ls /gnu/store | wc -l) there=$(ls "$mnt/gnu/store" | wc -l)
+[ "$here" = "$there" ] ||
+    { umount "$mnt"; note "the store has items the ISO hasn't ($here vs $there)"; }
+
+mount --bind "$mnt/gnu/store" /gnu/store || { umount "$mnt"; note "bind mount failed"; }
+echo "$prog: reading the store from $pv (the ISO as a PV disk), not the emulated CD"

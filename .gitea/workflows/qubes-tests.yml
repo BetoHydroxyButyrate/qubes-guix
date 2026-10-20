@@ -1,17 +1,21 @@
-# Runs the Qubes integration tests on the bare-metal Qubes CI machine.
-# Needs an act_runner with the label "qubes:host" and capacity 1, on the
-# machine ci-ctl's reverse tunnel connects to. See ci/README.md.
+# Builds the qubes-guix installer ISO at the pushed commit, then on the
+# bare-metal Qubes CI machine installs a Guix template from it
+# (qubes-guix-create --unattended --template --test) and smoke-tests it
+# (qubes-guix-test).
+#
+# Needs an act_runner with the label "qubes:host" and capacity 1, on an
+# x86_64 Guix machine (it builds the ISO) that ci-ctl's reverse tunnel
+# connects to. See ci/README.md.
 name: qubes-tests
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
     inputs:
       system_tests:
-        description: "Qubes test modules (module[:timeout] ...)"
-        default: "qubes.tests.integ.basic qubes.tests.integ.vm_qrexec_gui:14400"
+        description: "Also run these Qubes test modules on the template (module[:timeout] ...)"
+        default: ""
 
 concurrency:
   group: qubes-ci-machine
@@ -20,23 +24,33 @@ concurrency:
 jobs:
   qubes:
     runs-on: qubes
-    timeout-minutes: 600
+    timeout-minutes: 720
     steps:
       - uses: actions/checkout@v4
 
-      # REPLACE: however qubes-guix produces its template RPM(s).
-      # Everything put in ci-payload/ is copied into dom0:
-      #   *.rpm          installed with qvm-template and tested
-      #   dom0-tests.sh  run in dom0 after the Qubes test modules (optional)
-      - name: Build payload
+      # The ISO is built from the channel's public repository (GitHub), so
+      # wait for the Gitea push mirror to get this commit there.
+      - name: Wait for the mirror
+        run: |
+          url=$(sed -n 's/.*(url "\(.*\)").*/\1/p' guest/channels.scm.txt | head -n1)
+          for _ in $(seq 60); do
+            [ "$(git ls-remote "$url" "refs/heads/$GITHUB_REF_NAME" | cut -f1)" = "$GITHUB_SHA" ] && exit 0
+            sleep 10
+          done
+          echo "the mirror doesn't have $GITHUB_SHA on $GITHUB_REF_NAME after 10 min; trying anyway"
+
+      - name: Build the installer ISO
         run: |
           mkdir -p ci-payload
-          make template-rpm OUT=ci-payload
+          server=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' dom0/qubes-guix-substitutes | head -n1)
+          iso/qubes-guix-iso -b "$GITHUB_REF_NAME" --qubes-commit "$GITHUB_SHA" \
+            ${server:+--server "$server"} -o ci-payload/qubes-guix-installer.iso
+          cp -r dom0 ci-payload/
           cp ci/dom0-tests.sh ci-payload/ 2>/dev/null || true
 
-      - name: Run tests on the Qubes machine
+      - name: Install and test on the Qubes machine
         env:
-          SYSTEM_TESTS: ${{ inputs.system_tests || 'qubes.tests.integ.basic qubes.tests.integ.vm_qrexec_gui:14400' }}
+          SYSTEM_TESTS: ${{ inputs.system_tests }}
         run: ci/runner/qubes-ci-run.sh ci-payload qubes-results
 
       - name: Keep results

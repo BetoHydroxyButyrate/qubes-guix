@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
 # Runs in dom0, in ~/ci-run (pulled there from ci-ctl by qubes-ci-run.sh).
-# Cleans up after the previous run, installs any template RPMs, runs the
-# Qubes integration tests against them, then the project's own dom0-tests.sh.
+# Cleans up after the previous run, then, from what the payload holds:
+#   *.iso + dom0/   qubes-guix: installs the Guix template $CI_QUBE from the
+#                   installer ISO with dom0/qubes-guix-create --unattended
+#                   --template --test (which also runs qubes-guix-test)
+#   *.rpm           installs these templates with qvm-template
+# then runs the Qubes integration test modules against the installed
+# templates, then the project's own dom0-tests.sh.
 #
-# Env: SYSTEM_TESTS  space-separated "module[:timeout-seconds]" list
+# Env: CI_QUBE       name of the Guix template made from the ISO (ci-guix)
+#      SYSTEM_TESTS  space-separated "module[:timeout-seconds]" list
 #      TEST_TEMPLATES  templates to test; defaults to the ones installed here
 set -uo pipefail
 cd "$(dirname "$0")"
 mkdir -p results
 export DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority
 STATE=$HOME/.qubes-ci-templates
+CI_QUBE=${CI_QUBE:-ci-guix}
 failed=0
 
 # --- leftovers from the previous run
-for vm in $(qvm-ls --raw-list | grep -E '^test-(inst|cls)-'); do
+# AppVMs first (test-guix-* are qubes-guix-test's), then the template.
+for vm in $(qvm-ls --raw-list | grep -E '^test-(inst|cls|guix)-') \
+          $(qvm-check -q "$CI_QUBE" 2>/dev/null && echo "$CI_QUBE"); do
     echo "==> removing leftover $vm"
     qvm-kill "$vm" 2>/dev/null
     qvm-remove -f "$vm"
@@ -38,6 +47,18 @@ for rpm in ./*.rpm; do
     echo "$name" >>"$STATE"
     templates+=("$name")
 done
+# --- qubes-guix: a Guix template from the installer ISO, smoke-tested
+for iso in ./*.iso; do
+    [ -e "$iso" ] && [ -x dom0/qubes-guix-create ] || continue
+    iso_path=$(pwd)/${iso#./}
+    echo "==> qubes-guix-create --unattended --template --test $CI_QUBE from $iso"
+    (cd dom0 && ./qubes-guix-create --unattended --template --no-password --force --test \
+        "$CI_QUBE" "dom0:$iso_path") </dev/null 2>&1 | tee results/qubes-guix-create.log
+    [ "${PIPESTATUS[0]}" = 0 ] || failed=1
+    qvm-check -q "$CI_QUBE" 2>/dev/null && templates+=("$CI_QUBE")
+    break
+done
+
 # Must be unset, not empty, to mean "all templates" (an empty value means none)
 QUBES_TEST_TEMPLATES=${TEST_TEMPLATES:-${templates[*]}}
 if [ -n "$QUBES_TEST_TEMPLATES" ]; then export QUBES_TEST_TEMPLATES; else unset QUBES_TEST_TEMPLATES; fi

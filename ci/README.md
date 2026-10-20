@@ -1,11 +1,16 @@
 # Qubes OS 4.3 CI on a bare-metal NUC
 
-A dedicated Intel NUC (NUC10FNH) runs Qubes OS 4.3. On every push, Gitea
-Actions copies the qubes-guix template into it, runs Qubes' own integration
-tests against the template plus our own dom0 tests, and collects the results.
+A dedicated Intel NUC (NUC10FNH) runs Qubes OS 4.3. On every push to
+`main`, Gitea Actions:
+
+1. builds the qubes-guix installer ISO at that commit (`iso/qubes-guix-iso`);
+2. on the NUC, installs a Guix template from it with `dom0/qubes-guix-create
+   --unattended --template --test`, which also runs `qubes-guix-test`;
+3. optionally runs Qubes' own integration test modules against the template;
+4. collects the results.
 
 ```
-Gitea ──► act_runner (runner host, LAN)  ◄──── reverse SSH tunnel ────┐
+Gitea ──► act_runner (Guix runner, LAN)  ◄──── reverse SSH tunnel ────┐
              │ ssh -p 2222 127.0.0.1                                  │
              └──────────────► ci-ctl qube ── qrexec ci.Dom0Shell ──► dom0
                               (on the NUC, behind sys-firewall)        runs tests
@@ -52,21 +57,36 @@ to sys-usb as usual. With working VT-d nothing special is needed.
 
 ## 2. The runner host
 
-Any always-on Linux machine on the LAN: a small VM on TrueNAS works. The
-NUC dials *in* to it, so the runner needs a stable address. On it:
+The runner builds the ISO, so it must be an always-on **x86_64 Guix**
+machine on the LAN. Your substitute server (guix-subs) is the natural
+choice: the ISO's packages are its own builds. The NUC dials *in* to it, so
+it needs a stable address and an SSH server.
+
+The CI job's user needs `git`, `openssh` and `node` in its profile
+(`guix install git openssh node`). Node is needed by `actions/checkout` and
+`upload-artifact` in host mode. On it:
 
 ```sh
-apt install -y git jq openssh-server nodejs   # node: needed by actions/checkout in host mode
-
 # the user the CI job runs as: its key logs in to ci-ctl
 ssh-keygen -t ed25519 -N '' -f ~/.ssh/qubes_ci_ed25519
 
-# the user ci-ctl's tunnel logs in as: may only open the 2222 listener
-sudo useradd -m -s /usr/sbin/nologin qubesci-tunnel
-sudo install -d -m 700 -o qubesci-tunnel -g qubesci-tunnel ~qubesci-tunnel/.ssh
 ```
 
-The line for `~qubesci-tunnel/.ssh/authorized_keys` comes from step 3.
+**The tunnel user.** ci-ctl's tunnel logs in as `qubesci-tunnel`, which may
+only open the 2222 listener. On Guix System, declare it in the system config
+and reconfigure:
+
+```scheme
+(user-account
+  (name "qubesci-tunnel") (group "users")
+  (home-directory "/home/qubesci-tunnel")
+  (shell (file-append shadow "/sbin/nologin")))
+```
+
+You also need an `openssh-service-type`. Then create
+`~qubesci-tunnel/.ssh/authorized_keys` (mode 600, owned by
+`qubesci-tunnel`) with the line from step 3. The `restrict` and
+`permitlisten` options in that line do the locking down.
 
 ## 3. Install Qubes on the NUC
 
@@ -128,33 +148,64 @@ user from step 2. Then:
 ```
 
 Get the token from Repo Settings → Actions → Runners. Actions must also be
-enabled for the repo. Then replace the **Build payload** step in
-`.gitea/workflows/qubes-tests.yml` with the real template build.
+enabled for the repo. `act_runner` is a static binary, so it runs on Guix
+as-is.
 
-**Smoke test without Gitea:**
+**Smoke test without Gitea**, from a checkout on the runner. The first
+command checks the connection to dom0 without building anything:
 
 ```sh
-mkdir /tmp/payload
-SYSTEM_TESTS=qubes.tests.integ.basic ci/runner/qubes-ci-run.sh /tmp/payload /tmp/results
+mkdir -p /tmp/payload && ci/runner/qubes-ci-run.sh /tmp/payload /tmp/results
+
+iso/qubes-guix-iso -o /tmp/payload/qubes-guix-installer.iso && cp -r dom0 /tmp/payload/
+ci/runner/qubes-ci-run.sh /tmp/payload /tmp/results
 ```
+
+The second pair builds the ISO and runs the full install and test.
 
 ## What a run does
 
-1. Waits up to 10 min for the tunnel (e.g. while the NUC reboots).
-2. Copies `run-in-dom0.sh` and the payload into `~/ci-run/` in ci-ctl.
-3. In dom0, through `ci.Dom0Shell`:
+1. **Waits for the mirror.** The ISO is built from the channel's public
+   repository, so the workflow waits until the Gitea push mirror has the
+   commit on GitHub.
+2. **Builds the ISO** with `iso/qubes-guix-iso -b BRANCH --qubes-commit SHA
+   --server <first url in dom0/qubes-guix-substitutes>`. qubes is at the
+   pushed commit; the other channels are at what the server last built.
+3. **Assembles the payload:** the ISO plus the repo's `dom0/` directory
+   (`qubes-guix-create`, `qubes-guix-test` and their package, channel and
+   substitute files), and `ci/dom0-tests.sh` if you add one.
+4. **Waits up to 10 min for the tunnel** (e.g. while the NUC reboots).
+5. **Copies** `run-in-dom0.sh` and the payload into `~/ci-run/` in ci-ctl.
+6. **In dom0**, through `ci.Dom0Shell`:
    - pulls `~/ci-run` from ci-ctl;
-   - removes leftover `test-inst-*` and `test-cls-*` qubes, and the
-     templates installed by the previous run;
-   - installs each `*.rpm` with `qvm-template install`;
+   - removes leftovers: `test-inst-*`, `test-cls-*` and `test-guix-*`
+     qubes, the previous `ci-guix` template, and any RPM templates from the
+     previous run;
+   - runs `qubes-guix-create --unattended --template --no-password --force
+     --test ci-guix dom0:<the ISO>`. That installs the template, does its
+     first update, and runs `qubes-guix-test` on a throwaway AppVM. The
+     output streams to the job log;
+   - installs each `*.rpm` with `qvm-template install` (not used by
+     qubes-guix, kept for completeness);
    - runs each `SYSTEM_TESTS` module with nose2, the way Qubes' openQA does,
-     restricted to those templates via `QUBES_TEST_TEMPLATES`;
+     restricted to the installed templates via `QUBES_TEST_TEMPLATES`. None
+     run by default;
    - runs `dom0-tests.sh`, if one is present;
    - pushes `results/` back to ci-ctl.
-4. Fetches the results: logs, JUnit XML, the dom0 journal, Xen and qube
-   consoles, and the full console output.
+7. **Fetches the results:** `qubes-guix-create.log`, logs, JUnit XML, the
+   dom0 journal, Xen and qube consoles, and the full console output.
 
-**Useful modules** (from upstream's job definitions; timeouts in seconds):
+**Expect a long run.** A run includes a full Guix install and update, so
+expect an hour or more, depending on how much comes from your substitute
+server.
+
+**Qubes test modules** are opt-in: give them in the workflow's
+`system_tests` input when you run it by hand. Upstream's tests make AppVMs
+with Qubes' default settings. Guix AppVMs need HVM, the template's kernel
+and more memory (see `qubes-guix-create --appvm`), so expect failures from
+that rather than from qubes-guix itself.
+
+Useful modules (from upstream's job definitions; timeouts in seconds):
 
 - `qubes.tests.integ.basic`
 - `qubes.tests.integ.vm_qrexec_gui:14400`

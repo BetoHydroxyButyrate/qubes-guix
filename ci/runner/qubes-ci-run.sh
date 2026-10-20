@@ -9,7 +9,7 @@
 # Config (env, or /etc/qubes-ci/runner.env):
 #   TUNNEL_PORT    2222   port ci-ctl's tunnel listens on, on this machine
 #   SSH_KEY        ~/.ssh/qubes_ci_ed25519
-#   SYSTEM_TESTS   "qubes.tests.integ.basic qubes.tests.integ.vm_qrexec_gui:14400"
+#   SYSTEM_TESTS   Qubes test modules, e.g. "qubes.tests.integ.basic" (default: none)
 #   TEST_TEMPLATES (optional) override which templates are tested
 #   CONNECT_TIMEOUT 600   seconds to wait for the tunnel (e.g. after a reboot)
 set -euo pipefail
@@ -19,7 +19,7 @@ PAYLOAD=${1:?usage: $0 <payload-dir> [results-dir]}
 RESULTS=${2:-./qubes-results}
 TUNNEL_PORT=${TUNNEL_PORT:-2222}
 SSH_KEY=${SSH_KEY:-$HOME/.ssh/qubes_ci_ed25519}
-SYSTEM_TESTS=${SYSTEM_TESTS:-qubes.tests.integ.basic}
+SYSTEM_TESTS=${SYSTEM_TESTS:-}
 CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-600}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -47,7 +47,7 @@ fi
 #    is echoed as a marker rather than relying on qrexec to carry it.
 #    The script arrives on stdin, so every command in it gets </dev/null:
 #    qvm-run -p would otherwise swallow the rest of the script.
-log "running tests: $SYSTEM_TESTS"
+log "running in dom0 (Qubes test modules: ${SYSTEM_TESTS:-none})"
 set +e
 ctl "qrexec-client-vm dom0 ci.Dom0Shell" <<EOF | tee "${RESULTS%/}.console.log"
 rm -rf ~/ci-run && mkdir -p ~/ci-run

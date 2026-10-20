@@ -37,7 +37,18 @@ graphical
 zerombr
 ignoredisk --only-use=$DISK
 clearpart --all --initlabel --drives=$DISK
-autopart --type=thinp
+# Qubes' installer defaults autopart to encrypted (encrypted = True in its
+# anaconda profile) and a bare 'autopart' doesn't turn that off. Explicit
+# partitions are unencrypted unless they say --encrypted, so lay out what
+# autopart would: dom0 root on the root-pool thin pool, swap, and the rest of
+# the VG left free for the vm-pool that initial setup creates.
+part /boot/efi --fstype=efi --size=600 --ondisk=$DISK
+part /boot --fstype=ext4 --size=1024 --ondisk=$DISK
+part pv.01 --size=1 --grow --ondisk=$DISK
+volgroup qubes_dom0 pv.01
+logvol none --vgname=qubes_dom0 --thinpool --name=root-pool --size=20480
+logvol / --vgname=qubes_dom0 --thin --poolname=root-pool --name=root --fstype=ext4 --size=19456
+logvol swap --vgname=qubes_dom0 --name=swap --fstype=swap --size=4096
 bootloader --location=mbr --boot-drive=$DISK
 keyboard --vckeymap=$KEYMAP --xlayouts='$KEYMAP'
 lang en_US.UTF-8

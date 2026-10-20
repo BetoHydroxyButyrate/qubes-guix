@@ -2,7 +2,7 @@
 
 A [Guix](https://guix.gnu.org) channel that turns **Guix System** into a properly integrated [Qubes OS](https://www.qubes-os.org) qube. It packages the Qubes R4.3 guest agents and wires them into Guix System as one service, `qubes-guest-service-type`. dom0 scripts create the qube and install it, unattended.
 
-Status: a daily-driven StandaloneVM (HVM) on Qubes R4.3. Everything below has been verified unless it says otherwise.
+Status: 99% complete. A daily-driven StandaloneVM (HVM) on Qubes R4.3; templates and AppVMs work, but AppVMs have seen little use so far. Everything below has been verified unless it says otherwise.
 
 | Feature                                                                                      | Status                                                  |
 |----------------------------------------------------------------------------------------------|---------------------------------------------------------|
@@ -20,10 +20,10 @@ Status: a daily-driven StandaloneVM (HVM) on Qubes R4.3. Everything below has be
 | split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube)                         | ✅                                                      |
 | Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`)                     | 🚧 written, not yet tested                              |
 | split-ssh client (`ssh`, `git` over SSH with keys in a vault qube)                           | ✅                                                      |
-| TemplateVM / AppVM based on a Guix template                                                  | ✅                                                      |
+| TemplateVM / AppVM based on a Guix template                                                  | ✅ (AppVMs: little use so far)                          |
 | USB devices from sys-usb (`qvm-usb attach`, the devices widget)                              | ✅                                                      |
 | PVH                                                                                          | ❌ not yet                                              |
-| Qubes Update tool                                                                            | ❌ by design (see [Updating](doc/updating.md))        |
+| Qubes Update tool                                                                            | ❌ by design (`qubes-guix-update`: see [Updating](doc/updating.md)) |
 
 ## Getting started
 
@@ -42,6 +42,8 @@ There are three ways in. Each ends with the same kind of qube; they differ in wh
 - **[Full setup](doc/full-setup.md):** your own substitute server builds every channel at one set of commits; the ISO and every qube installed from it use those builds. An install then comes almost entirely from your LAN:
 
 ![The installer's monitor during an unattended install: 2.2 GiB received from the substitute server on the LAN, a few MiB from everything else](doc/install-traffic.png)
+
+*The installer's monitor (its console, tty1) during an automatic install from the ISO, `qubes-guix-create --unattended`: htop above, the traffic per remote address below. The ISO was built from guix-subs (`--server`): 2.2 GiB came from it, over the LAN, and a few MiB from anywhere else.*
 
 ## Documentation
 

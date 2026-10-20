@@ -6,7 +6,7 @@
 
 ![The installer's monitor during an unattended install: 2.2 GiB received from the substitute server on the LAN, a few MiB from everything else](install-traffic.png)
 
-That is the installer's monitor (tty1) near the end of an unattended StandaloneVM install, from an ISO built with `--server`: 2.2 GiB came from guix-subs on the LAN (192.168.3.113), and under 4 MiB from everywhere else. `10.139.1.1` is the Qubes DNS.
+*The installer's monitor (its console, tty1) near the end of an automatic install from the ISO, `qubes-guix-create --unattended`. The ISO was built with `--server`: 2.2 GiB came from guix-subs on the LAN (192.168.3.113), and under 4 MiB from everywhere else. `10.139.1.1` is the Qubes DNS.*
 
 In short:
 

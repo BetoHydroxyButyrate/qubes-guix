@@ -404,6 +404,13 @@ console_window() {
     echo "$name's console: window $win, '$title'"
 }
 
+# Shell line, typed into the stock installer after the clone into $d: run
+# CMD under guest/qubes-guix-monitor (tmux: CMD, htop, the traffic per
+# address), or plainly with a branch that hasn't got it.
+monitored() {
+    printf '%s' "if [ -f $d/guest/qubes-guix-monitor ]; then sh $d/guest/qubes-guix-monitor $1; else $1; fi"
+}
+
 # The stock installer's GRUB step, before it boots: its menu waits only a
 # few seconds, so read this first.
 grub_step() {
@@ -1235,12 +1242,14 @@ Fix the cause and rerun:  $prog --unattended $name   (it resumes)";;
 $(net_cmds)
 $ch_lines
 $su_lines
-rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $cmd"
+rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $(monitored "$cmd")"
     cat <<EOF
 $typed into $name's console (VT3): the network setup, then a clone of branch
 $branch and guest/qubes-guix-install $what.
 It partitions /dev/xvda, builds a Guix with the qubes channel and the system
-(an hour or more), then powers $name off. Watch VT3 for errors.
+(an hour or more), then powers $name off. VT3 shows it with a monitor (tmux:
+the install above, htop and the traffic per address below; it fetches them
+first). Watch it for errors.
 EOF
     if [ "$dry_run" = 1 ]; then
         echo "(dry run: would then wait for $name to power off$( [ "$template" = 1 ] && echo ", remove its netvm"), qvm-start $name$( [ "$first_update" = 1 ] && echo ", run qubes-guix-update -r in it$( [ "$template" = 1 ] && echo ' and shut it down')"))"
@@ -1311,7 +1320,7 @@ sh $d/guest/qubes-guix-finish-install $fargs -b \"\$B\" && sync" 0
     # The installer's shell is root, and its network was set up by
     # --type-network. git isn't in the installer image: guix shell fetches it.
     if [ "$run_now" = 1 ]; then
-        next="$cmd"
+        next=$(monitored "$cmd")
     else
         next="{ printf '\\033c'; echo 'Cloned into $d. Review it, then run:'; echo '  $cmd'; }"
     fi
@@ -1324,8 +1333,9 @@ rm -rf $d; guix shell git -- git clone -q -b $branch $repo_url $d && $next"
 $typed into $name's console (VT3): clone $branch into $d and run
   $cmd
 It wraps /mnt/etc/config.scm and rebuilds /mnt with the qubes channel: the
-first time it builds a Guix, which takes a while. Watch VT3 for 'Done', then
-reboot (Ctrl+Alt+F1 back to the installer, or 'reboot' on VT3).
+first time it builds a Guix, which takes a while. VT3 shows it with a monitor
+(tmux: htop and the traffic per address below). Watch it for 'Done', then
+reboot ('reboot' in the shell that follows it there).
 EOF
     else
         cat <<EOF

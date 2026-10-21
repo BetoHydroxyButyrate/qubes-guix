@@ -1,0 +1,58 @@
+#!/bin/sh
+# qubes-guix-monitor — run a command (an install) with a monitor around it,
+# as root on the console of the stock Guix installer:
+#
+#   qubes-guix-monitor COMMAND [ARG...]
+#
+# A tmux session: COMMAND above, its output also appended to
+# /root/qubes-guix-monitor.log; htop below left, and the network traffic
+# per remote address (qubes-guix-netacct watch) below right. What the
+# qubes-guix ISO shows on its tty1, for the stock ISO, which has none of
+# tmux, htop or nftables: they come from 'guix shell' first. When COMMAND
+# ends (unless it powers the machine off), its pane says how, and a shell
+# follows there. Ctrl-b d leaves tmux; 'tmux attach' goes back.
+#
+# Without tmux (guix shell failed: no network?), COMMAND just runs.
+
+set -u
+here=$(cd "$(dirname "$0")" && pwd)
+session=qubes-guix
+log=/root/qubes-guix-monitor.log
+# The socket under /run: cow-store hides /tmp once an install starts.
+export TMUX_TMPDIR=/run
+
+if ! command -v tmux >/dev/null 2>&1 || ! command -v htop >/dev/null 2>&1; then
+    if [ -z "${QUBES_GUIX_MONITOR_SHELL:-}" ] && command -v guix >/dev/null 2>&1; then
+        echo "qubes-guix-monitor: fetching tmux, htop and nftables (guix shell)..."
+        QUBES_GUIX_MONITOR_SHELL=1 exec guix shell -q tmux htop nftables -- \
+            sh "$0" "$@"
+    fi
+    echo "qubes-guix-monitor: no tmux or htop: running without the monitor" >&2
+    exec "$@"
+fi
+
+if tmux has-session -t "$session" 2>/dev/null; then
+    echo "qubes-guix-monitor: a '$session' tmux session already runs: tmux attach -t $session" >&2
+    exit 1
+fi
+
+# COMMAND's pane: its output to the pane and the log, then how it ended,
+# then a shell (so a failure stays readable, and fixable).
+# shellcheck disable=SC2016  # expanded by that pane's shell
+run='
+log=$1; shift
+echo "== $(date): $*" >> "$log"
+{ "$@"; echo $? > "$log.status"; } 2>&1 | tee -a "$log"
+st=$(cat "$log.status" 2>/dev/null || echo "?")
+echo
+echo "== exited $st ($(date +%T)). Its output: $log. A shell follows (Ctrl-b d leaves tmux)."
+exec "${SHELL:-sh}" -i'
+
+tmux -f /dev/null new-session -d -s "$session" -x 200 -y 50 \
+    sh -c "$run" qubes-guix-monitor "$log" "$@"
+tmux set-option -t "$session" status-right "C-b d: leave tmux " >/dev/null
+tmux set-option -t "$session" status-right-length 40 >/dev/null
+tmux split-window -t "$session:0.0" -v -l 40% htop
+tmux split-window -t "$session:0.1" -h -l 50% sh "$here/qubes-guix-netacct" watch
+tmux select-pane -t "$session:0.0"
+exec tmux attach-session -t "$session"

@@ -64,7 +64,7 @@ Then install as usual, up to the **Installation complete** screen, and **don't r
 It asks for one password, used for both `user` and root. Only a hash of it is typed into the qube. With `--no-password`, both accounts are left as after a manual Guix install; `qvm-run` works either way. Then it finds the qube's console window, as `--type-network` does. On VT3 it types:
 - the network setup;
 - a clone of this repository;
-- the command to run `guest/qubes-guix-install`.
+- the command to run `guest/qubes-guix-install`, under a monitor: tmux, with the install above, and `htop` and the network traffic per remote address below, as on the qubes-guix ISO. tmux, htop and nftables come from `guix shell` first. Ctrl-b d leaves tmux, `tmux attach` goes back. The install's output is also kept in `/root/qubes-guix-monitor.log`.
 
 **Extra packages and channels, your own substitute server:** see [Extra packages and channels](configuration.md#extra-packages-and-channels) and [the full setup](full-setup.md#installing-with-your-server).
 

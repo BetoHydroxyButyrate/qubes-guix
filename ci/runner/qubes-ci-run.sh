@@ -55,6 +55,7 @@ set +e
 ctl "qrexec-client-vm dom0 ci.Dom0Shell" <<EOF | tee "${RESULTS%/}.console.log"
 rm -rf ~/ci-run && mkdir -p ~/ci-run
 qvm-run -q -p ci-ctl 'tar c -C ci-run .' </dev/null | tar x -C ~/ci-run
+qvm-run -q -p ci-ctl 'rm -f ci-run/*.iso' </dev/null    # dom0 has it now
 SYSTEM_TESTS='$SYSTEM_TESTS' TEST_TEMPLATES='${TEST_TEMPLATES:-}' bash ~/ci-run/run-in-dom0.sh </dev/null
 rc=\$?
 tar c -C ~/ci-run results | qvm-run -q -p ci-ctl 'rm -rf ci-run/results; tar x -C ci-run'

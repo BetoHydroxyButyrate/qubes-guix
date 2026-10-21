@@ -102,4 +102,5 @@ sudo journalctl -b --no-pager --since "-12h" > results/dom0-journal.log 2>/dev/n
 sudo cp -r /var/log/xen/console results/xen-console 2>/dev/null
 sudo cp -r /var/log/qubes results/qubes-logs 2>/dev/null
 sudo chown -R "$(id -u):$(id -g)" results
+rm -f ./*.iso    # ~3 GB; dom0's root is small
 exit $failed

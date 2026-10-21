@@ -65,6 +65,11 @@ if ! qvm-check -q "$CTL" 2>/dev/null; then
     qvm-create --class StandaloneVM --template "$CTL_TEMPLATE" --label black "$CTL"
 fi
 qvm-prefs "$CTL" autostart True
+# Each run stages the installer ISO (~3 GB) in ci-ctl's home, on its private
+# volume (2 GiB by default). Thin-provisioned: only what's written is used.
+CTL_PRIVATE_SIZE=${CTL_PRIVATE_SIZE:-32GiB}
+qvm-volume resize "$CTL:private" "$CTL_PRIVATE_SIZE" 2>/dev/null ||
+    echo "note: ci-ctl's private volume not resized to $CTL_PRIVATE_SIZE (already bigger?)"
 qvm-prefs "$CTL" netvm "$(qubes-prefs default_netvm)"
 qvm-start --skip-if-running "$CTL"
 

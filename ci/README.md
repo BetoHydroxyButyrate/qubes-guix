@@ -252,6 +252,10 @@ the current `make-oem-ks.sh` have the preset.
 
 - **ci-ctl's template:** ci-ctl is cloned from the newest installed
   `debian-*` template. Set `CTL_TEMPLATE` to choose another.
+- **ci-ctl's private volume** (its home, where each run stages the ~3 GB
+  ISO) is grown to 32 GiB; set `CTL_PRIVATE_SIZE` for another size. By hand:
+  `qvm-volume resize ci-ctl:private 32GiB` in dom0. The ISO is deleted from
+  ci-ctl once dom0 has it, and from dom0 at the end of the run.
 - **Package installs in ci-ctl** use apt when it's there. Debian templates
   also ship a `dnf` (for downloading dom0 updates), so dnf only counts on
   templates without apt.

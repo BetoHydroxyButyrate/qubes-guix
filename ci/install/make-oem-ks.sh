@@ -107,6 +107,9 @@ TimeoutStartSec=3h
 [Install]
 WantedBy=multi-user.target
 UNIT
+# The Qubes installer's own %post runs 'systemctl preset-all' (after this
+# one), which disables any unit without a preset: give it one.
+echo 'enable qubes-ci-firstboot.service' > /etc/systemd/system-preset/10-qubes-ci.preset
 systemctl enable qubes-ci-firstboot.service
 %end
 EOF

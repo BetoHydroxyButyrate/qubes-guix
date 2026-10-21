@@ -357,6 +357,12 @@ fi
 if [ "$split_gpg" = 1 ]; then
     if in_qube 'gpg -K 2>/dev/null' | grep -q '^\(sec\|ssb\)'; then
         pass "split-gpg2" "gpg -K lists a key"
+    # A throwaway AppVM's home is new: no public key imported, so gpg -K
+    # lists nothing even when the vault answers. Ask the vault's agent for
+    # its keys directly.
+    elif keys=$(in_qube 'gpg-connect-agent --no-autostart "keyinfo --list" /bye 2>/dev/null' |
+                    grep -c '^S KEYINFO'); [ "${keys:-0}" -gt 0 ]; then
+        pass "split-gpg2" "the vault's agent has $keys key(s) (no public key imported here, so gpg -K is empty)"
     else
         fail "split-gpg2" "gpg -K lists no secret key (policy? vault running? pubkey imported?)"
     fi

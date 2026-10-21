@@ -46,8 +46,8 @@ The installer needs three manual steps under Qubes, and the script prints them w
    ![The linux line ending in nomodeset](grub-nomodeset.png)
 
    Without `nomodeset`, the console on VT3 doesn't work. Only the installer needs it: the installed system boots fine without it.
-2. **Network:** Qubes has no DHCP, so the network is set by hand, in the root shell on VT3. In dom0, `./qubes-guix-create --type-network guix` does it: click the qube's console window, and it switches to VT3 (Ctrl+Alt+F3) and types the commands with this qube's address, gateway and DNS. By hand it's `ip addr add <ip>/8 dev eth0`, `ip link set eth0 up`, `ip route add default via <gateway>` and the DNS servers in `/etc/resolv.conf`. The **/8** puts the gateway on-link.
-3. **Back to the installer:** dom0's desktop grabs Alt+Fn, so switch consoles from dom0 with `xdotool key --window $(xdotool selectwindow) ctrl+alt+F1` and click the qube's window.
+2. **Network:** Qubes has no DHCP, so the network is set by hand, in the root shell on VT3. In dom0, `./qubes-guix-create --type-network guix` does it: it finds the qube's console window by its title (the qube's name), switches it to VT3 (Ctrl+Alt+F3) and types the commands with this qube's address, gateway and DNS, showing each line as it's sent. **Don't touch the keyboard or mouse until it says DONE:** the key presses go to whichever window has the focus. Clicking elsewhere stops the typing at the next line, so to cancel, click the dom0 terminal (then Ctrl+C if it's still running). If the window isn't found, it asks you to click it. By hand it's `ip addr add <ip>/8 dev eth0`, `ip link set eth0 up`, `ip route add default via <gateway>` and the DNS servers in `/etc/resolv.conf`. The **/8** puts the gateway on-link.
+3. **Back to the installer:** dom0's desktop keeps Ctrl+Alt+Fn for itself, so switch the qube's console from dom0: `./qubes-guix-create --vt 1 guix` (`--vt 3` for the root shell).
 
 Then install as usual, up to the **Installation complete** screen, and **don't reboot yet**: the next section makes the new system a qube before its first boot.
 
@@ -59,7 +59,7 @@ Then install as usual, up to the **Installation complete** screen, and **don't r
 ./qubes-guix-create --unattended guix          # add --template for a template, -b BRANCH to test a branch
 ```
 
-It asks for one password, used for both `user` and root. Only a hash of it is typed into the qube. With `--no-password`, both accounts are left as after a manual Guix install; `qvm-run` works either way. Then click the qube's console window. On VT3 it types:
+It asks for one password, used for both `user` and root. Only a hash of it is typed into the qube. With `--no-password`, both accounts are left as after a manual Guix install; `qvm-run` works either way. Then it finds the qube's console window, as `--type-network` does. On VT3 it types:
 - the network setup;
 - a clone of this repository;
 - the command to run `guest/qubes-guix-install`.
@@ -86,7 +86,7 @@ At the installer's **Installation complete** screen, with the installer's networ
 ./qubes-guix-create --finish-install --run guix   # add --template for a template, -b BRANCH to test a branch
 ```
 
-Click the qube's console window when asked. On VT3 this clones the repository into `/root/qubes-guix` (git comes from `guix shell`) and runs `guest/qubes-guix-finish-install` as root. That script wraps `/mnt/etc/config.scm` in `(qubes-operating-system ...)` (the original stays as `config.scm.pre-qubes`), checks it, and rebuilds `/mnt` with `guix system init` from a Guix that includes the qubes channel (`guix time-machine`). If the installer has already unmounted the new system, the script mounts it again; that works for a single unencrypted root partition. The first run builds a Guix and then the Qubes agents, so it takes a while, but nothing waits for a password. Without `--run` it only clones and shows the command, for you to review and type.
+On VT3 this clones the repository into `/root/qubes-guix` (git comes from `guix shell`) and runs `guest/qubes-guix-finish-install` as root. That script wraps `/mnt/etc/config.scm` in `(qubes-operating-system ...)` (the original stays as `config.scm.pre-qubes`), checks it, and rebuilds `/mnt` with `guix system init` from a Guix that includes the qubes channel (`guix time-machine`). If the installer has already unmounted the new system, the script mounts it again; that works for a single unencrypted root partition. The first run builds a Guix and then the Qubes agents, so it takes a while, but nothing waits for a password. Without `--run` it only clones and shows the command, for you to review and type.
 
 When VT3 says **Done**, reboot. That's the last manual step. The first boot has:
 - the network from QubesDB;

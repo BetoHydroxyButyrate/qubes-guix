@@ -402,6 +402,35 @@ console_window() {
     echo "$name's console: window $win, '$title'"
 }
 
+# with_focus_kept NAME CMD...: run CMD (a qvm-start of NAME), and give the
+# focus back to this terminal, raised, once NAME's console window has
+# appeared: dom0 hands a new window the focus, and it may cover this one,
+# where the next question or instruction is. A watcher in the background,
+# for up to a minute: qvm-start can return before the window appears, or
+# (waiting for the agent) long after.
+with_focus_kept() {
+    local name=$1 term_win='' re
+    shift
+    if [ "$dry_run" = 0 ] && command -v xdotool >/dev/null 2>&1; then
+        term_win=$(dom0_x xdotool getactivewindow 2>/dev/null) || term_win=
+    fi
+    if [ -n "$term_win" ]; then
+        re=${name//./\\.}
+        (
+            for _ in $(seq 1 120); do
+                if dom0_x xdotool search --onlyvisible --name "^$re\$" >/dev/null 2>&1; then
+                    sleep 1
+                    dom0_x xdotool windowactivate "$term_win" >/dev/null 2>&1
+                    exit 0
+                fi
+                sleep 0.5
+            done
+        ) </dev/null >/dev/null 2>&1 &
+        echo "$name's console window opens next; the focus comes back to this terminal."
+    fi
+    "$@"
+}
+
 # Type TEXT into the root shell on VT3 of qube NAME's console window.
 # The VT switch is a synthetic event (--window): a real Ctrl+Alt+F3 would be
 # caught by dom0's own X server and switch dom0's console. The text is real
@@ -1034,13 +1063,13 @@ start_installed() {
     is_uint "$tmo" || tmo=300
     [ "$tmo" -ge 900 ] || qvm-prefs "$name" qrexec_timeout 900
     s=$(date +%s)
-    if ! qvm-start "$name"; then
+    if ! with_focus_kept "$name" qvm-start "$name"; then
         echo "$prog: $name's first boot didn't reach its qrexec agent in $(( $(date +%s) - s )) s," >&2
         echo "and qvm-start stopped it (its console: /var/log/xen/console/guest-$name.log)." >&2
         echo "Starting it once more." >&2
         if qvm-check -q --running "$name" 2>/dev/null; then qvm-kill "$name" >/dev/null 2>&1 || true; fi
         s=$(date +%s)
-        if ! qvm-start "$name"; then
+        if ! with_focus_kept "$name" qvm-start "$name"; then
             qvm-prefs "$name" qrexec_timeout "$tmo"
             die "$name didn't start again: see /var/log/xen/console/guest-$name.log.
 It's installed: once it starts, update it from dom0 with
@@ -1434,7 +1463,7 @@ if [ "$qubes_iso" = 1 ]; then
     echo "Booting the qubes-guix installer; waiting for its qrexec agent."
 fi
 t0=$(date +%s)      # "Installed in": from booting the installer
-run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
+with_focus_kept "$name" run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
 created=0           # it exists and boots: keep it from here on
 
 if [ "$install" = 1 ]; then

@@ -10,6 +10,8 @@ In short, in dom0:
 2. At the installer's GRUB menu, add `nomodeset` to the kernel line ([how](#creating-the-qube-dom0)).
 3. Then either `./qubes-guix-create --unattended guix` for an install with no dialogs, or the installer's dialogs followed by `./qubes-guix-create --finish-install --run guix` ([before the first reboot](#before-the-first-reboot-recommended)).
 
+Or all of it in one command: `./qubes-guix-create --unattended guix QUBE:/path/to/guix-system-install.iso` (with whatever options the install takes). It lists what it will do and asks, explains the GRUB step, and starts the qube when you press Enter. You do the GRUB edit in its console, then press Enter in the dom0 terminal once the installer's first screen is up; the rest is typed into the installer, and the qube is started, updated and tested as with `--unattended guix`.
+
 Add `--template` throughout for a template ([templates and AppVMs](templates.md)).
 
 ## Creating the qube (dom0)

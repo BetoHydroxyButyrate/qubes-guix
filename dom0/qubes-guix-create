@@ -77,7 +77,9 @@ at ISO_PATH in the qube ISO_VM (or dom0:/path). With the qubes-guix
 installer ISO (iso/qubes-guix-iso), the installer has its network and the
 qrexec agent, and dom0 drives it with qvm-run: no GRUB edit, no typing into
 its console. With the stock Guix ISO, the steps are printed. Given an ISO,
---unattended creates the qube and installs it in one go (qubes-guix ISO).
+--unattended creates the qube and installs it in one go: with the stock ISO,
+you do the GRUB step in its console, then press Enter here, and the rest is
+typed for you.
 
   VCPUS    virtual CPUs                         (default $vcpus)
   MEMORY   initial memory, MiB                  (default $memory)
@@ -400,6 +402,26 @@ console_window() {
         esac
     fi
     echo "$name's console: window $win, '$title'"
+}
+
+# The stock installer's GRUB step, before it boots: its menu waits only a
+# few seconds, so read this first.
+grub_step() {
+    cat <<EOF
+
+The stock installer needs one edit at its GRUB menu, in $name's console
+window, which opens when $name starts and has the focus:
+
+  1. With 'GNU Guix installation' highlighted, press  e  at once (the menu
+     times out after a few seconds).
+  2. Go to the end of the 'linux' line (it wraps; it ends
+     'modprobe.blacklist=radeon,amdgpu'), type a space and  nomodeset
+  3. Boot it: Ctrl+X.
+  4. Wait for the installer's first screen (the language list). Touch
+     nothing there: come back to THIS terminal and press Enter. The rest is
+     typed into the installer for you.
+
+EOF
 }
 
 # with_focus_kept NAME CMD...: run CMD (a qvm-start of NAME), and give the
@@ -1347,13 +1369,14 @@ case $iso_path in *.iso) ;; *) echo "$prog: warning: '$iso_path' doesn't end in 
 if [ "$qubes_iso" = auto ]; then
     case ${iso_path##*/} in
         *qubes-guix*) qubes_iso=1;;
+        guix-system-install*) qubes_iso=0;;
         *) if [ "$install" = 1 ]; then qubes_iso=1; else qubes_iso=0; fi;;
     esac
 fi
-if [ "$install" = 1 ] && [ "$qubes_iso" = 0 ]; then
-    die "--unattended with an ISO needs the qubes-guix installer ISO (iso/qubes-guix-iso).
-With the stock Guix ISO: create the qube, do the GRUB step, then run
-  $prog --unattended $name"
+# The stock ISO, unattended: you do the GRUB step, and say when it's done.
+if [ "$install" = 1 ] && [ "$qubes_iso" = 0 ] && [ "$dry_run" = 0 ] && ! [ -t 0 ]; then
+    die "--unattended with the stock Guix ISO needs you at the GRUB menu, and a
+terminal here to say when the installer is up: run it from a terminal"
 fi
 
 is_uint "$vcpus"  && [ "$vcpus" -ge 1 ]     || die "VCPUS must be a positive integer"
@@ -1400,9 +1423,14 @@ echo "  netvm: ${netvm:-the default ($(qubes-prefs default_netvm 2>/dev/null || 
 echo "  installer: $iso_vm:$iso_path, $( [ "$qubes_iso" = 1 ] && echo 'the qubes-guix ISO' || echo 'the stock Guix ISO')"
 clients_plan
 if [ "$install" = 1 ]; then
-    echo "and install it, unattended, over qrexec:"
+    if [ "$qubes_iso" = 1 ]; then
+        echo "and install it, unattended, over qrexec:"
+    else
+        echo "and install it, unattended: you do the GRUB step in its console, then"
+        echo "the rest is typed into it:"
+    fi
     dom0_tz
-    install_plan 1
+    install_plan "$qubes_iso"
 fi
 confirm
 
@@ -1462,11 +1490,36 @@ if [ "$qubes_iso" = 1 ]; then
     run qvm-features "$name" qrexec 1
     echo "Booting the qubes-guix installer; waiting for its qrexec agent."
 fi
+# The stock ISO: GRUB's menu needs an edit before it times out, so its
+# instructions come first, and its console keeps the focus.
+if [ "$qubes_iso" = 0 ] && [ "$install" = 1 ]; then
+    grub_step
+    if [ "$dry_run" = 0 ]; then
+        stdin_blocking
+        read -rp "Press Enter to start $name; then go straight to its console window. " _ || true
+    fi
+fi
 t0=$(date +%s)      # "Installed in": from booting the installer
-with_focus_kept "$name" run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
+if [ "$qubes_iso" = 1 ]; then
+    with_focus_kept "$name" run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
+else
+    run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
+fi
 created=0           # it exists and boots: keep it from here on
 
 if [ "$install" = 1 ]; then
+    if [ "$qubes_iso" = 0 ] && [ "$dry_run" = 0 ]; then
+        cat <<EOF
+
+$name is booting the stock installer. In its console window: e, nomodeset
+at the end of the linux line, Ctrl+X. (Missed GRUB's timeout? It boots
+without nomodeset and the console stays blank: qvm-kill $name, then
+qvm-start --cdrom=$iso_vm:$iso_path $name, and again.)
+
+EOF
+        stdin_blocking
+        read -rp "Back HERE, press Enter once the installer's first screen (the language list) is up: " _ || true
+    fi
     unattended
     exit 0
 fi

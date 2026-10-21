@@ -69,8 +69,10 @@ qvm-prefs "$CTL" netvm "$(qubes-prefs default_netvm)"
 qvm-start --skip-if-running "$CTL"
 
 as_root() { qvm-run -q -p -u root "$CTL" "$1"; }
-as_root 'if command -v dnf >/dev/null; then dnf -y install openssh-server;
-         else apt-get update && apt-get -y install openssh-server; fi'
+# apt first: Debian templates have a dnf too (for dom0 updates), which can't
+# install Debian packages.
+as_root 'if command -v apt-get >/dev/null; then apt-get update && apt-get -y install openssh-server;
+         else dnf -y install openssh-server; fi'
 as_root "install -d -m 700 -o user -g user /home/user/.ssh"
 as_root "cat > /home/user/.ssh/authorized_keys && chown user:user /home/user/.ssh/authorized_keys && chmod 600 /home/user/.ssh/authorized_keys" <"$PUBKEY_FILE"
 as_root "cat > /etc/ssh/sshd_config.d/50-qubes-ci.conf" <<'EOF'

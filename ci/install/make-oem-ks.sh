@@ -71,8 +71,8 @@ usbvm true
 allow_usb_keyboard true
 allow_usb_mouse true
 whonix_vms false
-templates_to_install fedora-xfce debian-xfce
-default_template fedora-xfce
+templates_to_install debian-xfce
+default_template debian-xfce
 %end
 
 %post --erroronfail

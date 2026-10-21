@@ -141,7 +141,7 @@ TUNNEL_PORT=2222
    The install then runs unattended and **wipes `$DISK`**. The kickstart
    only uses `$DISK`, so the sticks are left alone.
 5. **First boot:** the Qubes setup screen appears pre-filled from the
-   kickstart (Fedora and Debian templates, Fedora as default, sys-net, sys-firewall, sys-usb). Press **F12**
+   kickstart (the Debian template only, as the default, sys-net, sys-firewall, sys-usb). Press **F12**
    (Finish Configuration). Upstream's own OEM test also does this step by
    hand. As far as I can tell it can't be skipped through kickstart alone.
 6. After setup, `qubes-ci-firstboot.service` runs `qubes-ci-setup.sh` by

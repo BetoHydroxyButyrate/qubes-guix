@@ -45,8 +45,7 @@ cat >/etc/qubes/policy.d/30-qubes-ci.policy <<EOF
 ci.Dom0Shell  *  $CTL  dom0  allow
 EOF
 
-# --- dom0: packages, autologin for GUI tests, no locker / cron interference
-qubes-dom0-update -y python3-nose2
+# --- dom0: autologin for GUI tests, no locker / cron interference
 mkdir -p /etc/lightdm/lightdm.conf.d
 cat >/etc/lightdm/lightdm.conf.d/50-qubes-ci-autologin.conf <<EOF
 [Seat:*]
@@ -105,6 +104,14 @@ RestartSec=15
 WantedBy=multi-user.target
 EOF
 as_root "systemctl daemon-reload; systemctl enable --now sshd 2>/dev/null || systemctl enable --now ssh; systemctl enable --now qubes-ci-tunnel"
+
+# --- dom0: nose2, for the opt-in Qubes test modules only. Last and not fatal:
+# dom0 updates are downloaded in the UpdateVM, which needs dnf (a Fedora
+# one has it; a Debian one may not).
+if ! qubes-dom0-update -y python3-nose2; then
+    echo "warning: couldn't install python3-nose2 in dom0. Only the opt-in Qubes test"
+    echo "  modules (SYSTEM_TESTS) need it; qubes-guix-create and qubes-guix-test don't."
+fi
 
 echo
 echo "Done. On the runner, add this line to ~$TUNNEL_USER/.ssh/authorized_keys:"

@@ -101,8 +101,9 @@ case ${1:-} in
             case $rows in ''|*[!0-9]*) rows=24;; esac
             [ "$rows" -gt 10 ] || rows=10
             out=$(report $((rows - 5)))
-            printf '\033[H\033[2J%s  per-address traffic (every %ss)\n\n%s\n' \
-                "$(date +%T)" "$secs" "$out"
+            up=$(awk '{s = int($1); printf "%dh%02dm", s / 3600, s % 3600 / 60}' /proc/uptime)
+            printf '\033[H\033[2J%s, up %s: traffic per remote address (every %ss)\n\n%s\n' \
+                "$(date +%T)" "$up" "$secs" "$out"
             sleep "$secs"
         done;;
     stop) nft delete table "$fam" "$name" 2>/dev/null || true;;

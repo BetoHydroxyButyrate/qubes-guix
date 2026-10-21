@@ -52,6 +52,7 @@ branch_given=0
 qubes_iso=auto
 repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
 dry_run=0
+assume_yes=0
 
 usage() {
     cat <<EOF
@@ -113,6 +114,12 @@ Options:
       --stock-iso       ISO_PATH is the stock Guix installer ISO
       --dry-run         print the dom0 commands, change nothing; with the
                         typing modes below, print what would be typed
+  -y, --yes             don't ask. Otherwise, creating a qube (with or
+                        without --unattended), --appvm, --unattended NAME
+                        and --finish-install first list what they will do
+                        (the qube, its packages, channels, substitute
+                        servers, lock, vault clients) and change nothing
+                        until you answer y. Needed without a terminal.
       --type-network    for a running NAME without its Qubes agent (the
                         installer, or the installed system before setup):
                         click its console window, and this switches it to
@@ -221,6 +228,40 @@ run() {
 
 is_uint() { case $1 in ''|*[!0-9]*) return 1;; esac; }
 
+# A qvm-run with this terminal as its stdin (an earlier run of this script,
+# say) can leave it non-blocking, and read then fails with "Resource
+# temporarily unavailable".
+stdin_blocking() {
+    python3 -c 'import fcntl, os; f = fcntl.fcntl(0, fcntl.F_GETFL); fcntl.fcntl(0, fcntl.F_SETFL, f & ~os.O_NONBLOCK)' 2>/dev/null || true
+}
+
+# The go-ahead, once, after what's about to happen has been listed: nothing
+# has changed yet. Not asked with --yes or --dry-run.
+confirm() {
+    [ "${confirmed:-0}" = 1 ] && return 0
+    confirmed=1
+    if [ "$dry_run" = 1 ]; then echo "(dry run: not asking)"; return 0; fi
+    [ "$assume_yes" = 1 ] && return 0
+    [ -t 0 ] || die "no terminal to ask on: add --yes to go ahead without asking"
+    stdin_blocking
+    local a
+    read -rp "Go ahead? [y/N] " a || a=
+    case $a in
+        y|Y|yes|Yes|YES) ;;
+        *) echo "Nothing changed."; exit 1;;
+    esac
+}
+
+# The vault clients and U2F chosen, as a line of the list confirm follows.
+clients_plan() {
+    local c=
+    [ "$split_ssh" = 1 ] && c="$c, split-ssh (tag)"
+    [ "$split_gpg" = 1 ] && c="$c, split-gpg2 client"
+    [ "$ctap" = 1 ] && c="$c, U2F/CTAP proxy"
+    c=${c#, }
+    echo "  vault clients, U2F: ${c:-none (--split-ssh, --split-gpg, --ctap)}"
+}
+
 # The vault clients and U2F for qube $1, as chosen (--split-ssh,
 # --split-gpg, --ctap). Not the services Qubes derives (meminfo-writer).
 clients_setup() {
@@ -290,6 +331,7 @@ while [ $# -gt 0 ]; do
         --qubes-iso) qubes_iso=1; shift;;
         --stock-iso) qubes_iso=0; shift;;
         --dry-run)  dry_run=1; shift;;
+        -y|--yes)   assume_yes=1; shift;;
         -h|--help)  usage; exit 0;;
         --)         shift; args+=("$@"); break;;
         -*)         die "unknown option $1 (see --help)";;
@@ -391,6 +433,8 @@ data_file() {
 }
 
 read_channels() {
+    [ -n "${channels_read:-}" ] && return 0
+    channels_read=1
     if [ -z "$channels_file" ]; then
         channels_file=$(data_file qubes-guix-channels)
     fi
@@ -399,15 +443,17 @@ read_channels() {
         [ -r "$channels_file" ] || die "can't read $channels_file"
         channels_text=$(expand "$channels_file")
         if ! printf '%s\n' "$channels_text" | sed 's/;.*//' | grep -q '(channel'; then
-            echo "Extra channels: none in $channels_file (all commented out?)"
+            echo "  extra channels: none in $channels_file (all commented out?)"
             channels_text=
             return 0
         fi
         printf '%s\n' "$channels_text" | grep -qx 'QGCH' &&
             die "$channels_file: a line 'QGCH' would end the typed file early"
-        echo "Extra channels (from $channels_file):"
+        echo "  extra channels (from $channels_file):"
         printf '%s\n' "$channels_text" | sed 's/;.*//' |
-            sed -n "s/.*(name '\\([^) ]*\\).*/  \\1/p; s/.*(name (quote \\([^) ]*\\)).*/  \\1/p" || true
+            sed -n "s/.*(name '\\([^) ]*\\).*/    \\1/p; s/.*(name (quote \\([^) ]*\\)).*/    \\1/p" || true
+    else
+        echo "  extra channels: none (no qubes-guix-channels here or next to $prog)"
     fi
 }
 
@@ -421,20 +467,22 @@ channels_heredoc() {
 # "key (public-key ...)" lines (comments and blank lines dropped), checked
 # here: they're typed into a root shell as a file.
 read_substitutes() {
+    [ -n "${subs_read:-}" ] && return 0
+    subs_read=1
     if [ -z "$subs_file" ]; then
         subs_file=$(data_file qubes-guix-substitutes)
     fi
     subs_text=
     if [ -z "$subs_file" ]; then
-        echo "Substitute servers: no qubes-guix-substitutes here or next to $prog"
-        echo "(a qubes-guix ISO built with one brings its own)."
+        echo "  substitute servers: none here (no qubes-guix-substitutes here or next"
+        echo "    to $prog); a qubes-guix ISO built with some brings its own"
         return 0
     fi
     [ -r "$subs_file" ] || die "can't read $subs_file"
     # Comments are whole lines only: keys contain '#'.
     subs_text=$(sed 's/^[[:space:]]*#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' "$subs_file" | expand)
     if [ -z "$subs_text" ]; then
-        echo "Substitute servers: none in $subs_file (all commented out?)"
+        echo "  substitute servers: none in $subs_file (all commented out?)"
         return 0
     fi
     local line
@@ -456,8 +504,8 @@ read_substitutes() {
         esac
     done <<< "$subs_text"
     printf '%s\n' "$subs_text" | grep -q '^url ' || die "$subs_file: no 'url ...' line"
-    echo "Substitute servers (from $subs_file):"
-    printf '%s\n' "$subs_text" | sed -n 's/^url /  /p'
+    echo "  substitute servers (from $subs_file), before the default ones:"
+    printf '%s\n' "$subs_text" | sed -n 's/^url /    /p'
 }
 
 # Shell lines that write $subs_text to file $1 in the qube.
@@ -466,6 +514,8 @@ subs_heredoc() {
 }
 
 read_packages() {
+    [ -n "${packages_read:-}" ] && return 0
+    packages_read=1
     if [ -z "$packages_file" ]; then
         packages_file=$(data_file qubes-guix-packages)
     fi
@@ -478,8 +528,78 @@ read_packages() {
                 *[!A-Za-z0-9@._+-]*|[!A-Za-z0-9]*) die "bad package name '$p' in $packages_file";;
             esac
         done
-        echo "Extra packages (from $packages_file): ${packages:-none}"
+        echo "  extra packages (from $packages_file): ${packages:-none}"
+    else
+        echo "  extra packages: none (no qubes-guix-packages here or next to $prog): git only"
     fi
+}
+
+# dom0's timezone, into $tz: the installed system gets the same.
+dom0_tz() {
+    tz=$(timedatectl show -p Timezone --value 2>/dev/null) || tz=
+    [ -n "$tz" ] || tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
+    [ -n "$tz" ] || tz=UTC
+}
+
+# The --guix-commit lock, into $guix_commit ('' follows the head), once, and
+# said. Its default depends on the substitute servers: after
+# read_substitutes. $1: 1 if the installer is the qubes-guix ISO (qrexec).
+resolve_lock() {
+    [ -n "${lock_resolved:-}" ] && return 0
+    lock_resolved=1
+    # With your own server, lock to what it last built unless told
+    # otherwise: its builds are then what the qube runs, and nothing is
+    # built locally (the first update included). From the qubes-guix ISO:
+    # to the ISO's guix and qubes (which may be newer than the server's
+    # build: iso/qubes-guix-iso-remote), the rest the server's.
+    if [ -n "$subs_text" ] && [ -z "$guix_commit" ]; then
+        if [ "$1" = 1 ]; then guix_commit=iso; else guix_commit=server; fi
+    fi
+    case $guix_commit in
+        ''|head) guix_commit=;;
+        server) ;;
+        iso) [ "$1" = 1 ] ||
+                 die "--guix-commit iso: only from the qubes-guix ISO (this installer isn't)";;
+        *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash ('server', 'iso' or 'head')";;
+    esac
+    case $guix_commit in
+        iso)    echo "  lock: guix and qubes at the ISO's commits, the other channels at your"
+                echo "    server's last build (--guix-commit server: all the server's; head: none)";;
+        server) echo "  lock: every channel at the commits your server last built"
+                echo "    (--guix-commit head: none, follow the head)";;
+        '')     if [ "$1" = 1 ] && [ -z "$subs_text" ]; then
+                    echo "  lock: the ISO's channel commits if it brings substitute servers,"
+                    echo "    else none (follows the head)"
+                else
+                    echo "  lock: none, follows the head of each channel"
+                fi;;
+        *)      echo "  lock: Guix at commit $guix_commit";;
+    esac
+}
+
+# The unattended install's part of the list confirm follows. $1: 1 over
+# qrexec (the qubes-guix ISO).
+install_plan() {
+    echo "  user 'user' and root: $( [ "$no_password" = 1 ] && echo 'no password' || echo 'a password, asked next'); timezone $tz; locale $locale"
+    [ "$force" = 1 ] && echo "  --force: /dev/xvda is partitioned even if it has partitions (they're lost)"
+    if [ "$1" = 1 ] && [ "$branch_given" = 0 ]; then
+        echo "  scripts: the ISO's own"
+    else
+        echo "  scripts: branch $branch of $repo_url"
+    fi
+    read_packages
+    read_channels
+    read_substitutes
+    resolve_lock "$1"
+    local then="start it from its disk"
+    [ "$wait_start" = 1 ] || then="leave it off (--no-wait)"
+    [ "$template" = 1 ] && [ "$wait_start" = 1 ] && then="remove its netvm, $then"
+    if [ "$wait_start" = 1 ] && [ "$first_update" = 1 ]; then
+        then="$then, qubes-guix-update -r in it"
+        [ "$template" = 1 ] && then="$then, shut it down"
+        [ "$run_test" = 1 ] && then="$then, qubes-guix-test"
+    fi
+    echo "  afterwards: $then"
 }
 
 typed=Typed
@@ -667,6 +787,12 @@ if [ -n "$appvm_template" ]; then
     if [ -n "$netvm" ]; then
         qvm-check -q "$netvm" 2>/dev/null || die "network qube '$netvm' doesn't exist"
     fi
+    echo "$prog will create:"
+    echo "  $name: AppVM on $appvm_template, HVM, $memory MiB$( [ "$maxmem" -gt "$memory" ] && echo ", balancing up to $maxmem MiB" || echo ', no memory balancing'), label $label"
+    echo "  netvm: ${netvm:-the default}"
+    clients_plan
+    [ "$run_test" = 1 ] && echo "  afterwards: qubes-guix-test"
+    confirm
     echo "Creating $name: AppVM on $appvm_template, HVM, $memory-$maxmem MiB"
     run qvm-create --template "$appvm_template" --label "$label" \
         --property virt_mode=hvm "$name"
@@ -796,7 +922,30 @@ start_installed() {
     # the install would make qvm-start wait for, and kill, a stock
     # installer; the qubes-guix ISO has it set already).
     qvm-features "$name" qrexec 1
-    qvm-start "$name"
+    # The first boot does more than later ones, and with memory balancing
+    # every boot is slow (Xen populate-on-demand): one took over 300 s to
+    # reach the agent, and qvm-start then stops the qube. So a longer qrexec
+    # timeout for this start, and one more try if even that runs out.
+    local tmo s
+    tmo=$(qvm-prefs "$name" qrexec_timeout)
+    is_uint "$tmo" || tmo=300
+    [ "$tmo" -ge 900 ] || qvm-prefs "$name" qrexec_timeout 900
+    s=$(date +%s)
+    if ! qvm-start "$name"; then
+        echo "$prog: $name's first boot didn't reach its qrexec agent in $(( $(date +%s) - s )) s," >&2
+        echo "and qvm-start stopped it (its console: /var/log/xen/console/guest-$name.log)." >&2
+        echo "Starting it once more." >&2
+        if qvm-check -q --running "$name" 2>/dev/null; then qvm-kill "$name" >/dev/null 2>&1 || true; fi
+        s=$(date +%s)
+        if ! qvm-start "$name"; then
+            qvm-prefs "$name" qrexec_timeout "$tmo"
+            die "$name didn't start again: see /var/log/xen/console/guest-$name.log.
+It's installed: once it starts, update it from dom0 with
+  qvm-run -u root --pass-io --no-gui $name 'qubes-guix-update -r' </dev/null"
+        fi
+    fi
+    qvm-prefs "$name" qrexec_timeout "$tmo"
+    echo "$name is up: its agent answered $(( $(date +%s) - s )) s after the start."
     if [ "$first_update" = 1 ]; then
         # The install built with the installer's Guix (fast: substitutes).
         # Now bring the system to the Guix it follows: the head, or the
@@ -839,10 +988,7 @@ ask_password() {
         command -v openssl >/dev/null 2>&1 ||
             die "openssl not found in dom0 (needed to hash the password); or use --no-password"
         [ -t 0 ] || die "no terminal to ask for the password on; use --no-password"
-        # A qvm-run with this terminal as its stdin (an earlier run of this
-        # script, say) can leave it non-blocking, and read then fails with
-        # "Resource temporarily unavailable".
-        python3 -c 'import fcntl, os; f = fcntl.fcntl(0, fcntl.F_GETFL); fcntl.fcntl(0, fcntl.F_SETFL, f & ~os.O_NONBLOCK)' 2>/dev/null || true
+        stdin_blocking
         while :; do
             read -rsp "Password for 'user' and root in $name: " pw1; echo
             read -rsp "Again: " pw2; echo
@@ -867,9 +1013,12 @@ unattended() {
         via_qrexec=1
     fi
     [ "$via_qrexec" = 1 ] || qube_net "$name"
-    tz=$(timedatectl show -p Timezone --value 2>/dev/null) || tz=
-    [ -n "$tz" ] || tz=$(readlink /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p')
-    [ -n "$tz" ] || tz=UTC
+    dom0_tz
+    if [ "${confirmed:-0}" = 0 ]; then
+        echo "$prog will install $name, unattended, $( [ "$via_qrexec" = 1 ] && echo 'over qrexec (the qubes-guix ISO)' || echo "typing into its console (the stock ISO)")$( [ "$template" = 1 ] && echo ', as a template'):"
+        install_plan "$via_qrexec"
+        confirm
+    fi
     [ -n "${hash_asked:-}" ] || ask_password
     read_packages
     # Not /tmp: the installer's cow-store bind-mounts /mnt/tmp over it.
@@ -891,29 +1040,8 @@ unattended() {
     if [ -n "$subs_text" ]; then
         su_lines="$(subs_heredoc /root/qubes-guix-substitutes)"
         iargs="$iargs --substitutes /root/qubes-guix-substitutes"
-        # With your own server, lock to what it last built unless told
-        # otherwise: its builds are then what the qube runs, and nothing is
-        # built locally (the first update included). From the qubes-guix
-        # ISO: to the ISO's guix and qubes (which may be newer than the
-        # server's build: iso/qubes-guix-iso-remote), the rest the server's.
-        if [ -z "$guix_commit" ] && [ "$via_qrexec" = 1 ]; then
-            guix_commit=iso
-            echo "Locking $name to the ISO's guix and qubes commits, and the other"
-            echo "channels to your server's last build (--guix-commit server: all"
-            echo "the server's; head: follow the head)."
-        elif [ -z "$guix_commit" ]; then
-            guix_commit=server
-            echo "Locking $name to the commits your substitute server last built"
-            echo "(--guix-commit head: follow the head instead)."
-        fi
     fi
-    case $guix_commit in
-        ''|head) guix_commit=;;
-        server) ;;
-        iso) [ "$via_qrexec" = 1 ] ||
-                 die "--guix-commit iso: only from the qubes-guix ISO (this installer isn't)";;
-        *[!0-9a-f]*) die "--guix-commit: '$guix_commit' isn't a commit hash ('server', 'iso' or 'head')";;
-    esac
+    resolve_lock "$via_qrexec"
     [ -n "$guix_commit" ] && iargs="$iargs --guix-commit $guix_commit"
     what="($( [ "$template" = 1 ] && echo 'template, ')timezone $tz, user 'user'$( [ -n "$hash" ] || echo ', no password'))"
 
@@ -986,6 +1114,8 @@ if [ "$finish_install" = 1 ]; then
     d=/root/qubes-guix
     fargs=
     [ "$template" = 1 ] && fargs="--template"
+    echo "$prog will make the system just installed in $name a qube$( [ "$template" = 1 ] && echo ' (a template)'):"
+    echo "  scripts: branch $branch of $repo_url$( has_qrexec "$name" 2>/dev/null && [ "$branch_given" = 0 ] && echo " (on the qubes-guix ISO: its own)")"
     read_packages
     [ -n "$packages" ] && fargs="$fargs --packages '$packages'"
     read_channels
@@ -1000,6 +1130,7 @@ if [ "$finish_install" = 1 ]; then
         su_lines="$(subs_heredoc /root/qubes-guix-substitutes)"
         fargs="$fargs --substitutes /root/qubes-guix-substitutes"
     fi
+    confirm
     # The qubes-guix ISO: run it over qrexec (--run is implied: nothing is
     # typed into a root shell), then restart NAME from its disk. dom0 does
     # the restart: a reboot inside the qube would boot the ISO again.
@@ -1119,6 +1250,30 @@ else
     fi
 fi
 
+if [ "$template" = 1 ]; then
+    class=TemplateVM
+    # Templates get no netvm by default, but the installer and the first
+    # guix pull need one. Afterwards it can go (updates via the proxy).
+    [ -n "$netvm" ] || netvm=$(qubes-prefs default_netvm)
+    [ -n "$netvm" ] || die "no default netvm; give one with --netvm"
+else
+    class=StandaloneVM
+fi
+
+# --- what will be done, and the go-ahead ---------------------------------
+
+echo "$prog will create:"
+echo "  $name: $class, HVM, $vcpus vCPU, $memory MiB$( [ "$maxmem" -gt "$memory" ] && echo ", balancing up to $maxmem MiB (slower boots)" || echo ', no memory balancing'), root $root_size, label $label"
+echo "  netvm: ${netvm:-the default ($(qubes-prefs default_netvm 2>/dev/null || echo none))}"
+echo "  installer: $iso_vm:$iso_path, $( [ "$qubes_iso" = 1 ] && echo 'the qubes-guix ISO' || echo 'the stock Guix ISO')"
+clients_plan
+if [ "$install" = 1 ]; then
+    echo "and install it, unattended, over qrexec:"
+    dom0_tz
+    install_plan 1
+fi
+confirm
+
 # --unattended: the password now, not after the boot.
 [ "$install" = 1 ] && ask_password
 
@@ -1135,16 +1290,6 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-
-if [ "$template" = 1 ]; then
-    class=TemplateVM
-    # Templates get no netvm by default, but the installer and the first
-    # guix pull need one. Afterwards it can go (updates via the proxy).
-    [ -n "$netvm" ] || netvm=$(qubes-prefs default_netvm)
-    [ -n "$netvm" ] || die "no default netvm; give one with --netvm"
-else
-    class=StandaloneVM
-fi
 
 echo "Creating $name: $class, HVM, $vcpus vCPU, $memory-$maxmem MiB, root $root_size"
 
@@ -1185,11 +1330,11 @@ if [ "$qubes_iso" = 1 ]; then
     run qvm-features "$name" qrexec 1
     echo "Booting the qubes-guix installer; waiting for its qrexec agent."
 fi
+t0=$(date +%s)      # "Installed in": from booting the installer
 run qvm-start "$name" --cdrom="$iso_vm:$iso_path"
 created=0           # it exists and boots: keep it from here on
 
 if [ "$install" = 1 ]; then
-    t0=$(date +%s)
     unattended
     exit 0
 fi

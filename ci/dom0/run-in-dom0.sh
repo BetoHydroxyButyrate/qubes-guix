@@ -52,7 +52,7 @@ for iso in ./*.iso; do
     [ -e "$iso" ] && [ -x dom0/qubes-guix-create ] || continue
     iso_path=$(pwd)/${iso#./}
     echo "==> qubes-guix-create --unattended --template --test $CI_QUBE from $iso"
-    (cd dom0 && ./qubes-guix-create --unattended --template --no-password --force --test \
+    (cd dom0 && ./qubes-guix-create --yes --unattended --template --no-password --force --test \
         "$CI_QUBE" "dom0:$iso_path") </dev/null 2>&1 | tee results/qubes-guix-create.log
     [ "${PIPESTATUS[0]}" = 0 ] || failed=1
     qvm-check -q "$CI_QUBE" 2>/dev/null && templates+=("$CI_QUBE")

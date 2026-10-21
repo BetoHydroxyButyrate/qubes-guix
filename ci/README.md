@@ -73,7 +73,7 @@ the CI key can do.
     script changes; or
   - give the CI its own account on guix-subs, with its own qubes-guix
     clone and the sudo rule for a root-owned script, and set
-    `ISO_HOST=ci@guix-subs.zepherin.com`.
+    `ISO_HOST=ci@guix-subs`.
 - **The runner:** guard the `ci` account and its `~/.ssh/qubes_ci_ed25519`
   accordingly. The `qubesci-tunnel` account has no shell. Its one key may
   only open the tunnel's listener (`restrict,port-forwarding,permitlisten`).
@@ -131,7 +131,7 @@ that file mode 600 and owned by `qubesci-tunnel`.
 `ISO_HOST`, which has to name the guix-subs account:
 
 ```sh
-ISO_HOST=beto@guix-subs.zepherin.com
+ISO_HOST=beto@guix-subs         # the full DNS name if the short one doesn't resolve
 ISO_DIR=proj/qubes-guix         # the checkout on guix-subs, under beto's home
 TUNNEL_PORT=2222
 # ISO_SYNC_CMD=...              # default: guix-subs' build script via sudo; empty skips it
@@ -167,8 +167,8 @@ themselves:
 
 ```sh
 sudo -iu ci
-ssh -i ~/.ssh/qubes_ci_ed25519 beto@guix-subs.zepherin.com true
-ssh -i ~/.ssh/qubes_ci_ed25519 beto@guix-subs.zepherin.com \
+ssh -i ~/.ssh/qubes_ci_ed25519 beto@guix-subs true
+ssh -i ~/.ssh/qubes_ci_ed25519 beto@guix-subs \
     'sudo -n -l /etc/guix-subs/build-qubes.sh && echo "passwordless sudo OK"'
 ```
 

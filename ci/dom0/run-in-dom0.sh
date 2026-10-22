@@ -54,7 +54,17 @@ for iso in ./*.iso; do
     echo "==> qubes-guix-create --unattended --template --test $CI_QUBE from $iso"
     (cd dom0 && ./qubes-guix-create --yes --unattended --template --no-password --force --test \
         "$CI_QUBE" "dom0:$iso_path") </dev/null 2>&1 | tee results/qubes-guix-create.log
-    if [ "${PIPESTATUS[0]}" != 0 ]; then
+    rc=${PIPESTATUS[0]}
+    # A failed install leaves the installer running, and qubes-guix-create
+    # resumes it. Network fetches (channel checkouts) can fail transiently:
+    # try once more before giving up.
+    if [ "$rc" != 0 ] && qvm-check -q --running "$CI_QUBE" 2>/dev/null; then
+        echo "==> the install failed (exit $rc); resuming it once"
+        (cd dom0 && ./qubes-guix-create --yes --unattended --template --no-password --force --test \
+            "$CI_QUBE") </dev/null 2>&1 | tee -a results/qubes-guix-create.log
+        rc=${PIPESTATUS[0]}
+    fi
+    if [ "$rc" != 0 ]; then
         failed=1
         # A failed install leaves the installer running, with its log in
         # /root; it has cat but few other tools, so fetch the whole log.

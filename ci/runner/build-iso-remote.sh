@@ -16,6 +16,9 @@
 #   ISO_HOST       guix-subs            ssh destination (user@host)
 #   ISO_DIR        proj/qubes-guix      the checkout on ISO_HOST, under its home
 #   ISO_SSH_KEY    ~/.ssh/qubes_ci_ed25519
+#   ISO_OFFLINE    1: build with --offline, so the ISO carries the channels'
+#                  git checkouts and the install needs no network for them
+#                  (a bigger ISO, a longer copy; fewer network flakes)
 #   ISO_SYNC_CMD   run on ISO_HOST before the build, so the server has built
 #                  the head and the other channels' commits match it (empty:
 #                  skip). Default: guix-subs' own build script, through
@@ -28,6 +31,7 @@ BRANCH=$1 SHA=$2 OUT=$3
 ISO_HOST=${ISO_HOST:-guix-subs}
 ISO_DIR=${ISO_DIR:-proj/qubes-guix}
 ISO_SSH_KEY=${ISO_SSH_KEY:-$HOME/.ssh/qubes_ci_ed25519}
+ISO_OFFLINE=${ISO_OFFLINE:-0}
 ISO_SYNC_CMD=${ISO_SYNC_CMD-sudo -n /etc/guix-subs/build-qubes.sh 2>&1 | sudo -n tee -a /var/log/qubes-builds.log}
 SSH_OPTS=(-i "$ISO_SSH_KEY" -o BatchMode=yes -o ServerAliveInterval=60)
 
@@ -37,9 +41,9 @@ SSH_OPTS=(-i "$ISO_SSH_KEY" -o BatchMode=yes -o ServerAliveInterval=60)
 # Everything after the ssh destination is one quoted command line; the
 # script itself goes over stdin.
 ssh "${SSH_OPTS[@]}" "$ISO_HOST" \
-    "bash -s -- $(printf '%q ' "$ISO_DIR" "$BRANCH" "$SHA" "$ISO_SYNC_CMD")" <<'EOF'
+    "bash -s -- $(printf '%q ' "$ISO_DIR" "$BRANCH" "$SHA" "$ISO_SYNC_CMD" "$ISO_OFFLINE")" <<'EOF'
 set -euo pipefail
-dir=$HOME/$1 branch=$2 sha=$3 sync=$4
+dir=$HOME/$1 branch=$2 sha=$3 sync=$4 offline=$5
 out=$HOME/ci-iso
 cd "$dir"
 url=$(sed -n 's/.*(url "\(.*\)").*/\1/p' guest/channels.scm.txt | head -n1)
@@ -60,6 +64,7 @@ server=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' dom0/qubes-guix-substit
 echo "==> on $(hostname): qubes-guix-iso at $(git log -1 --format='%h %s')"
 rm -f "$out/qubes-guix-installer.iso" "$out/qubes-guix-installer.iso.channels"
 iso/qubes-guix-iso -b "$branch" --qubes-commit "$sha" ${server:+--server "$server"} \
+    $( [ "$offline" = 1 ] && echo --offline ) \
     -o "$out/qubes-guix-installer.iso" </dev/null
 EOF
 

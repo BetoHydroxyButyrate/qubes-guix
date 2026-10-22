@@ -22,13 +22,22 @@ qvm-create --template guix-tmpl --label red \
     --property memory=4000 --property maxmem=4000 work
 ```
 
-An AppVM needs more than Qubes gives one by default: `virt_mode hvm` (the default is PVH), its kernel from the template's disk (`kernel ''`), more than the default 400 MiB, a longer `qrexec_timeout`, and, for memory balancing, `maxmem` above `memory` and the `meminfo-writer` service. `qubes-guix-create --appvm` sets all of that, its Qubes menu (the template's `default-menu-items`: the usual applications the template has, see [Options](configuration.md#options)), and with `--split-ssh` / `--split-gpg` / `--ctap` the vault clients' tag and services and the U2F/CTAP proxy (the same options work when installing a template or StandaloneVM, for that qube):
+An AppVM needs more than Qubes gives one by default: its kernel from the template's disk (`virt_mode hvm` with `kernel ''`, or [PVH](#pvh) with `kernel pvgrub2-pvh`; Qubes' default, PVH with dom0's kernel, can't boot Guix), more than the default 400 MiB, a longer `qrexec_timeout`, and, for memory balancing, `maxmem` above `memory` and the `meminfo-writer` service. `qubes-guix-create --appvm` sets all of that, its Qubes menu (the template's `default-menu-items`: the usual applications the template has, see [Options](configuration.md#options)), and with `--split-ssh` / `--split-gpg` / `--ctap` the vault clients' tag and services and the U2F/CTAP proxy (the same options work when installing a template or StandaloneVM, for that qube):
 
 ```
 qubes-guix-create --appvm guix-tmpl -n sys-firewall work            # 2000 MiB, balancing up to 6000
 qubes-guix-create --appvm guix-tmpl --test work 4000 8000           # then test it with qubes-guix-test
 qubes-guix-create --appvm guix-tmpl --split-ssh --split-gpg --ctap --test work
 ```
+
+### PVH
+
+A Guix qube can boot in PVH instead of HVM: no emulated PC, so no QEMU and no stub domain for it (Qubes' default for its own qubes, for that reason), and faster boots, also with memory balancing (HVM's populate-on-demand makes those slow). dom0 boots it with `pvgrub2-pvh`, a GRUB that runs in the qube and boots the qube's own kernel and initrd from its own disk, so reconfigures and rollbacks work as before, and dom0 reads nothing from the qube. It needs dom0's `grub2-xen-pvh` package (`sudo qubes-dom0-update grub2-xen-pvh` if `/var/lib/qubes/vm-kernels/pvgrub2-pvh` is missing).
+
+- **The guest** is ready by default: `qubes-operating-system` puts the system console on the Xen console, `hvc0` (`console=tty0 console=hvc0`; the getty there serves `xl console` and `qvm-console-dispvm`), and GRUB in text mode, which pvgrub2-pvh needs. Under HVM both still work. `#:pvh? #f` leaves both out. Guix's kernel already has PVH and the Xen frontends built in.
+- **New qubes:** `qubes-guix-create --unattended --pvh …` installs (the installer boots in HVM) and switches the qube to PVH before its first start. `--appvm` makes a PVH AppVM when its template is PVH (`--pvh`/`--hvm` to choose), and `qubes-guix-test`'s throwaway AppVM follows its template too.
+- **An existing qube:** reconfigure it with this channel (for the console and GRUB), shut it down, then in dom0 `qvm-prefs NAME virt_mode pvh; qvm-prefs NAME kernel pvgrub2-pvh`. Back: `virt_mode hvm`, `kernel ''`.
+- **The boot** shows in `/var/log/xen/console/guest-NAME.log`: GRUB, the kernel, the initrd, Shepherd. There's no console window.
 
 By hand, memory balancing is `qvm-prefs NAME maxmem MiB` (above `memory`), and nothing else: Qubes runs the `meminfo-writer` service by `maxmem`, and setting that service (`qvm-service NAME meminfo-writer on`) resets `maxmem` to 0, unticking "Include in memory balancing". **`memory` and `maxmem` take effect at the next start:** a running qube keeps the ceiling it booted with (`static-max` in xenstore), so restart it after changing them.
 

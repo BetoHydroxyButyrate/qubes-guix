@@ -54,6 +54,7 @@ qubes_iso=auto
 repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
 dry_run=0
 assume_yes=0
+virt=
 
 usage() {
     cat <<EOF
@@ -61,7 +62,7 @@ Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --unattended [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
        $prog --vt N NAME
-       $prog --appvm TEMPLATE [-l COLOUR] [-n NETVM] [--split-ssh]
+       $prog --appvm TEMPLATE [-l COLOUR] [-n NETVM] [--pvh|--hvm] [--split-ssh]
                               [--split-gpg] [--ctap] [--test] NAME
                               [MEMORY [MAXMEM]]
        $prog --bootstrap [--template] [--branch B] [--packages FILE] NAME
@@ -112,6 +113,13 @@ Options:
                         the template; each AppVM gets its own (--appvm ...
                         --split-ssh). With --test, the test checks
                         split-ssh and split-gpg2.
+      --pvh             boot NAME in PVH (no QEMU, no stub domain; faster,
+                        also with memory balancing): virt_mode pvh, kernel
+                        pvgrub2-pvh (GRUB in the qube boots its own kernel;
+                        dom0 needs grub2-xen-pvh). With --unattended: after
+                        the install (the installer itself is HVM). With
+                        --appvm: the default when TEMPLATE is PVH.
+      --hvm             with --appvm: HVM even when TEMPLATE is PVH
       --qubes-iso       ISO_PATH is the qubes-guix installer ISO: dom0 waits
                         for its qrexec agent (assumed with --unattended, or
                         when the file name contains 'qubes-guix')
@@ -262,6 +270,24 @@ confirm() {
     esac
 }
 
+# PVH: Qubes' pvgrub2-pvh (dom0 package grub2-xen-pvh), a GRUB that runs in
+# the qube and boots the qube's own kernel and initrd from its own disk.
+pvh_check() {
+    [ -e /var/lib/qubes/vm-kernels/pvgrub2-pvh ] ||
+        die "PVH needs pvgrub2-pvh in dom0: sudo qubes-dom0-update grub2-xen-pvh"
+}
+
+# Qube $1 to boot in mode $2 (pvh or hvm), with its own kernel either way.
+set_virt() {
+    if [ "$2" = pvh ]; then
+        run qvm-prefs "$1" virt_mode pvh
+        run qvm-prefs "$1" kernel pvgrub2-pvh
+    else
+        run qvm-prefs "$1" virt_mode hvm
+        run qvm-prefs "$1" kernel ''
+    fi
+}
+
 # The vault clients and U2F chosen, as a line of the list confirm follows.
 clients_plan() {
     local c=
@@ -343,6 +369,8 @@ while [ $# -gt 0 ]; do
         --stock-iso) qubes_iso=0; shift;;
         --dry-run)  dry_run=1; shift;;
         -y|--yes)   assume_yes=1; shift;;
+        --pvh)      virt=pvh; shift;;
+        --hvm)      virt=hvm; shift;;
         -h|--help)  usage; exit 0;;
         --)         shift; args+=("$@"); break;;
         -*)         die "unknown option $1 (see --help)";;
@@ -736,6 +764,7 @@ install_plan() {
     read_substitutes
     resolve_lock "$1"
     local then="start it from its disk"
+    [ "$virt" = pvh ] && then="switch it to PVH, $then"
     [ "$wait_start" = 1 ] || then="leave it off (--no-wait)"
     [ "$template" = 1 ] && [ "$wait_start" = 1 ] && then="remove its netvm, $then"
     if [ "$wait_start" = 1 ] && [ "$first_update" = 1 ]; then
@@ -931,20 +960,26 @@ if [ -n "$appvm_template" ]; then
     if [ -n "$netvm" ]; then
         qvm-check -q "$netvm" 2>/dev/null || die "network qube '$netvm' doesn't exist"
     fi
+    # PVH or HVM: as the template, unless --pvh or --hvm says otherwise.
+    if [ -z "$virt" ]; then
+        virt=hvm
+        [ "$(qvm-prefs "$appvm_template" virt_mode 2>/dev/null)" = pvh ] && virt=pvh
+    fi
+    [ "$virt" = pvh ] && pvh_check
     echo "$prog will create:"
-    echo "  $name: AppVM on $appvm_template, HVM, $memory MiB$( [ "$maxmem" -gt "$memory" ] && echo ", balancing up to $maxmem MiB" || echo ', no memory balancing'), label $label"
+    echo "  $name: AppVM on $appvm_template, ${virt^^}, $memory MiB$( [ "$maxmem" -gt "$memory" ] && echo ", balancing up to $maxmem MiB" || echo ', no memory balancing'), label $label"
     echo "  netvm: ${netvm:-the default}"
     clients_plan
     [ "$run_test" = 1 ] && echo "  afterwards: qubes-guix-test"
     confirm
-    echo "Creating $name: AppVM on $appvm_template, HVM, $memory-$maxmem MiB"
+    echo "Creating $name: AppVM on $appvm_template, ${virt^^}, $memory-$maxmem MiB"
     run qvm-create --template "$appvm_template" --label "$label" \
-        --property virt_mode=hvm "$name"
+        --property virt_mode="$virt" "$name"
     # Memory balancing is maxmem alone (0: off). Not the meminfo-writer
     # service: Qubes derives it from maxmem, and setting it resets maxmem
     # to 0.
     [ "$maxmem" -gt "$memory" ] || maxmem=0
-    run qvm-prefs "$name" kernel ''
+    set_virt "$name" "$virt"
     run qvm-prefs "$name" memory "$memory"
     run qvm-prefs "$name" maxmem "$maxmem"
     run qvm-prefs "$name" qrexec_timeout 300
@@ -1083,6 +1118,12 @@ start_installed() {
     # the install would make qvm-start wait for, and kill, a stock
     # installer; the qubes-guix ISO has it set already).
     qvm-features "$name" qrexec 1
+    # --pvh: the installed system boots in PVH from here on (the installer
+    # was HVM): GRUB in the qube (pvgrub2-pvh) boots its own kernel.
+    if [ "$virt" = pvh ]; then
+        echo "Switching $name to PVH (kernel pvgrub2-pvh)."
+        set_virt "$name" pvh
+    fi
     # The first boot does more than later ones, and with memory balancing
     # every boot is slow (Xen populate-on-demand): one took over 300 s to
     # reach the agent, and qvm-start then stops the qube. So a longer qrexec
@@ -1095,8 +1136,16 @@ start_installed() {
     if ! with_focus_kept "$name" qvm-start "$name"; then
         echo "$prog: $name's first boot didn't reach its qrexec agent in $(( $(date +%s) - s )) s," >&2
         echo "and qvm-start stopped it (its console: /var/log/xen/console/guest-$name.log)." >&2
-        echo "Starting it once more." >&2
         if qvm-check -q --running "$name" 2>/dev/null; then qvm-kill "$name" >/dev/null 2>&1 || true; fi
+        # A system from before the PVH support (an older ISO's channel) may
+        # not boot in PVH: back to HVM, which it does.
+        if [ "$virt" = pvh ]; then
+            echo "Switching it back to HVM for this start (PVH later, by hand:" >&2
+            echo "qvm-prefs $name virt_mode pvh; qvm-prefs $name kernel pvgrub2-pvh)." >&2
+            set_virt "$name" hvm
+            virt=hvm
+        fi
+        echo "Starting it once more." >&2
         s=$(date +%s)
         if ! with_focus_kept "$name" qvm-start "$name"; then
             qvm-prefs "$name" qrexec_timeout "$tmo"
@@ -1167,6 +1216,7 @@ elapsed() { local s=$(( $(date +%s) - t0 )); printf '%dh%02dm' $((s / 3600)) $((
 # qrexec on the qubes-guix ISO, else typed into the stock installer's VT3.
 unattended() {
     detect_template "$name"
+    [ "$virt" = pvh ] && pvh_check
     local via_qrexec=0
     if [ "$dry_run" = 1 ]; then
         [ "$qubes_iso" = 1 ] && via_qrexec=1
@@ -1389,6 +1439,14 @@ if [ "$install" = 1 ] && [ "$qubes_iso" = 0 ] && [ "$dry_run" = 0 ] && ! [ -t 0 
 terminal here to say when the installer is up: run it from a terminal"
 fi
 
+case $virt in
+    pvh) [ "$install" = 1 ] ||
+             die "--pvh: with --unattended (the installer boots in HVM; NAME is switched
+after the install), or --appvm. Otherwise, after installing: qvm-prefs NAME
+virt_mode pvh; qvm-prefs NAME kernel pvgrub2-pvh"
+         pvh_check;;
+    hvm) ;;
+esac
 is_uint "$vcpus"  && [ "$vcpus" -ge 1 ]     || die "VCPUS must be a positive integer"
 is_uint "$memory" && [ "$memory" -ge 1024 ] || die "MEMORY must be at least 1024 (MiB)"
 is_uint "$maxmem"                           || die "MAXMEM must be an integer (MiB)"

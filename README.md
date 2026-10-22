@@ -22,7 +22,7 @@ Status: 99% complete. A daily-driven StandaloneVM (HVM) on Qubes R4.3; templates
 | split-ssh client (`ssh`, `git` over SSH with keys in a vault qube)                           | ✅                                                      |
 | TemplateVM / AppVM based on a Guix template                                                  | ✅ (AppVMs: little use so far)                          |
 | USB devices from sys-usb (`qvm-usb attach`, the devices widget)                              | ✅                                                      |
-| PVH                                                                                          | ❌ not yet                                              |
+| PVH (`--pvh`: no QEMU, no stub domain)                                                       | ✅ new: tested on AppVMs                                |
 | Qubes Update tool                                                                            | ❌ by design (`qubes-guix-update`: see [Updating](doc/updating.md)) |
 
 ## Getting started

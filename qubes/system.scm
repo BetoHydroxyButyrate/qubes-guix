@@ -56,6 +56,15 @@
 ;;; - unless #:system-guix? is #f (and with system channels): the system's
 ;;;   own guix is built from the channels of the Guix doing the build, so it
 ;;;   includes qubes: 'guix describe' shows it from the first boot.
+;;; - unless #:pvh? is #f: ready to boot in PVH as well as HVM (dom0:
+;;;   virt_mode pvh, kernel pvgrub2-pvh; qubes-guix-create --pvh). The Xen
+;;;   console as the system console, "console=tty0 console=hvc0" (unless
+;;;   the kernel arguments already name a console): PVH has no VGA, and the
+;;;   getty that %base-services runs on the last console= is then on hvc0
+;;;   (xl console, qvm-console-dispvm). And GRUB in text mode (terminal-
+;;;   outputs '(console)): pvgrub2-pvh, the GRUB that boots a PVH qube from
+;;;   its own disk, has no graphical terminal. Under HVM both still work:
+;;;   the boot also shows in the VGA console window.
 ;;; - with #:template? #t: template support (qubes-guest-configuration's
 ;;;   template? field): /home on the private volume, swap on the volatile
 ;;;   one, the host name from qubesdb, updates through qubes.UpdatesProxy.
@@ -70,6 +79,7 @@
 (define-module (qubes system)
   #:use-module (gnu system)
   #:use-module (gnu system accounts)
+  #:use-module (gnu bootloader)             ; bootloader-configuration
   #:use-module (gnu services)
   #:use-module (gnu services base)          ; guix-service-type
   #:use-module (gnu services shepherd)
@@ -358,6 +368,11 @@ servers only for what it lacks."
    (inherit config)
    (template? #t)))
 
+;; The system console on the Xen console (hvc0), the only one under PVH; tty0
+;; too, for an HVM's VGA console window. The last one is /dev/console.
+(define %qubes-console-arguments
+  '("console=tty0" "console=hvc0"))
+
 (define* (qubes-operating-system os
                                  #:key
                                  (config (qubes-guest-configuration))
@@ -373,6 +388,7 @@ servers only for what it lacks."
                                  (extra-substitute-urls '())
                                  (extra-authorized-keys '())
                                  (template? #f)
+                                 (pvh? #t)
                                  (extra-packages '()))
   "Return OS, with the Qubes guest agents added and CONFIG for them.
 Unless DISPLAY-MANAGER? is true, also remove the graphical login.  With
@@ -393,13 +409,28 @@ with a warning."
           (append (user-account-supplementary-groups account)
                   '("qubes"))))))
 
+  (define user-kernel-arguments
+    (remove (cut member <> %qubes-kernel-arguments)
+            (operating-system-user-kernel-arguments os)))
+
   (let ((old-services (operating-system-user-services os)))
     (operating-system
       (inherit os)
       (kernel-arguments
-       (append (remove (cut member <> %qubes-kernel-arguments)
-                       (operating-system-user-kernel-arguments os))
-               %qubes-kernel-arguments))
+       (append user-kernel-arguments
+               %qubes-kernel-arguments
+               ;; PVH: the Xen console. Not when a console is named already
+               ;; (by you, or by an earlier application of this).
+               (if (and pvh?
+                        (not (any (cut string-prefix? "console=" <>)
+                                  user-kernel-arguments)))
+                   %qubes-console-arguments
+                   '())))
+      (bootloader (if pvh?
+                      (bootloader-configuration
+                       (inherit (operating-system-bootloader os))
+                       (terminal-outputs '(console)))
+                      (operating-system-bootloader os)))
       (users (map add-qubes-group (operating-system-users os)))
       (packages (append (operating-system-packages os)
                         (available-packages extra-packages)))

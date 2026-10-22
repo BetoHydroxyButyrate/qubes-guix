@@ -122,9 +122,13 @@ if [ "$klass" = TemplateVM ]; then
         default) netvm=$(qubes-prefs default_netvm 2>/dev/null || true);;
         none) netvm=;;
     esac
-    echo "Making $vm from $target$( [ -n "$netvm" ] && echo ", netvm $netvm" || echo ', no netvm')"
+    # PVH or HVM as the template boots (an AppVM's kernel is its template's
+    # disk either way: pvgrub2-pvh, or GRUB under HVM).
+    virt=hvm kernel=''
+    [ "$(qvm-prefs "$target" virt_mode 2>/dev/null)" = pvh ] && virt=pvh kernel=pvgrub2-pvh
+    echo "Making $vm (${virt^^}) from $target$( [ -n "$netvm" ] && echo ", netvm $netvm" || echo ', no netvm')"
     qvm-create --template "$target" --label gray \
-        --property virt_mode=hvm --property kernel='' \
+        --property virt_mode="$virt" --property kernel="$kernel" \
         --property memory="$memory" --property maxmem=$((memory + 2000)) \
         --property qrexec_timeout=300 \
         "$vm" || die "couldn't create $vm"
@@ -140,7 +144,7 @@ else
     vm=$target
     template=$(qvm-prefs "$vm" template 2>/dev/null || echo "$vm")
     qvm-check -q --running "$vm" 2>/dev/null && was_running=1
-    echo "Testing $vm in place ($klass)"
+    echo "Testing $vm in place ($klass, $(qvm-prefs "$vm" virt_mode 2>/dev/null | tr a-z A-Z))"
 fi
 
 cleanup() {

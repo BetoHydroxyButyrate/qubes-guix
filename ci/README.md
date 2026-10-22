@@ -134,7 +134,7 @@ that file mode 600 and owned by `qubesci-tunnel`.
 ISO_HOST=beto@guix-subs         # the full DNS name if the short one doesn't resolve
 ISO_DIR=proj/qubes-guix         # the checkout on guix-subs, under beto's home
 TUNNEL_PORT=2222
-# ISO_OFFLINE=1                 # ISO with the channels' checkouts: no clone at install
+ISO_OFFLINE=1                   # ISO with the channels' checkouts: no clone at install (recommended)
 # ISO_SYNC_CMD=...              # default: guix-subs' build script via sudo; empty skips it
 ```
 
@@ -357,12 +357,12 @@ public repository.
      --force --test ci-guix dom0:<the ISO>`. `--yes` skips its "Go ahead?"
      question, which has no terminal here. It installs the template, does
      its first update, and runs `qubes-guix-test` on a throwaway AppVM. The
-     output streams to the job log. If it fails with the installer still
-     running, it's resumed once (`qubes-guix-create` picks up where it
-     stopped), since channel checkouts are fetched over the network and can
-     fail transiently. If it still fails, the installer's log is saved as
-     `results/qubes-guix-install.log`. Set `ISO_OFFLINE=1` to build the ISO
-     with the checkouts in it instead;
+     output streams to the job log. If it fails, the installer's log is
+     saved as `results/qubes-guix-install.log`. A failed install isn't
+     resumed: the installer is left with nothing on root's `PATH`, so
+     `qubes-guix-create` can't resume it, and the next run starts over.
+     Without `ISO_OFFLINE=1` the install fetches the channels' git checkouts
+     (Guix from Codeberg, ~300 MB), the most likely thing to fail;
    - installs each `*.rpm` with `qvm-template install` (not used by
      qubes-guix, kept for completeness);
    - runs each `SYSTEM_TESTS` module with nose2, the way Qubes' openQA does,

@@ -22,7 +22,8 @@
 #                      split-ssh, which the README's policy allows)
 #   --memory MiB       the test AppVM's memory (default 4000); maxmem is set
 #                      higher (MiB + 2000) so memory balancing is tested
-#   --keep             don't remove the test AppVM afterwards
+#   --keep             leave the qube running afterwards (no shutdown
+#                      check), and don't remove a test AppVM
 #   -h, --help
 #
 # What it checks, in order: start (and boot time); qrexec; QubesDB; the
@@ -146,7 +147,7 @@ cleanup() {
     if [ "$made" = 1 ] && [ "$keep" = 0 ]; then
         qvm-kill "$vm" >/dev/null 2>&1 || true
         qvm-remove -f "$vm" >/dev/null 2>&1 || true
-    elif [ "$made" = 0 ] && [ "$was_running" = 0 ]; then
+    elif [ "$made" = 0 ] && [ "$was_running" = 0 ] && [ "$keep" = 0 ]; then
         qvm-shutdown --wait --timeout 60 "$vm" >/dev/null 2>&1 || true
     fi
 }
@@ -267,18 +268,39 @@ case $link in
     *) fail "trusted-channels link" "points to $link";;
 esac
 
-# Memory balancing: meminfo-writer reports to xenstore. On when maxmem >
-# memory (Qubes runs the service by maxmem).
+# Memory balancing: meminfo-writer reports the qube's memory in use to
+# xenstore (memory/meminfo), which dom0's qmemman balances by. On when
+# maxmem > memory (Qubes runs the service by maxmem). It reports changes (of
+# 30 MB or more), and the key can be empty while the qube is idle: then
+# make one, 200 MB held for a few seconds, and watch for the report.
 mem=$(qvm-prefs "$vm" memory) maxmem=$(qvm-prefs "$vm" maxmem)
 if [ "$maxmem" -gt "$mem" ]; then
     xid=$(qvm-prefs "$vm" xid)
-    mi=
-    for _ in $(seq 1 10); do
-        mi=$(sudo -n xenstore-read "/local/domain/$xid/memory/meminfo" 2>/dev/null) && [ -n "$mi" ] && break
-        sleep 3
-    done
-    [ -n "$mi" ] && pass "memory balancing" "meminfo: $mi" ||
-        fail "memory balancing" "nothing in /local/domain/$xid/memory/meminfo (herd status qubes-meminfo-writer)"
+    key=/local/domain/$xid/memory/meminfo
+    # As root, directly: through 'sudo -n' a failure was silent.
+    xs_read() {
+        if [ "$(id -u)" = 0 ]; then xenstore-read "$1"; else sudo -n xenstore-read "$1"; fi
+    }
+    mi='' err='' how=''
+    if out=$(xs_read "$key" 2>&1); then mi=$out; else err=$out; fi
+    if [ -z "$mi" ]; then
+        how=", after a 200 MB change in the qube"
+        # tail holds 200 MB (anonymous memory: what meminfo-writer counts)
+        # until the sleep reads its output.
+        in_qube 'head -c 200M /dev/zero | tail -c 200M | { sleep 8; cat >/dev/null; }' &
+        hog=$!
+        for _ in $(seq 1 15); do
+            sleep 1
+            if out=$(xs_read "$key" 2>&1) && [ -n "$out" ]; then mi=$out; break; fi
+            err=$out
+        done
+        wait "$hog" 2>/dev/null || true
+    fi
+    if [ -n "$mi" ]; then
+        pass "memory balancing" "meminfo: $mi KiB in use$how; maxmem $maxmem MiB"
+    else
+        fail "memory balancing" "no report in $key$how${err:+ ($err)} (herd status qubes-meminfo-writer; meminfo in /var/log/messages)"
+    fi
 else
     skip "memory balancing" "not enabled for $vm: memory $mem, maxmem $maxmem"
 fi
@@ -378,7 +400,9 @@ if [ "$split_ssh" = 1 ]; then
 fi
 
 # Clean shutdown, timed.
-if [ "$made" = 1 ] || [ "$was_running" = 0 ]; then
+if [ "$keep" = 1 ]; then
+    skip "shutdown" "--keep: $vm left running"
+elif [ "$made" = 1 ] || [ "$was_running" = 0 ]; then
     t0=$(date +%s)
     if qvm-shutdown --wait --timeout 90 "$vm" >/dev/null 2>&1; then
         pass "shutdown" "$(( $(date +%s) - t0 ))s"
@@ -393,5 +417,7 @@ fi
 
 echo
 echo "$vm ($( [ "$made" = 1 ] && echo "from $target" || echo "$klass")): $passes passed, $fails failed, $skips skipped"
-[ "$made" = 1 ] && [ "$keep" = 1 ] && echo "Kept $vm (--keep); remove it with: qvm-remove -f $vm"
+if [ "$keep" = 1 ]; then
+    echo "$vm is still running (--keep)$( [ "$made" = 1 ] && echo "; remove it with: qvm-kill $vm; qvm-remove -f $vm")"
+fi
 exit "$fails"

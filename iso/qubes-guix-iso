@@ -14,8 +14,9 @@
 #   --guix-commit C       Guix at commit C              (default: latest)
 #   --qubes-commit C      the qubes channel at commit C (default: branch
 #                         head; with --server, the server's). 'head': the
-#                         branch head, also with --server (whose commits
-#                         the other channels keep)
+#                         branch head. Either way, with --server (or a
+#                         server in the substitutes file) the other
+#                         channels keep the server's commits
 #   --substitutes FILE    substitute servers, as for qubes-guix-create: "url
 #                         URL" lines (and "key ..." lines, which must already
 #                         be authorized here). Default: the checkout's
@@ -41,8 +42,9 @@
 # Next to the ISO, FILE.channels records the channels it was built from.
 #
 # NB: without -L, the qubes channel comes from its public repository, not
-# from this checkout: commit and push first (a branch, e.g. 'iso', is fine:
-# then -b iso). The script stops if that branch lacks this checkout's HEAD.
+# from this checkout: commit and push first. The script stops if the branch
+# there lacks this checkout's HEAD. iso/qubes-guix-iso-remote builds this
+# checkout's (pushed) HEAD on another machine.
 
 set -eu
 
@@ -122,8 +124,9 @@ done
 # The server whose commits to build at: the first one installs use, so the
 # ISO's prebuilt packages are its builds, and an install locked to it
 # (qubes-guix-create's default with a server) can use the ISO's guix as is.
-if [ -z "$server" ] && [ -z "$load_path" ] && [ -z "$guix_commit" ] &&
-   { [ -z "$qubes_commit" ] || [ "$qubes_commit" = head ]; } && [ -n "$file_urls" ]; then
+# A qubes commit given (C or head) pins qubes alone: the other channels
+# are still the server's.
+if [ -z "$server" ] && [ -z "$load_path" ] && [ -z "$guix_commit" ] && [ -n "$file_urls" ]; then
     server=${file_urls%% *}
     server=${server%/}
     echo "Building at the commits $server last built (--no-server: at the head)"

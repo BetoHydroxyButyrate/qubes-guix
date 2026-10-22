@@ -33,10 +33,10 @@ qubes-guix/iso/qubes-guix-iso -b template --offline -o /tmp/qgi.iso
 
 With your own substitute server, `--server URL` builds the ISO at the commits the server last built, and installs from it then fetch nearly everything from that server: see [the full setup](full-setup.md). If the checkout's `dom0/qubes-guix-substitutes` names no server, the ISO is built at the head of each channel.
 
-The qubes channel comes from its repository, never from a checkout: work you haven't committed and pushed isn't in the ISO, and with `--server` neither is anything newer than the server's last build. To build on a bigger machine (the substitute server) what you're working on elsewhere, run `iso/qubes-guix-iso-remote` in your working checkout. It stops on uncommitted changes in `qubes/`, `guest/` or `iso/` (untracked files too), force-pushes HEAD to a scratch branch (`iso`), waits for the channel's repository to have it (a mirror can lag), then on the build host (`--host`, default `guix-subs`; `--dir`, default the same path under your home) checks that commit out in its checkout and runs `iso/qubes-guix-iso -b iso --qubes-commit head`, plus whatever follows `--`. qubes is then exactly your HEAD, and the other channels are at the server's last build:
+The qubes channel comes from its repository, never from a checkout: work you haven't committed and pushed isn't in the ISO, and with `--server` neither is anything newer than the server's last build. To build on a bigger machine (the substitute server) what you're working on elsewhere, push as usual, then run `iso/qubes-guix-iso-remote` in your working checkout. It stops on uncommitted changes in `qubes/`, `guest/` or `iso/` (untracked files too), and checks that the channel's repository has HEAD on its branch (`-b`, default `main`): pushed, nothing is pushed for you. If your remote has it but the repository doesn't yet (a mirror can lag), it waits. Then on the build host (`--host`, default `guix-subs`; `--dir`, default the same path under your home) it checks that commit out in its checkout and runs `iso/qubes-guix-iso -b main --qubes-commit HEAD`, plus whatever follows `--`. qubes is then exactly your HEAD, the other channels are at the server's last build, and installs from the ISO follow `main`:
 
 ```
-iso/qubes-guix-iso-remote                          # on guix-subs, from this HEAD
+git push && iso/qubes-guix-iso-remote             # on guix-subs, at this HEAD
 iso/qubes-guix-iso-remote -- --offline -o qgi-offline.iso
 ```
 

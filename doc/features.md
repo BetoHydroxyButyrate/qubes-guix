@@ -23,6 +23,15 @@
   ```
   qvm-service guix split-gpg2-client on
   ```
+  With several identities, a vault per identity (`gpg-work`, `gpg-personal`, …), and a tag per identity on the qubes that should have it, one line each:
+  ```
+  qubes.Gpg2  *  @tag:gpg-work      @default  allow target=gpg-work
+  qubes.Gpg2  *  @tag:gpg-personal  @default  allow target=gpg-personal
+  ```
+  ```
+  qvm-tags guix add gpg-work
+  ```
+  A qube asks one vault: the first matching line wins, so give each qube one of these tags.
 - **guix:**
   ```
   # never start an empty local gpg-agent (keyboxd must still autostart, so not `no-autostart`)

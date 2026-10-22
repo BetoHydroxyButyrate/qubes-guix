@@ -11,6 +11,7 @@
 #   SSH_KEY        ~/.ssh/qubes_ci_ed25519
 #   SYSTEM_TESTS   Qubes test modules, e.g. "qubes.tests.integ.basic" (default: none)
 #   TEST_TEMPLATES (optional) override which templates are tested
+#   VARIANTS       0: don't test the HVM/PVH template/AppVM/standalone variants
 #   CONNECT_TIMEOUT 600   seconds to wait for the tunnel (e.g. after a reboot)
 set -euo pipefail
 
@@ -41,7 +42,8 @@ log "connected to ci-ctl"
 
 # 1. stage the payload in ci-ctl
 ctl 'rm -rf ci-run && mkdir -p ci-run'
-scp "${SSH_OPTS[@]}" -P "$TUNNEL_PORT" -q "$HERE/../dom0/run-in-dom0.sh" user@127.0.0.1:ci-run/
+scp "${SSH_OPTS[@]}" -P "$TUNNEL_PORT" -q "$HERE/../dom0/run-in-dom0.sh" "$HERE/../dom0/test-variants.sh" \
+    user@127.0.0.1:ci-run/
 if compgen -G "$PAYLOAD/*" >/dev/null; then
     scp "${SSH_OPTS[@]}" -P "$TUNNEL_PORT" -q -r "$PAYLOAD"/* user@127.0.0.1:ci-run/
 fi
@@ -56,7 +58,7 @@ ctl "qrexec-client-vm dom0 ci.Dom0Shell" <<EOF | tee "${RESULTS%/}.console.log"
 rm -rf ~/ci-run && mkdir -p ~/ci-run
 qvm-run -q -p ci-ctl 'tar c -C ci-run .' </dev/null | tar x -C ~/ci-run
 qvm-run -q -p ci-ctl 'rm -f ci-run/*.iso' </dev/null    # dom0 has it now
-SYSTEM_TESTS='$SYSTEM_TESTS' TEST_TEMPLATES='${TEST_TEMPLATES:-}' bash ~/ci-run/run-in-dom0.sh </dev/null
+SYSTEM_TESTS='$SYSTEM_TESTS' TEST_TEMPLATES='${TEST_TEMPLATES:-}' VARIANTS='${VARIANTS:-1}' bash ~/ci-run/run-in-dom0.sh </dev/null
 rc=\$?
 tar c -C ~/ci-run results | qvm-run -q -p ci-ctl 'rm -rf ci-run/results; tar x -C ci-run'
 echo "QUBES_CI_EXIT=\$rc"

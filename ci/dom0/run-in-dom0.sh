@@ -8,7 +8,12 @@
 # then runs the Qubes integration test modules against the installed
 # templates, then the project's own dom0-tests.sh.
 #
+# After a good install, test-variants.sh (next to this) tests the other kinds
+# of Guix qube made from the template: HVM and PVH, template, AppVM and
+# StandaloneVM.
+#
 # Env: CI_QUBE       name of the Guix template made from the ISO (ci-guix)
+#      VARIANTS      0: skip test-variants.sh (default 1)
 #      SYSTEM_TESTS  space-separated "module[:timeout-seconds]" list
 #      TEST_TEMPLATES  templates to test; defaults to the ones installed here
 set -uo pipefail
@@ -17,16 +22,32 @@ mkdir -p results
 export DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority
 STATE=$HOME/.qubes-ci-templates
 CI_QUBE=${CI_QUBE:-ci-guix}
+VARIANTS=${VARIANTS:-1}
 failed=0
 
-# --- leftovers from the previous run
-# AppVMs first (test-guix-* are qubes-guix-test's), then the template.
-for vm in $(qvm-ls --raw-list | grep -E '^test-(inst|cls|guix)-') \
-          $(qvm-check -q "$CI_QUBE" 2>/dev/null && echo "$CI_QUBE"); do
-    echo "==> removing leftover $vm"
-    qvm-kill "$vm" 2>/dev/null
-    qvm-remove -f "$vm"
+# --- leftovers from the previous run: test qubes (test-guix-* are
+# qubes-guix-test's), $CI_QUBE and the variants made from it ($CI_QUBE-*).
+# Templates last: their AppVMs have to go first.
+leftovers=$(qvm-ls --raw-list | grep -E "^test-(inst|cls|guix)-|^$CI_QUBE(-|\$)")
+for pass in qubes templates; do
+    for vm in $leftovers; do
+        qvm-check -q "$vm" 2>/dev/null || continue
+        is_tpl=0; [ "$(qvm-prefs "$vm" klass 2>/dev/null)" = TemplateVM ] && is_tpl=1
+        [ "$pass" = qubes ] && [ $is_tpl = 1 ] && continue
+        echo "==> removing leftover $vm"
+        qvm-kill "$vm" 2>/dev/null
+        qvm-remove -f "$vm"
+    done
 done
+
+# --- PVH needs pvgrub2-pvh (dom0 package grub2-xen-pvh); try to install it
+# once, as the variants skip PVH without it. Not fatal: dom0 updates go
+# through the UpdateVM, which may not manage it.
+if [ "$VARIANTS" = 1 ] && [ ! -e /var/lib/qubes/vm-kernels/pvgrub2-pvh ]; then
+    echo "==> no pvgrub2-pvh in dom0: trying qubes-dom0-update grub2-xen-pvh"
+    sudo qubes-dom0-update -y grub2-xen-pvh </dev/null ||
+        echo "==> couldn't install grub2-xen-pvh: the PVH variants will be skipped"
+fi
 if [ -f "$STATE" ]; then
     while read -r t; do
         [ -n "$t" ] && qvm-check -q "$t" 2>/dev/null || continue
@@ -71,6 +92,9 @@ for iso in ./*.iso; do
         fi
     fi
     qvm-check -q "$CI_QUBE" 2>/dev/null && templates+=("$CI_QUBE")
+    if [ "$rc" = 0 ] && [ "$VARIANTS" = 1 ] && [ -x ./test-variants.sh ]; then
+        ./test-variants.sh "$CI_QUBE" dom0 results || failed=1
+    fi
     break
 done
 

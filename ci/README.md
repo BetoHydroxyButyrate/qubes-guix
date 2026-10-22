@@ -7,8 +7,11 @@ A dedicated Intel NUC (NUC10FNH) runs Qubes OS 4.3. On every push to
    (`iso/qubes-guix-iso`, driven over SSH);
 2. on the NUC, installs a Guix template from it with `dom0/qubes-guix-create
    --unattended --template --test`, which also runs `qubes-guix-test`;
-3. optionally runs Qubes' own integration test modules against the template;
-4. collects the results.
+3. from that template, without another install, makes and tests a
+   template, an AppVM and a StandaloneVM, in HVM and in PVH
+   (`ci/dom0/test-variants.sh`);
+4. optionally runs Qubes' own integration test modules against the template;
+5. collects the results.
 
 ```
 Gitea ──► act_runner (Debian LXC, user ci) ◄── reverse SSH tunnel ───┐
@@ -38,15 +41,19 @@ How it fits together:
   - the first-boot CI setup;
   - the tunnel;
   - the empty-payload smoke test (runner → ci-ctl → dom0 and back);
-  - SSH and passwordless sudo from the runner to guix-subs.
-- **Not yet run:** the ISO build step, a full install-and-test run, and the
-  Gitea workflow end to end.
+  - SSH and passwordless sudo from the runner to guix-subs;
+  - a full run by hand from the runner: ISO built on guix-subs, the
+    unattended template install and update (3h10m), and `qubes-guix-test`
+    on an AppVM (15 passed).
+- **Not yet run:** the variants (`test-variants.sh`), `ISO_OFFLINE=1`, and
+  the Gitea workflow end to end.
 
 | File | Runs on | What it does |
 |---|---|---|
 | `install/make-oem-ks.sh` | your workstation | writes the kickstart file for an unattended reinstall |
 | `dom0/qubes-ci-setup.sh` | dom0, once | sets up ci-ctl, the tunnel, the qrexec service and policy, autologin, nose2 |
 | `dom0/run-in-dom0.sh` | dom0, each run | cleans up after the last run, installs the template, runs tests |
+| `dom0/test-variants.sh` | dom0, each run | makes the HVM/PVH template, AppVM and standalone variants from the template and tests each |
 | `runner/build-iso-remote.sh` | runner, each run | syncs guix-subs, builds the ISO there at the pushed commit, copies it back |
 | `runner/qubes-ci-run.sh` | runner, each run | stages the payload in ci-ctl, runs dom0's part, fetches results |
 | `runner/qubes-ci-reinstall.sh` | runner, on demand | wipes the NUC's bootloader and reboots it into the OEM installer |
@@ -351,8 +358,11 @@ public repository.
 6. **In dom0**, through `ci.Dom0Shell`:
    - pulls `~/ci-run` from ci-ctl;
    - removes leftovers: `test-inst-*`, `test-cls-*` and `test-guix-*`
-     qubes, the previous `ci-guix` template, and any RPM templates from the
-     previous run;
+     qubes, the previous `ci-guix` template and everything named
+     `ci-guix-*` (the variants), AppVMs before templates, and any RPM
+     templates from the previous run;
+   - if dom0 has no `pvgrub2-pvh`, tries `qubes-dom0-update -y
+     grub2-xen-pvh` once (not fatal);
    - runs `qubes-guix-create --yes --unattended --template --no-password
      --force --test ci-guix dom0:<the ISO>`. `--yes` skips its "Go ahead?"
      question, which has no terminal here. It installs the template, does
@@ -363,6 +373,7 @@ public repository.
      `qubes-guix-create` can't resume it, and the next run starts over.
      Without `ISO_OFFLINE=1` the install fetches the channels' git checkouts
      (Guix from Codeberg, ~300 MB), the most likely thing to fail;
+   - if the install passed, runs `test-variants.sh` (below);
    - installs each `*.rpm` with `qvm-template install` (not used by
      qubes-guix, kept for completeness);
    - runs each `SYSTEM_TESTS` module with nose2, the way Qubes' openQA does,
@@ -373,8 +384,30 @@ public repository.
 7. **Fetches the results:** `qubes-guix-create.log`, logs, JUnit XML, the
    dom0 journal, Xen and qube consoles, and the full console output.
 
+**The variants** (`test-variants.sh`), for each boot mode: HVM, and PVH
+when dom0 has `/var/lib/qubes/vm-kernels/pvgrub2-pvh`:
+
+| Variant | Made by | Tested with |
+|---|---|---|
+| `MODE-template` | `ci-guix` itself for the mode it's in, else `qvm-clone` to `ci-guix-MODE`, switched to MODE | `qubes-guix-test --in-place` |
+| `MODE-appvm` | `qubes-guix-create --appvm T --MODE --test ci-guix-app-MODE` | its `--test` |
+| `MODE-standalone` | `qvm-create --class StandaloneVM --template T ci-guix-sa-MODE` (a copy of the template's disk), with the template's settings | `qubes-guix-test` |
+
+- **Results:** each one's output goes to the job log and
+  `results/variant-MODE-KIND.log`; the table of PASS/FAIL/SKIP to
+  `results/variants-summary.txt`.
+- **What they cover:** how each kind of qube runs. They don't cover
+  `qubes-guix-create --unattended`'s own StandaloneVM or PVH install paths;
+  only the template install runs on every push.
+- **No `pvgrub2-pvh`:** the PVH variants are reported as SKIP, not
+  failures. If the automatic `qubes-dom0-update` doesn't manage it, install
+  `grub2-xen-pvh` in dom0 by hand.
+- **Turning them off:** set `VARIANTS=0` in the runner's environment to run
+  only the install and its test.
+
 **Expect a long run.** A run includes the guix-subs sync build, the ISO
-build and a full Guix install and update, so expect an hour or more,
+build and a full Guix install and update, so expect several hours (the
+first full run took a little over 3), plus a few minutes per variant,
 depending on how much comes from your substitute server.
 
 **Qubes test modules** are opt-in: give them in the workflow's

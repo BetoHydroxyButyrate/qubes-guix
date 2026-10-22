@@ -4,8 +4,9 @@
 #   qubes-guix-test [options] QUBE
 #
 # QUBE a TemplateVM: a throwaway AppVM is made from it (test-guix-<pid>),
-# tested, and removed. Any other Guix qube (AppVM, StandaloneVM) is tested
-# in place, and left as it was (started if it was off, shut down again).
+# tested, and removed (--in-place: the template itself). Any other Guix
+# qube (AppVM, StandaloneVM) is tested in place, and left as it was
+# (started if it was off, shut down again).
 #
 # Each check prints PASS, FAIL or SKIP; the exit status is the number of
 # FAILs (0: all good). Safe on a daily-use dom0: it touches only the test
@@ -22,6 +23,9 @@
 #                      split-ssh, which the README's policy allows)
 #   --memory MiB       the test AppVM's memory (default 4000); maxmem is set
 #                      higher (MiB + 2000) so memory balancing is tested
+#   --in-place         a TemplateVM: test the template itself, not an
+#                      AppVM made from it (a template without a netvm skips
+#                      the network checks)
 #   --keep             leave the qube running afterwards (no shutdown
 #                      check), and don't remove a test AppVM
 #   -h, --help
@@ -43,6 +47,7 @@ split_gpg=0
 split_ssh=0
 memory=4000
 keep=0
+in_place=0
 
 die() { echo "$prog: $*" >&2; exit 2; }
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -54,6 +59,7 @@ while [ $# -gt 0 ]; do
         --split-ssh) split_ssh=1; shift;;
         --memory) [ $# -ge 2 ] || die "$1 needs a value"; memory=$2; shift 2;;
         --keep) keep=1; shift;;
+        --in-place) in_place=1; shift;;
         -h|--help) usage; exit 0;;
         -*) die "unknown option $1 (see --help)";;
         *) break;;
@@ -116,7 +122,7 @@ made=0
 was_running=0
 klass=$(qvm-prefs "$target" klass)
 template=$target
-if [ "$klass" = TemplateVM ]; then
+if [ "$klass" = TemplateVM ] && [ "$in_place" = 0 ]; then
     vm="test-guix-$$"
     case $netvm in
         default) netvm=$(qubes-prefs default_netvm 2>/dev/null || true);;

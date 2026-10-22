@@ -2,10 +2,11 @@
 
 [← README](../README.md)
 
-`dom0/qubes-guix-test` (copy it to dom0 next to `qubes-guix-create`) smoke-tests a Guix qube's Qubes integration and prints PASS, FAIL or SKIP for each check; its exit status is the number of failures. Given a template, it makes a throwaway AppVM from it (`test-guix-<pid>`, `--keep` to keep it), tests that, and removes it. Any other Guix qube is tested in place. It only touches the qube under test, so it's safe on a daily-use dom0.
+`dom0/qubes-guix-test` (copy it to dom0 next to `qubes-guix-create`) smoke-tests a Guix qube's Qubes integration and prints PASS, FAIL or SKIP for each check; its exit status is the number of failures. Given a template, it makes a throwaway AppVM from it (`test-guix-<pid>`), tests that, and removes it; `--in-place` tests the template itself instead (without a netvm, the network checks are skipped). `--keep` leaves the qube tested running afterwards, and keeps a throwaway AppVM. Any other Guix qube is tested in place. It only touches the qube under test, so it's safe on a daily-use dom0.
 
 ```
 qubes-guix-test guix-tmpl                         # template: via a throwaway AppVM
+qubes-guix-test --in-place guix-tmpl              # the template itself
 qubes-guix-test --split-gpg --split-ssh guix-tmpl # also the vault clients
 qubes-guix-create --unattended --template --test …   # the same, after an install
 ```

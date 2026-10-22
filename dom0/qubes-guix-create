@@ -116,10 +116,13 @@ Options:
       --pvh             boot NAME in PVH (no QEMU, no stub domain; faster,
                         also with memory balancing): virt_mode pvh, kernel
                         pvgrub2-pvh (GRUB in the qube boots its own kernel;
-                        dom0 needs grub2-xen-pvh). With --unattended: after
-                        the install (the installer itself is HVM). With
-                        --appvm: the default when TEMPLATE is PVH.
-      --hvm             with --appvm: HVM even when TEMPLATE is PVH
+                        dom0 needs grub2-xen-pvh). The default for
+                        --unattended: NAME is switched after the install
+                        (the installer itself is HVM), and back to HVM if
+                        it doesn't boot in PVH. With --appvm: the default
+                        when TEMPLATE is PVH.
+      --hvm             stay HVM: with --unattended, after the install; with
+                        --appvm, even when TEMPLATE is PVH
       --qubes-iso       ISO_PATH is the qubes-guix installer ISO: dom0 waits
                         for its qrexec agent (assumed with --unattended, or
                         when the file name contains 'qubes-guix')
@@ -275,6 +278,21 @@ confirm() {
 pvh_check() {
     [ -e /var/lib/qubes/vm-kernels/pvgrub2-pvh ] ||
         die "PVH needs pvgrub2-pvh in dom0: sudo qubes-dom0-update grub2-xen-pvh"
+}
+
+# The mode an installed qube boots in, into $virt: PVH unless --hvm; HVM,
+# with a note, when dom0 lacks pvgrub2-pvh and --pvh wasn't given.
+default_virt() {
+    case $virt in
+        pvh) pvh_check;;
+        hvm) ;;
+        *)  if [ -e /var/lib/qubes/vm-kernels/pvgrub2-pvh ]; then
+                virt=pvh
+            else
+                virt=hvm
+                echo "$prog: note: no pvgrub2-pvh in dom0 (package grub2-xen-pvh): $name stays HVM" >&2
+            fi;;
+    esac
 }
 
 # Qube $1 to boot in mode $2 (pvh or hvm), with its own kernel either way.
@@ -1118,20 +1136,25 @@ start_installed() {
     # the install would make qvm-start wait for, and kill, a stock
     # installer; the qubes-guix ISO has it set already).
     qvm-features "$name" qrexec 1
-    # --pvh: the installed system boots in PVH from here on (the installer
-    # was HVM): GRUB in the qube (pvgrub2-pvh) boots its own kernel.
+    # PVH (unless --hvm): the installed system boots in PVH from here on
+    # (the installer was HVM): GRUB in the qube (pvgrub2-pvh) boots its own
+    # kernel.
     if [ "$virt" = pvh ]; then
         echo "Switching $name to PVH (kernel pvgrub2-pvh)."
         set_virt "$name" pvh
     fi
-    # The first boot does more than later ones, and with memory balancing
-    # every boot is slow (Xen populate-on-demand): one took over 300 s to
-    # reach the agent, and qvm-start then stops the qube. So a longer qrexec
-    # timeout for this start, and one more try if even that runs out.
-    local tmo s
+    # The first boot does more than later ones, and under HVM with memory
+    # balancing every boot is slow (Xen populate-on-demand): one took over
+    # 300 s to reach the agent, and qvm-start then stops the qube. So under
+    # HVM a longer qrexec timeout for this start, and one more try if even
+    # that runs out. PVH boots fast (18 s, with balancing): its usual
+    # timeout, so a system that can't boot in PVH (an older ISO's channel)
+    # is soon retried in HVM.
+    local tmo s first=900
     tmo=$(qvm-prefs "$name" qrexec_timeout)
     is_uint "$tmo" || tmo=300
-    [ "$tmo" -ge 900 ] || qvm-prefs "$name" qrexec_timeout 900
+    [ "$virt" = pvh ] && first=$tmo
+    [ "$tmo" -ge "$first" ] || qvm-prefs "$name" qrexec_timeout "$first"
     s=$(date +%s)
     if ! with_focus_kept "$name" qvm-start "$name"; then
         echo "$prog: $name's first boot didn't reach its qrexec agent in $(( $(date +%s) - s )) s," >&2
@@ -1144,6 +1167,7 @@ start_installed() {
             echo "qvm-prefs $name virt_mode pvh; qvm-prefs $name kernel pvgrub2-pvh)." >&2
             set_virt "$name" hvm
             virt=hvm
+            [ "$tmo" -ge 900 ] || qvm-prefs "$name" qrexec_timeout 900
         fi
         echo "Starting it once more." >&2
         s=$(date +%s)
@@ -1216,7 +1240,7 @@ elapsed() { local s=$(( $(date +%s) - t0 )); printf '%dh%02dm' $((s / 3600)) $((
 # qrexec on the qubes-guix ISO, else typed into the stock installer's VT3.
 unattended() {
     detect_template "$name"
-    [ "$virt" = pvh ] && pvh_check
+    default_virt
     local via_qrexec=0
     if [ "$dry_run" = 1 ]; then
         [ "$qubes_iso" = 1 ] && via_qrexec=1
@@ -1439,14 +1463,13 @@ if [ "$install" = 1 ] && [ "$qubes_iso" = 0 ] && [ "$dry_run" = 0 ] && ! [ -t 0 
 terminal here to say when the installer is up: run it from a terminal"
 fi
 
-case $virt in
-    pvh) [ "$install" = 1 ] ||
-             die "--pvh: with --unattended (the installer boots in HVM; NAME is switched
+if [ "$install" = 1 ]; then
+    default_virt
+elif [ "$virt" = pvh ]; then
+    die "--pvh: with --unattended (the installer boots in HVM; NAME is switched
 after the install), or --appvm. Otherwise, after installing: qvm-prefs NAME
 virt_mode pvh; qvm-prefs NAME kernel pvgrub2-pvh"
-         pvh_check;;
-    hvm) ;;
-esac
+fi
 is_uint "$vcpus"  && [ "$vcpus" -ge 1 ]     || die "VCPUS must be a positive integer"
 is_uint "$memory" && [ "$memory" -ge 1024 ] || die "MEMORY must be at least 1024 (MiB)"
 is_uint "$maxmem"                           || die "MAXMEM must be an integer (MiB)"

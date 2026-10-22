@@ -54,7 +54,17 @@ for iso in ./*.iso; do
     echo "==> qubes-guix-create --unattended --template --test $CI_QUBE from $iso"
     (cd dom0 && ./qubes-guix-create --yes --unattended --template --no-password --force --test \
         "$CI_QUBE" "dom0:$iso_path") </dev/null 2>&1 | tee results/qubes-guix-create.log
-    [ "${PIPESTATUS[0]}" = 0 ] || failed=1
+    if [ "${PIPESTATUS[0]}" != 0 ]; then
+        failed=1
+        # A failed install leaves the installer running, with its log in
+        # /root; it has cat but few other tools, so fetch the whole log.
+        if qvm-check -q --running "$CI_QUBE" 2>/dev/null; then
+            timeout 120 qvm-run -q -u root --pass-io "$CI_QUBE" \
+                'cat /root/qubes-guix-install.log' </dev/null \
+                > results/qubes-guix-install.log 2>&1 &&
+                echo "==> the installer's log is in results/qubes-guix-install.log"
+        fi
+    fi
     qvm-check -q "$CI_QUBE" 2>/dev/null && templates+=("$CI_QUBE")
     break
 done

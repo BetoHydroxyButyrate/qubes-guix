@@ -19,7 +19,8 @@
 ;;; else is changed). Set but empty: #:channel-commits '() (unlocked).
 ;;; With QUBES_PRINT=follow-head, print the channel names of #:follow-head
 ;;; (space-separated; "all" for #t; nothing if none), change nothing, and
-;;; need no QUBES_OUT.
+;;; need no QUBES_OUT. With QUBES_PRINT=channel-commits, likewise print
+;;; #:channel-commits, one "NAME COMMIT" line per channel.
 ;;; With QUBES_CHANNELS_FILE=F, a file of (channel ...) forms, #:extra-channels
 ;;; (list <F's text>) (likewise; an existing one is left alone).
 ;;; With QUBES_SUBSTITUTE_URLS="URL ..." (and QUBES_SUBSTITUTE_KEYS, the
@@ -204,7 +205,7 @@
 
 ")
 
-;; QUBES_PRINT=follow-head: report #:follow-head, change nothing.
+;; QUBES_PRINT=follow-head or channel-commits: report it, change nothing.
 (define (quoted-names x)
   (match x
     (('quote (? list? names)) names)
@@ -213,19 +214,37 @@
                         (other (fail "#:follow-head: can't read ~s" other)))
           items))
     (_ (fail "#:follow-head: expected #t or '(name ...), got ~s" x))))
+(define (print-channel-commits x)
+  (match x
+    (('quote (? list? alist))
+     (for-each (match-lambda
+                 (((? symbol? name) . (? string? commit))
+                  (format #t "~a ~a~%" name commit))
+                 (other (fail "#:channel-commits: can't read ~s" other)))
+               alist))
+    (_ (fail "#:channel-commits: expected '((name . \"commit\") ...), got ~s" x))))
 (when print-request
-  (unless (string=? print-request "follow-head")
-    (fail "QUBES_PRINT: only follow-head is known, not ~s" print-request))
-  (match last-form
-    (('qubes-operating-system . rest)
-     (match (memq #:follow-head rest)
-       ((_ #t . _) (display "all"))
-       ((_ value . _) (display (string-join (map symbol->string
-                                                 (quoted-names value))
-                                            " ")))
-       (_ #t)))
-    (_ #t))
-  (newline)
+  (cond
+   ((string=? print-request "follow-head")
+    (match last-form
+      (('qubes-operating-system . rest)
+       (match (memq #:follow-head rest)
+         ((_ #t . _) (display "all"))
+         ((_ value . _) (display (string-join (map symbol->string
+                                                   (quoted-names value))
+                                              " ")))
+         (_ #t)))
+      (_ #t))
+    (newline))
+   ((string=? print-request "channel-commits")
+    (match last-form
+      (('qubes-operating-system . rest)
+       (match (memq #:channel-commits rest)
+         ((_ value . _) (print-channel-commits value))
+         (_ #t)))
+      (_ #t)))
+   (else
+    (fail "QUBES_PRINT: follow-head or channel-commits, not ~s" print-request)))
   (exit 0))
 
 ;; The elements of the form that starts (with its "(") at START: a list of

@@ -1,6 +1,6 @@
 #!@SH@
-# qubes-guix-update [-r|--reconfigure] [--guix-commit C | --head] [--allow-downgrades]
-#                   [GUIX-PULL-ARGS...]
+# qubes-guix-update [-r|--reconfigure] [--guix-commit C | --head |
+#                   --channel NAME=C ...] [--allow-downgrades] [GUIX-PULL-ARGS...]
 #   As root (it uses sudo if needed): guix pull, through the Qubes updates
 #   proxy when this qube has one (a template with updates-proxy-setup);
 #   with -r, then guix system reconfigure ${QUBES_GUIX_CONFIG:-/etc/config.scm}
@@ -14,6 +14,14 @@
 #                    server doesn't publish /channel-commits
 #   --head           unlock: every channel follows its branch head again
 #                    (#:guix-commit #f, #:channel-commits '())
+#   --channel NAME=C move ONE channel's lock, the others staying where they
+#                    are (repeatable): C a full commit, 'server' (the
+#                    commit your substitute server last built it at), or
+#                    'head' (unlocked: it follows its branch). E.g.
+#                    --channel nonguix=server, --channel qubes=head.
+#                    Builds of the others still match the server's; mixing
+#                    commits the server never built together can mean
+#                    building here (a nonguix newer than its Guix, say)
 #   --allow-downgrades  for the pull AND the reconfigure: needed once after a
 #                    channel's history was rewritten
 #   Channels in the config's #:follow-head always follow their branch head,
@@ -36,6 +44,8 @@ fi
 
 reconfigure=0
 pin=
+chans=
+heads=
 downgrades=
 while [ $# -gt 0 ]; do
     case $1 in
@@ -44,11 +54,16 @@ while [ $# -gt 0 ]; do
                        pin=$2; reconfigure=1; shift 2;;
         --guix-commit=*) pin=${1#*=}; reconfigure=1; shift;;
         --head) pin='head'; reconfigure=1; shift;;
+        --channel) [ $# -ge 2 ] || die "$1 needs NAME=COMMIT, NAME=server or NAME=head"
+                   chans="$chans $2"; reconfigure=1; shift 2;;
+        --channel=*) chans="$chans ${1#*=}"; reconfigure=1; shift;;
         --allow-downgrades) downgrades=--allow-downgrades; shift;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0;;
+        -h|--help) sed -n '2,/^# Installed by/p' "$0"; exit 0;;
         *) break;;
     esac
 done
+[ -n "$chans" ] && [ -n "$pin" ] &&
+    die "--channel moves one channel's lock: not with --guix-commit or --head"
 config=${QUBES_GUIX_CONFIG:-}
 [ -n "$config" ] || config=/etc/config.scm
 [ -f "$config" ] || die "no such file: $config"
@@ -144,7 +159,9 @@ fi
 # (/guix-commit, from servers that publish only that). Fetched with
 # 'guix download' (through the proxy, if any): no curl needed.
 commits=
-if [ "$pin" = server ]; then
+srv_commits=
+case " $chans " in *=server\ *) need_server=1;; *) need_server=0;; esac
+if [ "$pin" = server ] || [ "$need_server" = 1 ]; then
     urls=/etc/qubes-guix-substitute-urls
     [ -s "$urls" ] || die "--guix-commit server: no substitute server in the
 config (#:extra-substitute-urls) to ask"
@@ -161,11 +178,19 @@ config (#:extra-substitute-urls) to ask"
             [ ${#c} -eq 40 ] && [ -z "$rest" ] ||
                 die "$server/channel-commits: '$name $c $rest' isn't NAME COMMIT"
         done || exit 1
-        pin=$(printf '%s\n' "$commits" | awk '$1 == "guix" {print $2; exit}')
-        [ -n "$pin" ] || die "$server/channel-commits: no guix line"
-        echo "$prog: $server last built these channels; locking to them:"
-        printf '%s\n' "$commits" | sed 's/^/    /'
+        if [ "$need_server" = 1 ]; then
+            # --channel NAME=server: only the commits named, below.
+            srv_commits=$commits
+            commits=
+        else
+            pin=$(printf '%s\n' "$commits" | awk '$1 == "guix" {print $2; exit}')
+            [ -n "$pin" ] || die "$server/channel-commits: no guix line"
+            echo "$prog: $server last built these channels; locking to them:"
+            printf '%s\n' "$commits" | sed 's/^/    /'
+        fi
     else
+        [ "$need_server" = 0 ] ||
+            die "--channel NAME=server: $server publishes no /channel-commits"
         file=$("$guix" download "$server/guix-commit" 2>/dev/null | head -n1) ||
             file=
         [ -n "$file" ] && [ -f "$file" ] ||
@@ -228,6 +253,47 @@ if [ -n "$pin" ]; then
             die "couldn't clear #:channel-commits in $config; set it to '() by hand"
     fi
 fi
+# --channel NAME=C: that channel's lock alone, in #:channel-commits (and in
+# #:guix-commit, which wins for guix, if the config has one).
+if [ -n "$chans" ]; then
+    new=$(QUBES_IN="$tmp/config.scm" QUBES_PRINT=channel-commits "$guix" repl -- @WRAP_CONFIG@) ||
+        die "couldn't read #:channel-commits from $config"
+    for spec in $chans; do
+        name=${spec%%=*} c=${spec#*=}
+        { [ "$name" != "$spec" ] && [ -n "$name" ] && [ -n "$c" ]; } ||
+            die "--channel $spec: NAME=COMMIT, NAME=server or NAME=head"
+        case $name in *[!a-z0-9-]*) die "--channel: bad channel name '$name'";; esac
+        case $c in
+            server)
+                c=$(printf '%s\n' "$srv_commits" | awk -v n="$name" '$1 == n {print $2; exit}')
+                [ -n "$c" ] || die "--channel $spec: $server publishes no commit for '$name'";;
+            head) ;;
+            *[!0-9a-f]*) die "--channel $spec: '$c' isn't a commit hash (or server, head)";;
+            *) [ ${#c} -eq 40 ] || die "--channel $spec: a full 40-digit commit hash, please";;
+        esac
+        new=$(printf '%s\n' "$new" | awk -v n="$name" 'NF && $1 != n')
+        if [ "$c" = head ]; then
+            heads="$heads $name"
+            echo "$prog: $name: unlocked, follows its branch head"
+            v='#f'
+        else
+            new=$(printf '%s\n%s %s\n' "$new" "$name" "$c" | awk NF)
+            echo "$prog: $name: locked at $c"
+            v="\"$c\""
+        fi
+        if [ "$name" = guix ] && grep -q '#:guix-commit' "$tmp/config.scm"; then
+            sed 's/#:guix-commit[[:space:]]*\("[0-9a-f]*"\|#f\)/#:guix-commit '"$(printf '%s' "$v" | sed 's/[\&/]/\\&/g')"'/' \
+                "$tmp/config.scm" > "$tmp/config.new"
+            grep -q "#:guix-commit $v" "$tmp/config.new" ||
+                die "couldn't change #:guix-commit in $config; edit it by hand"
+            mv "$tmp/config.new" "$tmp/config.scm"
+        fi
+    done
+    wrap_config QUBES_CHANNEL_COMMITS="$new" ||
+        die "couldn't set #:channel-commits in $config"
+    commits=$new
+fi
+
 if ! cmp -s "$config" "$tmp/config.scm"; then
     echo "$prog: $config: locks updated (old one: $config.bak)"
     cp "$config" "$config.bak"
@@ -243,6 +309,11 @@ fi
 follow=$(QUBES_IN=$config QUBES_PRINT=follow-head "$guix" repl -- @WRAP_CONFIG@) ||
     die "couldn't read #:follow-head from $config"
 [ "$pin" = head ] && follow=all
+# --channel NAME=head: those follow their head in this pull (and, unlocked,
+# from the reconfigure on).
+if [ -n "$heads" ] && [ "$follow" != all ]; then
+    follow=$(echo $follow $heads)
+fi
 if [ -n "$commits" ]; then
     pins=$(printf '%s\n' "$commits" | awk '{printf "(%s . \"%s\") ", $1, $2}')
 elif [ -n "$pin" ] && [ "$pin" != head ]; then

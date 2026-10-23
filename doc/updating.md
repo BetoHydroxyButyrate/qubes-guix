@@ -21,7 +21,12 @@ Moving between them:
 qubes-guix-update --guix-commit C   # lock at C (or move the lock): edits config.scm, pulls C, reconfigures
 qubes-guix-update --guix-commit server  # lock every channel at your server's last build
 qubes-guix-update --head            # unlock: every channel back to following the head
+qubes-guix-update --channel nonguix=server   # move ONE channel: to the server's last build of it
+qubes-guix-update --channel qubes=C          # ... to commit C (a full hash)
+qubes-guix-update --channel qubes=head       # ... or unlock it: it follows its branch
 ```
+
+`--channel NAME=…` (repeatable) moves that channel's lock alone, in `#:channel-commits` (and `#:guix-commit` for `guix=…`, if the config has one), pulls and reconfigures; the other channels stay where they're locked. Mind the pairings: the server built its channels together, so moving one away from the others can mean building here what it never built, typically nonguix's packages against an older or newer Guix than it had. `#:follow-head '(NAME)` is the lasting version of `NAME=head`: that channel follows its branch even through a later `--guix-commit server`.
 
 **Working on a channel while locked:** `#:follow-head '(qubes)` makes the channels it names follow their branch even though `#:channel-commits` pins them (`#t`: all of them). Set it and run `qubes-guix-update -r`: that pull and the reconfigure already use the head. The lock stays recorded; remove the name, and the next `qubes-guix-update -r` goes back to it.
 

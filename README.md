@@ -45,6 +45,10 @@ There are three ways in. Each ends with the same kind of qube; they differ in wh
 
 *The installer's monitor (its console, tty1) during an automatic install from the ISO, `qubes-guix-create --unattended`: htop above, the traffic per remote address below. The ISO was built from guix-subs (`--server`): 2.2 GiB came from it, over the LAN, and a few MiB from anywhere else.*
 
+## Software in AppVMs
+
+An AppVM's root, `/gnu/store` included, is its template's again at every start: `guix install` there lasts until shutdown. What most AppVMs need goes in the template. What one AppVM needs goes in `~/.config/guix/manifest.scm` (or a Guix Home, `~/.config/guix/home.scm`), which `qubes-guix-profile` puts back at each login, from your substitute server when it has the packages. See [Software in AppVMs](doc/templates.md#software-in-appvms).
+
 ## Documentation
 
 - [Configuring the system](doc/configuration.md): the channel, `qubes-operating-system` and its options, extra packages and channels.

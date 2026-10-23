@@ -3,7 +3,7 @@
 [← README](../README.md)
 
 *Tested:* on guix-tmpl, the private volume, `/home` on `/rw/home`, swap, passwordless sudo, and substitutes through the updates proxy with no netvm all work. AppVMs work too (`qubes-guix-test` makes one from the template), but have seen little use so far: expect to find a few Guix issues. A template works like a Debian or Fedora one:
-- **Root is the template's.** An AppVM's root (with `/gnu/store` and `/var/guix`) is a fresh copy of the template's at every start. `guix install` in an AppVM lasts until shutdown, like `apt install`. Software that should stay goes in the template's `config.scm`. A manifest kept in your home (`guix shell -m manifest.scm`) survives, because home is on the private volume; its packages come back from substitutes.
+- **Root is the template's.** An AppVM's root (with `/gnu/store` and `/var/guix`) is a fresh copy of the template's at every start. `guix install` in an AppVM lasts until shutdown, like `apt install`. Software that should stay goes in the template's `config.scm`, or in a manifest in your home that's put back at each start: see [Software in AppVMs](#software-in-appvms).
 - **`/home` is per qube,** on the private volume (`/rw/home`). On a qube's first start it's seeded from the template's `/home`.
 
 Create it with `--template`, then set it up with `--template`:
@@ -29,6 +29,26 @@ qubes-guix-create --appvm guix-tmpl -n sys-firewall work            # 2000 MiB, 
 qubes-guix-create --appvm guix-tmpl --test work 4000 8000           # then test it with qubes-guix-test
 qubes-guix-create --appvm guix-tmpl --split-ssh --split-gpg --ctap --test work
 ```
+
+### Software in AppVMs
+
+An AppVM's root, `/gnu/store` and `/var/guix` included, is a fresh copy of its template's at every start; only your home (the private volume) is kept. So `guix install` there lasts until shutdown, like `apt install` in a Debian AppVM: `~/.guix-profile` is in your home and survives, but it points at a profile under `/var/guix/profiles/per-user/`, which doesn't. Four ways to have software stay, from most shared to most private:
+
+- **In the template,** for what most of its AppVMs use: `#:extra-packages` in the template's `config.scm`, then `qubes-guix-update -r` there. It's in the root every AppVM starts from: nothing to fetch, nothing to build. With a substitute server, list it there too, so the template fetches it instead of building it (big packages such as Firefox or IceCat need more memory to build than a template has).
+- **A manifest in your home,** for what one AppVM needs: `~/.config/guix/manifest.scm`, e.g.
+  ```scheme
+  (specifications->manifest '("git" "ripgrep" "firefox-esr"))
+  ```
+  At every login, `qubes-guix-profile` (run by the Qubes session, in the background) rebuilds `~/.guix-profile` from it when the profile is gone (after a restart) or older than the manifest, with a desktop notification when it's done; then open a new terminal. Run it by hand to restore at once; `qubes-guix-profile --check` says what a restore would build. Its log: `~/.cache/qubes-guix-profile.log`. A manifest can live in your dotfiles.
+- **A Guix Home,** the same with more in it: `~/.config/guix/home.scm` describes packages, dotfiles and user services, and `qubes-guix-profile` runs `guix home reconfigure` on it after a restart (`~/.guix-home`), the same way. Use one of the two, or both for different things; Guix Home also manages files in your home, so don't let it and another dotfiles tool both own the same ones.
+- **`guix shell`** for one-offs (`guix shell foo -- foo`), or a `manifest.scm` per project (`guix shell -m manifest.scm`): nothing to clean up, and it lasts until shutdown.
+
+Some details:
+
+- **It's only quick if it's substitutes.** A restore uses the system's `guix`, the template's, at the template's commits (with a substitute server: the server's). What the server built then comes over the LAN, and what the template has is already in the AppVM's root. Anything else is built in the AppVM, at every restart: `qubes-guix-profile` warns about each one (in the log, and in a notification). Add those to the server's package list, or to the template.
+- **A package in both the manifest and the template** is the same store item (the same `guix`, so the same build): the profile just points at the copy the AppVM already has. Moving packages from a manifest into the template costs nothing; you can tidy the manifest later.
+- **Per-user channels and `guix pull` don't fit an AppVM.** `guix pull` puts its Guix in `/var/guix` too, so it's gone after a restart, and it builds a Guix every time. Put extra channels in the template's `#:extra-channels` (and on the server), so they're locked with everything else. A Guix of your own for one manifest is possible (`guix time-machine -C channels.scm -- package -m manifest.scm`), but it fetches or builds that Guix at every restart, and comes from the server only if the server built those very commits.
+- **Pinning a package such as firefox-esr:** it follows the commits the template is locked to, so it changes only when you move the lock (`qubes-guix-update --guix-commit server` in the template). If it seems to change under you, something is ahead of the server: a template following the head, or a `guix pull` of your own. To keep one version for good, put it in the template: it's then in the root every AppVM starts from, whatever the server builds or collects later.
 
 ### PVH
 

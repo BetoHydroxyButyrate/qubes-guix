@@ -785,6 +785,11 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
 ;; it uses guest/wrap-config.guile to add or replace those in a configuration
 ;; and to read #:follow-head.
 
+;; `qubes-guix-profile`: your own packages back after an AppVM restart, from
+;; ~/.config/guix/manifest.scm (and a Guix Home from home.scm); its
+;; session.d hook runs it at login. The script is
+;; qubes/aux-files/qubes-guix-profile.sh.
+
 ;; `pguix`: guix, through the Qubes updates proxy when this qube has one.
 ;; Only the commands that fetch in the caller's own process need it: pull
 ;; and time-machine (channels, via libgit2), download, refresh. Builds and
@@ -837,13 +842,30 @@ exec guix \"$@\"
                    (("@WRAP_CONFIG@") wrap))
                  (copy-file #$(pguix-script config)
                             (string-append bin "/pguix"))
+                 (let ((profile (string-append bin "/qubes-guix-profile"))
+                       (hooks (string-append #$output "/lib/qubes/session.d")))
+                   (copy-file #$(local-file "../aux-files/qubes-guix-profile.sh")
+                              profile)
+                   (substitute* profile
+                     (("@SH@") #$(file-append bash-minimal "/bin/sh")))
+                   ;; qubes-session runs it at login, in the background.
+                   (mkdir-p hooks)
+                   (call-with-output-file (string-append hooks "/guix-profile")
+                     (lambda (port)
+                       (format port "#!~a~%exec ~a --session~%"
+                               #$(file-append bash-minimal "/bin/sh")
+                               profile)))
+                   (chmod (string-append hooks "/guix-profile") #o555))
                  (for-each (lambda (f) (chmod (string-append bin "/" f) #o555))
-                           '("qubes-guix-update" "pguix"))))))
+                           '("qubes-guix-update" "pguix"
+                             "qubes-guix-profile"))))))
     (home-page "https://github.com/BetoHydroxyButyrate/qubes-guix")
     (synopsis "guix (pull, reconfigure) through the Qubes updates proxy")
     (description "@command{pguix} runs @command{guix} through the Qubes updates
 proxy when the qube uses one; @command{qubes-guix-update} runs @command{pguix
-pull}, and optionally @command{guix system reconfigure}.")
+pull}, and optionally @command{guix system reconfigure}.
+@command{qubes-guix-profile} restores a user's packages (a manifest, or a Guix
+Home) after an AppVM restart; it runs at login.")
     (license license:gpl3+)))
 
 (define (qubes-packages config)

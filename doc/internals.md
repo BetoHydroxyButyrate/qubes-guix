@@ -24,6 +24,7 @@ dom0/qubes-guix-create          dom0: create the qube and boot the installer
 guest/qubes-guix-install        installer shell: unattended install (disk, config.scm, then finish-install)
 guest/qubes-guix-netacct        network traffic per remote address (nftables): start, report, watch
 guest/qubes-guix-monitor        stock ISO: an install in tmux, with htop and the traffic per address
+qubes/aux-files/qubes-guix-profile.sh  qubes-guix-profile: an AppVM user's packages back at login
 guest/qubes-guix-pv-store       installer: read the store from the ISO as a PV disk, not the emulated CD
 guest/qubes-guix-finish-install installer, before the first reboot: config.scm + guix system init
 guest/qubes-guix-setup          guest: channel, guix pull, config.scm, reconfigure

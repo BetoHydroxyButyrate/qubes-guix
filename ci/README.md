@@ -375,6 +375,10 @@ public repository.
      `qubes-guix-create` can't resume it, and the next run starts over.
      Without `ISO_OFFLINE=1` the install fetches the channels' git checkouts
      (Guix from Codeberg, ~300 MB), the most likely thing to fail;
+   - if the install passed, runs `qubes-guix-test --cdrom-iso
+     ci-ctl:<the ISO>` on an AppVM of the new template: the ISO is copied
+     into the AppVM and a throwaway qube must boot from it there
+     (`qvm-start --cdrom=APPVM:FILE`);
    - if the install passed, runs `test-variants.sh` (below);
    - installs each `*.rpm` with `qvm-template install` (not used by
      qubes-guix, kept for completeness);

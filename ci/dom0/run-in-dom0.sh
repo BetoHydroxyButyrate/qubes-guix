@@ -106,6 +106,15 @@ while [ -n "$ISO_PATH" ]; do
         fi
     fi
     qvm-check -q "$CI_QUBE" 2>/dev/null && templates+=("$CI_QUBE")
+    # Booting from an ISO kept in a Guix qube (qvm-start --cdrom=QUBE:FILE),
+    # with this run's installer ISO: qubes-guix-test --cdrom-iso, on an
+    # AppVM of the new template.
+    if [ "$rc" = 0 ]; then
+        echo "==> qubes-guix-test --cdrom-iso $ISO_QUBE:$ISO_PATH $CI_QUBE"
+        (cd dom0 && ./qubes-guix-test --cdrom-iso "$ISO_QUBE:$ISO_PATH" "$CI_QUBE") </dev/null 2>&1 |
+            tee results/qubes-guix-test-cdrom.log
+        [ "${PIPESTATUS[0]}" = 0 ] || failed=1
+    fi
     if [ "$rc" = 0 ] && [ "$VARIANTS" = 1 ] && [ -x ./test-variants.sh ]; then
         ./test-variants.sh "$CI_QUBE" dom0 results || failed=1
     fi

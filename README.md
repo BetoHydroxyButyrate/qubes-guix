@@ -2,7 +2,7 @@
 
 A [Guix](https://guix.gnu.org) channel that turns **Guix System** into a properly integrated [Qubes OS](https://www.qubes-os.org) qube. It packages the Qubes R4.3 guest agents and wires them into Guix System as one service, `qubes-guest-service-type`. dom0 scripts create the qube and install it, unattended.
 
-Status: 99% complete. A daily-driven StandaloneVM (HVM) on Qubes R4.3; templates and AppVMs work, but AppVMs have seen little use so far. Everything below has been verified unless it says otherwise.
+Status: release candidate, [v0.1.0-rc1](NEWS.md). Daily-driven on Qubes R4.3, as StandaloneVMs, templates and AppVMs (AppVMs have seen less use so far). PVH, the new default for installs, has been tested on AppVMs. Everything below has been verified unless it says otherwise.
 
 | Feature                                                                                      | Status                                                  |
 |----------------------------------------------------------------------------------------------|---------------------------------------------------------|
@@ -18,7 +18,7 @@ Status: 99% complete. A daily-driven StandaloneVM (HVM) on Qubes R4.3; templates
 | Feature advertisement (`qvm-features`, Services tab)                                         | ✅                                                      |
 | U2F **and** FIDO2/passkeys via the CTAP proxy (sys-usb)                                      | ✅                                                      |
 | split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube)                         | ✅                                                      |
-| Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`)                     | 🚧 written, not yet tested                              |
+| Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`)                     | ✅ listed in dom0 (`--cdrom` from a Guix qube: not yet tested) |
 | split-ssh client (`ssh`, `git` over SSH with keys in a vault qube)                           | ✅                                                      |
 | TemplateVM / AppVM based on a Guix template                                                  | ✅ (AppVMs: little use so far)                          |
 | USB devices from sys-usb (`qvm-usb attach`, the devices widget)                              | ✅                                                      |
@@ -57,8 +57,9 @@ An AppVM's root, `/gnu/store` included, is its template's again at every start: 
 - [Updating](doc/updating.md): `qubes-guix-update`, following the head or locking to commits, Firefox ESR from nonguix.
 - [Testing a qube](doc/testing.md): `qubes-guix-test`.
 - [Internals](doc/internals.md): what's in the channel, the upstream bugs patched here, and gotchas. [PORT-NOTES.md](PORT-NOTES.md) is the full porting log.
+- [Release notes](NEWS.md).
 - [CI](ci/README.md): installs and tests on a bare-metal Qubes machine at every push.
 
 ## License
 
-The packaged software is GPL-2.0-or-later (Qubes OS upstream). Channel code: TODO — see `COPYING`.
+The channel's own code (Scheme, scripts, documentation) is GPL-3.0-or-later, like Guix: see [COPYING](COPYING). The Qubes OS software it packages keeps its upstream licence, mostly GPL-2.0-or-later (each package's `license` field says).

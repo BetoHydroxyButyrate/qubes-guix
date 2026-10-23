@@ -55,7 +55,7 @@ Then install as usual, up to the **Installation complete** screen, and **don't r
 
 ### Unattended install (instead of the installer's dialogs)
 
-*New, not yet tested.* After the GRUB step, at the installer's first screen, run in dom0:
+After the GRUB step, at the installer's first screen, run in dom0:
 
 ```
 ./qubes-guix-create --unattended guix          # add --template for a template, -b BRANCH to test a branch

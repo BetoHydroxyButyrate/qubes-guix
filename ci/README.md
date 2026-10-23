@@ -262,8 +262,8 @@ the current `make-oem-ks.sh` have the preset.
   `debian-*` template. Set `CTL_TEMPLATE` to choose another.
 - **ci-ctl's private volume** (its home, where each run stages the ~3 GB
   ISO) is grown to 32 GiB; set `CTL_PRIVATE_SIZE` for another size. By hand:
-  `qvm-volume resize ci-ctl:private 32GiB` in dom0. The ISO is deleted from
-  ci-ctl once dom0 has it, and from dom0 at the end of the run.
+  `qvm-volume resize ci-ctl:private 32GiB` in dom0. The ISO stays there
+  for the install (dom0 never gets a copy) until the next run replaces it.
 - **Package installs in ci-ctl** use apt when it's there. Debian templates
   also ship a `dnf` (for downloading dom0 updates), so dnf only counts on
   templates without apt.
@@ -356,7 +356,8 @@ public repository.
 4. **Waits up to 10 min for the tunnel** (e.g. while the NUC reboots).
 5. **Copies** `run-in-dom0.sh` and the payload into `~/ci-run/` in ci-ctl.
 6. **In dom0**, through `ci.Dom0Shell`:
-   - pulls `~/ci-run` from ci-ctl;
+   - pulls `~/ci-run` from ci-ctl, all but the ISO (failing the run if
+     that copy fails);
    - removes leftovers: `test-inst-*`, `test-cls-*` and `test-guix-*`
      qubes, the previous `ci-guix` template and everything named
      `ci-guix-*` (the variants), AppVMs before templates, and any RPM
@@ -364,8 +365,9 @@ public repository.
    - if dom0 has no `pvgrub2-pvh`, tries `qubes-dom0-update -y
      grub2-xen-pvh` once (not fatal);
    - runs `qubes-guix-create --yes --unattended --template --no-password
-     --force --test ci-guix dom0:<the ISO>`. `--yes` skips its "Go ahead?"
-     question, which has no terminal here. It installs the template, does
+     --force --test ci-guix ci-ctl:<the ISO>`, reading the ISO where it
+     is, in ci-ctl. If an ISO was sent but isn't there, the run fails.
+     `--yes` skips its "Go ahead?" question, which has no terminal here. It installs the template, does
      its first update, and runs `qubes-guix-test` on a throwaway AppVM. The
      output streams to the job log. If it fails, the installer's log is
      saved as `results/qubes-guix-install.log`. A failed install isn't

@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Runs in dom0, in ~/ci-run (pulled there from ci-ctl by qubes-ci-run.sh).
+# Runs in dom0, in ~/ci-run (pulled there from ci-ctl by qubes-ci-run.sh,
+# all but the installer ISO, which stays in ci-ctl).
 # Cleans up after the previous run, then, from what the payload holds:
-#   *.iso + dom0/   qubes-guix: installs the Guix template $CI_QUBE from the
-#                   installer ISO with dom0/qubes-guix-create --unattended
-#                   --template --test (which also runs qubes-guix-test)
+#   ISO + dom0/     qubes-guix: installs the Guix template $CI_QUBE from the
+#                   installer ISO $ISO_QUBE:$ISO_PATH with
+#                   dom0/qubes-guix-create --unattended --template --test
+#                   (which also runs qubes-guix-test)
 #   *.rpm           installs these templates with qvm-template
 # then runs the Qubes integration test modules against the installed
 # templates, then the project's own dom0-tests.sh.
@@ -12,7 +14,8 @@
 # of Guix qube made from the template: HVM and PVH, template, AppVM and
 # StandaloneVM.
 #
-# Env: CI_QUBE       name of the Guix template made from the ISO (ci-guix)
+# Env: ISO_QUBE, ISO_PATH  where the installer ISO is (empty: none sent)
+#      CI_QUBE       name of the Guix template made from the ISO (ci-guix)
 #      VARIANTS      0: skip test-variants.sh (default 1)
 #      SYSTEM_TESTS  space-separated "module[:timeout-seconds]" list
 #      TEST_TEMPLATES  templates to test; defaults to the ones installed here
@@ -68,13 +71,24 @@ for rpm in ./*.rpm; do
     echo "$name" >>"$STATE"
     templates+=("$name")
 done
-# --- qubes-guix: a Guix template from the installer ISO, smoke-tested
-for iso in ./*.iso; do
-    [ -e "$iso" ] && [ -x dom0/qubes-guix-create ] || continue
-    iso_path=$(pwd)/${iso#./}
-    echo "==> qubes-guix-create --unattended --template --test $CI_QUBE from $iso"
+# --- qubes-guix: a Guix template from the installer ISO, smoke-tested.
+# The ISO stays in the qube it was sent to (3-4 GB; dom0's root is small):
+# qubes-guix-create reads it from there. An ISO sent but missing, or no
+# qubes-guix-create to install it with, fails the run rather than leaving
+# nothing tested.
+ISO_QUBE=${ISO_QUBE:-} ISO_PATH=${ISO_PATH:-}
+while [ -n "$ISO_PATH" ]; do
+    if ! qvm-run -q -p "$ISO_QUBE" "test -s '$ISO_PATH'" </dev/null; then
+        echo "==> FAIL: no installer ISO at $ISO_QUBE:$ISO_PATH"
+        failed=1; break
+    fi
+    if [ ! -x dom0/qubes-guix-create ]; then
+        echo "==> FAIL: an installer ISO, but no dom0/qubes-guix-create in the payload"
+        failed=1; break
+    fi
+    echo "==> qubes-guix-create --unattended --template --test $CI_QUBE from $ISO_QUBE:$ISO_PATH"
     (cd dom0 && ./qubes-guix-create --yes --unattended --template --no-password --force --test \
-        "$CI_QUBE" "dom0:$iso_path") </dev/null 2>&1 | tee results/qubes-guix-create.log
+        "$CI_QUBE" "$ISO_QUBE:$ISO_PATH") </dev/null 2>&1 | tee results/qubes-guix-create.log
     rc=${PIPESTATUS[0]}
     # No resume on failure: a failed install leaves the installer with
     # nothing on root's PATH (no setsid, ls, ...), so qubes-guix-create can't
@@ -141,5 +155,4 @@ sudo journalctl -b --no-pager --since "-12h" > results/dom0-journal.log 2>/dev/n
 sudo cp -r /var/log/xen/console results/xen-console 2>/dev/null
 sudo cp -r /var/log/qubes results/qubes-logs 2>/dev/null
 sudo chown -R "$(id -u):$(id -g)" results
-rm -f ./*.iso    # ~3 GB; dom0's root is small
 exit $failed

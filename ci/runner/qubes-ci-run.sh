@@ -52,14 +52,24 @@ fi
 #    is echoed as a marker rather than relying on qrexec to carry it.
 #    The script arrives on stdin, so every command in it gets </dev/null:
 #    qvm-run -p would otherwise swallow the rest of the script.
+# The installer ISO stays in ci-ctl; dom0 gets everything else and is told
+# where the ISO is.
+ISO_PATH=
+iso=$(cd "$PAYLOAD" && compgen -G '*.iso' | head -n1) && ISO_PATH=/home/user/ci-run/$iso
 log "running in dom0 (Qubes test modules: ${SYSTEM_TESTS:-none})"
 set +e
 ctl "qrexec-client-vm dom0 ci.Dom0Shell" <<EOF | tee "${RESULTS%/}.console.log"
+set -o pipefail
 rm -rf ~/ci-run && mkdir -p ~/ci-run
-qvm-run -q -p ci-ctl 'tar c -C ci-run .' </dev/null | tar x -C ~/ci-run
-qvm-run -q -p ci-ctl 'rm -f ci-run/*.iso' </dev/null    # dom0 has it now
-SYSTEM_TESTS='$SYSTEM_TESTS' TEST_TEMPLATES='${TEST_TEMPLATES:-}' VARIANTS='${VARIANTS:-1}' bash ~/ci-run/run-in-dom0.sh </dev/null
-rc=\$?
+if qvm-run -q -p ci-ctl "tar c -C ci-run --exclude='*.iso' ." </dev/null | tar x -C ~/ci-run; then
+    SYSTEM_TESTS='$SYSTEM_TESTS' TEST_TEMPLATES='${TEST_TEMPLATES:-}' VARIANTS='${VARIANTS:-1}' \
+        ISO_QUBE=ci-ctl ISO_PATH='$ISO_PATH' bash ~/ci-run/run-in-dom0.sh </dev/null
+    rc=\$?
+else
+    echo "==> FAIL: couldn't copy the payload from ci-ctl into dom0"
+    mkdir -p ~/ci-run/results
+    rc=1
+fi
 tar c -C ~/ci-run results | qvm-run -q -p ci-ctl 'rm -rf ci-run/results; tar x -C ci-run'
 echo "QUBES_CI_EXIT=\$rc"
 EOF
@@ -69,7 +79,12 @@ status=${status:-255}
 
 # 3. fetch results
 mkdir -p "$RESULTS"
-scp "${SSH_OPTS[@]}" -P "$TUNNEL_PORT" -q -r user@127.0.0.1:ci-run/results/. "$RESULTS/" || log "could not fetch results"
+# No results means dom0's part didn't run as it should, whatever it said:
+# fail the run.
+if ! scp "${SSH_OPTS[@]}" -P "$TUNNEL_PORT" -q -r user@127.0.0.1:ci-run/results/. "$RESULTS/"; then
+    log "FAIL: could not fetch dom0's results"
+    [ "$status" != 0 ] || status=1
+fi
 mv "${RESULTS%/}.console.log" "$RESULTS/console.log"
 log "results in $RESULTS, exit $status"
 exit "$status"

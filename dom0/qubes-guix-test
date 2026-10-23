@@ -44,7 +44,8 @@
 # back after a netvm change (the qube's vif is replaced, as when its netvm
 # restarts); data through qrexec (1 MiB, checksummed); qvm-copy-to-vm
 # (qubes.Filecopy); the trusted-channels link; memory balancing (meminfo in
-# xenstore); the xen-blkback module and the qubes-block-devices service;
+# xenstore); the xen-blkback module and the xen-driver-domain (xl devd) and
+# qubes-block-devices services;
 # block devices (a loop device listed by qvm-block, then gone); a qube
 # booting from an ISO here (--cdrom-iso); GUI (a terminal window appears in dom0); split-gpg2 and
 # split-ssh (optional); and a clean shutdown.
@@ -382,6 +383,12 @@ if in_qube -u root 'grep -q "^xen_blkback " /proc/modules || test -d /sys/module
 else
     fail "xen-blkback" "not loaded (lsmod | grep blkback; modprobe xen-blkback)"
 fi
+st=$(in_qube -u root 'herd status xen-driver-domain 2>&1' | tr -s ' \n' ' ')
+case $st in
+    *"is running"*) pass "xen-driver-domain" "xl devd running";;
+    '') fail "xen-driver-domain" "no answer from herd";;
+    *) fail "xen-driver-domain" "not running (it serves block devices to other qubes): $st";;
+esac
 st=$(in_qube -u root 'herd status qubes-block-devices 2>&1' | tr -s ' \n' ' ')
 case $st in
     '') fail "qubes-block-devices" "no answer from herd";;

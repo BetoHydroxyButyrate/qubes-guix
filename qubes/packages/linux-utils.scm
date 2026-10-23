@@ -53,20 +53,31 @@
                (("install -d .*/systemd/system/.*") "true")
                (("install -m 0644 .*\\.service.*") "true"))
              #t))
+         ;; not-script: the block hotplug script dom0 names for devices
+         ;; this qube serves (qvm-block attach, qvm-start --cdrom), run by
+         ;; xl devd; a C program (loop devices by ioctl, xenstore).
          (replace 'build
            (lambda* (#:key make-flags #:allow-other-keys)
              (for-each (lambda (d)
                          (apply invoke "make" "-C" d make-flags))
-                       '("qmemman" "qrexec-lib"))))
+                       '("qmemman" "qrexec-lib" "not-script"))))
          (replace 'install
            (lambda* (#:key make-flags (outputs %outputs) #:allow-other-keys)
              (for-each (lambda (d)
                          (apply invoke "make" "-C" d "install" make-flags))
-                       '("qmemman" "qrexec-lib")))))))
+                       '("qmemman" "qrexec-lib"))
+             ;; Its Makefile installs to /etc/xen/scripts (no prefix).
+             (let ((scripts (string-append (assoc-ref outputs "out")
+                                           "/etc/xen/scripts")))
+               (mkdir-p scripts)
+               (copy-file "not-script/not-script"
+                          (string-append scripts "/qubes-block"))
+               (chmod (string-append scripts "/qubes-block") #o755)))))))
     (native-inputs (list pkg-config))
     (inputs (list xen qubes-core-vchan-xen icu4c))
     (synopsis "Qubes OS common Linux tools for VMs")
-    (description "Memory info writer, qrexec support libraries and related
-helpers shared by Qubes guest agents.")
+    (description "Memory info writer, qrexec support libraries, the
+@code{qubes-block} block hotplug script and related helpers shared by Qubes
+guest agents.")
     (home-page "https://github.com/QubesOS/qubes-linux-utils")
     (license license:gpl2+)))

@@ -29,6 +29,7 @@
   #:use-module (guix records)
   #:use-module (gnu packages compression)    ; gzip (zcat /proc/config.gz)
   #:use-module (gnu packages gnupg)          ; gpg for split-gpg2
+  #:use-module (gnu packages virtualization) ; xen: xl devd (driver domain)
   #:use-module (qubes packages linux-utils)  ; meminfo-writer
   #:use-module (qubes packages qrexec)
   #:use-module (qubes packages qubesdb)
@@ -401,6 +402,25 @@ done
                                "trigger" "--subsystem-match=block"
                                "--action=change")))))
    (shepherd-service
+    (documentation "Xen driver domain: run the hotplug script dom0 names
+(qubes-block) for each block device this qube serves to another qube
+(qvm-block attach, qvm-start --cdrom=QUBE:FILE).  Without it the backend
+never connects and the other qube can't start.  Upstream's
+xendriverdomain.service.")
+    (provision '(xen-driver-domain))
+    (requirement '(user-processes kernel-module-loader))
+    ;; xl is in sbin or bin depending on how Xen was built.
+    (start #~(lambda args
+               (let ((xl (if (file-exists? #$(file-append xen "/sbin/xl"))
+                             #$(file-append xen "/sbin/xl")
+                             #$(file-append xen "/bin/xl"))))
+                 (apply (make-forkexec-constructor
+                         (list xl "devd" "-F")
+                         #:log-file "/var/log/xen/xl-devd.log")
+                        args))))
+    (stop #~(make-kill-destructor))
+    (respawn? #t))
+   (shepherd-service
     (documentation "Report memory usage to xenstore for dom0's memory
 balancer (qmemman).")
     (provision '(qubes-meminfo-writer))
@@ -721,7 +741,16 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
 (define (qubes-etc-files config)
   (let ((core (qubes-guest-core-agent config)))
     `(("qubes-rpc" ,(file-append core "/etc/qubes-rpc"))
-      ("qubes"     ,(file-append core "/etc/qubes")))))
+      ("qubes"     ,(file-append core "/etc/qubes"))
+      ;; For xl devd: the hotplug script dom0 asks for by this path, and an
+      ;; xl.conf so it doesn't complain (a driver domain needs no settings).
+      ("xen" ,(file-union "xen-driver-domain"
+                          `(("scripts/qubes-block"
+                             ,(file-append qubes-linux-utils
+                                           "/etc/xen/scripts/qubes-block"))
+                            ("xl.conf"
+                             ,(plain-file "xl.conf"
+                                          "# Driver domain (xl devd) only.\n"))))))))
 
 (define (qubes-setuid-programs config)
   ;; qfile-unpacker mounts/chroots into ~/QubesIncoming; the store strips
@@ -743,6 +772,9 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
       ;; NB: on Guix /run and /var/run are different directories.
       (mkdir-p "/var/run/qubes")
       (mkdir-p "/var/log/qubes")
+      ;; xl devd and qubes-block: logs, libxl's state, the script's lock.
+      (for-each mkdir-p '("/var/log/xen" "/var/run/xen" "/var/lib/xen"
+                          "/run/lock"))
       ;; /var/run is NOT a tmpfs on Guix: a pidfile from the previous boot
       ;; survives, and qrexec-agent SIGUSR1s whatever PID it names on its
       ;; first request (default action: terminate) — at boot that PID is

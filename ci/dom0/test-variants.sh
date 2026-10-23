@@ -79,8 +79,8 @@ for mode in hvm pvh; do
 
     # A StandaloneVM gets a copy of the template's disk. Its settings are
     # the template's (what a Guix qube needs: HVM's kernel '', PVH's
-    # pvgrub2-pvh, memory, a longer qrexec timeout); its netvm is the
-    # default one (templates have none).
+    # pvgrub2-pvh, memory, a longer qrexec timeout), except its netvm: it
+    # copies the template's, none, so set it back to the default one.
     sa=$tpl-sa-$mode
     echo
     echo "==> making $sa: a StandaloneVM copied from $t"
@@ -88,6 +88,7 @@ for mode in hvm pvh; do
         for p in virt_mode kernel vcpus memory maxmem qrexec_timeout; do
             qvm-prefs "$sa" "$p" "$(qvm-prefs "$t" "$p")"
         done
+        qvm-prefs "$sa" netvm --default
         variant "$mode-standalone" ./qubes-guix-test "$sa"
     else
         record "$mode-standalone" FAIL "couldn't make $sa"

@@ -163,16 +163,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# An HVM Guix qube needs memory to boot (as qubes-guix-create warns): with
+# Qubes' template default of 400 MiB it stalls and resets before qrexec
+# answers. The hint, if this qube is like that; empty otherwise.
+hvm_min_memory=1000
+mem=$(qvm-prefs "$vm" memory 2>/dev/null || echo 0)
+mem_hint=
+if [ "$(qvm-prefs "$vm" virt_mode 2>/dev/null)" = hvm ] && [ "$mem" -lt "$hvm_min_memory" ]; then
+    mem_hint="HVM with $mem MiB: too little for Guix to boot; try  qvm-prefs $vm memory 2000"
+    echo "$prog: warning: $mem_hint" >&2
+fi
+
 # --- checks --------------------------------------------------------------
 
 # Start, and how long until qrexec answers.
 t0=$(date +%s)
 if qvm-check -q --running "$vm" 2>/dev/null; then
     skip "start" "already running"
-elif qvm-start "$vm" >/dev/null 2>&1; then
+elif start_err=$(qvm-start "$vm" 2>&1 >/dev/null); then
     pass "start" "$(( $(date +%s) - t0 ))s"
 else
-    fail "start" "qvm-start failed; see /var/log/xen/console/guest-$vm.log"
+    fail "start" "qvm-start failed${start_err:+: $(printf '%s' "$start_err" | tail -n1)}; see /var/log/xen/console/guest-$vm.log"
+    [ -n "$mem_hint" ] && echo "      $mem_hint"
     exit 1
 fi
 

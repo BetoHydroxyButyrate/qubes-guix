@@ -280,6 +280,20 @@ pvh_check() {
         die "PVH needs pvgrub2-pvh in dom0: sudo qubes-dom0-update grub2-xen-pvh"
 }
 
+# An HVM Guix qube needs memory to boot: started with Qubes' template
+# default of 400 MiB it stalls and resets before qrexec answers (memory
+# balancing, Xen's populate-on-demand under HVM, doesn't help that early).
+# PVH boots with the same. Warn below this; 2000 is what --appvm gives.
+hvm_min_memory=1000
+
+# Warn if qube $1 (or "the new qube") would start HVM with $2 MiB, too
+# little to boot.
+hvm_memory_warn() {
+    [ "$2" -lt "$hvm_min_memory" ] || return 0
+    echo "$prog: warning: $1 starts HVM with $2 MiB: under $hvm_min_memory MiB Guix stalls in boot
+and the qube resets. Give it more (2000), or boot it PVH." >&2
+}
+
 # The mode an installed qube boots in, into $virt: PVH unless --hvm; HVM,
 # with a note, when dom0 lacks pvgrub2-pvh and --pvh wasn't given.
 default_virt() {
@@ -984,6 +998,12 @@ if [ -n "$appvm_template" ]; then
         [ "$(qvm-prefs "$appvm_template" virt_mode 2>/dev/null)" = pvh ] && virt=pvh
     fi
     [ "$virt" = pvh ] && pvh_check
+    [ "$virt" = hvm ] && hvm_memory_warn "$name" "$memory"
+    # The template boots on its own too (updates): in HVM, with its memory.
+    if [ "$(qvm-prefs "$appvm_template" virt_mode 2>/dev/null)" = hvm ]; then
+        hvm_memory_warn "its template $appvm_template" \
+            "$(qvm-prefs "$appvm_template" memory 2>/dev/null || echo "$hvm_min_memory")"
+    fi
     echo "$prog will create:"
     echo "  $name: AppVM on $appvm_template, ${virt^^}, $memory MiB$( [ "$maxmem" -gt "$memory" ] && echo ", balancing up to $maxmem MiB" || echo ', no memory balancing'), label $label"
     echo "  netvm: ${netvm:-the default}"

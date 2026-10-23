@@ -26,6 +26,14 @@
 #   --in-place         a TemplateVM: test the template itself, not an
 #                      AppVM made from it (a template without a netvm skips
 #                      the network checks)
+#   --cdrom-iso ISO    also check that a qube boots from an ISO kept in this
+#                      one (qvm-start --cdrom=QUBE:FILE). ISO: a file in dom0,
+#                      or QUBE:PATH; it must be the qubes-guix installer ISO
+#                      (iso/qubes-guix-iso), whose agent answers once booted.
+#                      It's copied into the qube (a test AppVM's private
+#                      volume is grown for it), a throwaway disk-less HVM
+#                      (test-cdrom-<pid>) is started from it, and both go
+#                      afterwards
 #   --keep             leave the qube running afterwards (no shutdown
 #                      check), and don't remove a test AppVM
 #   -h, --help
@@ -36,7 +44,9 @@
 # back after a netvm change (the qube's vif is replaced, as when its netvm
 # restarts); data through qrexec (1 MiB, checksummed); qvm-copy-to-vm
 # (qubes.Filecopy); the trusted-channels link; memory balancing (meminfo in
-# xenstore); GUI (a terminal window appears in dom0); split-gpg2 and
+# xenstore); the xen-blkback module and the qubes-block-devices service;
+# block devices (a loop device listed by qvm-block, then gone); a qube
+# booting from an ISO here (--cdrom-iso); GUI (a terminal window appears in dom0); split-gpg2 and
 # split-ssh (optional); and a clean shutdown.
 
 set -uo pipefail
@@ -48,6 +58,7 @@ split_ssh=0
 memory=4000
 keep=0
 in_place=0
+cdrom_iso=
 
 die() { echo "$prog: $*" >&2; exit 2; }
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -60,6 +71,7 @@ while [ $# -gt 0 ]; do
         --memory) [ $# -ge 2 ] || die "$1 needs a value"; memory=$2; shift 2;;
         --keep) keep=1; shift;;
         --in-place) in_place=1; shift;;
+        --cdrom-iso) [ $# -ge 2 ] || die "$1 needs a value"; cdrom_iso=$2; shift 2;;
         -h|--help) usage; exit 0;;
         -*) die "unknown option $1 (see --help)";;
         *) break;;
@@ -71,6 +83,21 @@ target=$1
 command -v qvm-run >/dev/null 2>&1 || die "run this in dom0"
 qvm-check -q "$target" 2>/dev/null || die "no qube named '$target'"
 case $memory in ''|*[!0-9]*) die "--memory: a number of MiB";; esac
+
+# --cdrom-iso: where the ISO is, and its size in bytes.
+cdrom_qube= cdrom_path= cdrom_size=
+if [ -n "$cdrom_iso" ]; then
+    case $cdrom_iso in
+        /*) cdrom_path=$cdrom_iso
+            cdrom_size=$(stat -c %s "$cdrom_path" 2>/dev/null) ||
+                die "--cdrom-iso: no file $cdrom_path in dom0";;
+        *:/*) cdrom_qube=${cdrom_iso%%:*} cdrom_path=${cdrom_iso#*:}
+              cdrom_size=$(qvm-run -q --no-gui --pass-io "$cdrom_qube" \
+                               "stat -c %s '$cdrom_path'" </dev/null 2>/dev/null) ||
+                  die "--cdrom-iso: no file $cdrom_path in $cdrom_qube";;
+        *) die "--cdrom-iso: a dom0 path (/...) or QUBE:/path";;
+    esac
+fi
 
 # --- results -------------------------------------------------------------
 
@@ -144,6 +171,12 @@ if [ "$klass" = TemplateVM ] && [ "$in_place" = 0 ]; then
     # service from it (and setting the service resets maxmem to 0).
     qvm-prefs "$vm" maxmem $((memory + 2000)) ||
         echo "$prog: warning: couldn't set $vm's maxmem: no memory balancing test" >&2
+    # Room in its /home for the --cdrom-iso copy (the agent grows /rw to
+    # the volume at boot): the ISO and 2 GiB.
+    if [ -n "$cdrom_size" ]; then
+        qvm-volume resize "$vm:private" $(( cdrom_size / 1073741824 + 3 ))GiB ||
+            echo "$prog: warning: couldn't grow $vm's private volume for the --cdrom-iso copy" >&2
+    fi
     [ "$split_gpg" = 1 ] && qvm-service "$vm" split-gpg2-client on
     [ "$split_ssh" = 1 ] && qvm-tags "$vm" add split-ssh
 else
@@ -340,6 +373,23 @@ case $usb in
     *) fail "USB proxy" "no answer";;
 esac
 
+# What exporting block devices to dom0 rests on: the xen-blkback module
+# (with it this qube is the backend of qvm-block attach and of
+# qvm-start --cdrom=QUBE:FILE) and the qubes-block-devices service
+# (one-shot: announces the devices present at boot).
+if in_qube -u root 'grep -q "^xen_blkback " /proc/modules || test -d /sys/module/xen_blkback'; then
+    pass "xen-blkback" "loaded"
+else
+    fail "xen-blkback" "not loaded (lsmod | grep blkback; modprobe xen-blkback)"
+fi
+st=$(in_qube -u root 'herd status qubes-block-devices 2>&1' | tr -s ' \n' ' ')
+case $st in
+    '') fail "qubes-block-devices" "no answer from herd";;
+    *[Ff]ail*|*"not found"*|*"not be found"*|*"does not exist"*|*"not running"*)
+        fail "qubes-block-devices" "$st";;
+    *) st=${st#*: }; pass "qubes-block-devices" "${st%%.*}";;
+esac
+
 # Block devices for dom0 (qvm-block, qvm-start --cdrom=QUBE:/file.iso): a
 # loop device made here must be listed in dom0, and go when it's removed.
 # (Its udev rule writes it to QubesDB; dom0 reads it from there.)
@@ -363,6 +413,41 @@ case $loop in
         fi;;
     *) fail "block devices" "couldn't make a loop device: ${loop:-no answer}";;
 esac
+
+# A qube booting from an ISO kept here (--cdrom-iso): qvm-start
+# --cdrom=$vm:FILE, this qube serving it (xen-blkback). A throwaway
+# disk-less HVM starts from it; qvm-start returns once the booted system's
+# agent answers, which the qubes-guix installer's does.
+if [ -z "$cdrom_iso" ]; then
+    skip "boot from an ISO here" "no --cdrom-iso"
+else
+    cd_file=/home/user/qgt-cdrom.iso cd_vm="test-cdrom-$$"
+    free=$(in_qube "df -B1 --output=avail /home/user | tail -n1" | tr -d ' ')
+    if [ -z "$free" ] || [ "$free" -lt $(( cdrom_size + 268435456 )) ]; then
+        skip "boot from an ISO here" "$(( cdrom_size / 1048576 )) MiB ISO, ${free:-?} bytes free in $vm's /home"
+    elif ! { if [ -n "$cdrom_qube" ]; then
+                 qvm-run -q --no-gui --pass-io "$cdrom_qube" "cat '$cdrom_path'" </dev/null
+             else
+                 cat "$cdrom_path"
+             fi | qvm-run -q --no-gui --pass-io "$vm" "cat > $cd_file"; }; then
+        fail "boot from an ISO here" "couldn't copy $cdrom_iso into $vm"
+    else
+        t0=$(date +%s)
+        if qvm-create -q --class StandaloneVM --label gray \
+               --property virt_mode=hvm --property kernel='' \
+               --property memory=2000 --property maxmem=0 \
+               --property qrexec_timeout=300 "$cd_vm" &&
+           qvm-prefs "$cd_vm" netvm '' &&
+           cd_err=$(qvm-start --cdrom="$vm:$cd_file" "$cd_vm" 2>&1 >/dev/null); then
+            pass "boot from an ISO here" "$cd_vm booted from $vm:$cd_file; its agent answered in $(( $(date +%s) - t0 ))s"
+        else
+            fail "boot from an ISO here" "qvm-start --cdrom=$vm:$cd_file${cd_err:+: $(printf '%s' "$cd_err" | tail -n1)}; see /var/log/xen/console/guest-$cd_vm.log"
+        fi
+        qvm-kill "$cd_vm" >/dev/null 2>&1 || true
+        qvm-remove -f "$cd_vm" >/dev/null 2>&1 || true
+    fi
+    in_qube "rm -f $cd_file" >/dev/null || true
+fi
 
 # GUI: a terminal, and its window in dom0, whose title names the qube.
 if [ "$(qvm-features "$template" gui 2>/dev/null)" != 1 ]; then

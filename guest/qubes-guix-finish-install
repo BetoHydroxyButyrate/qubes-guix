@@ -457,6 +457,22 @@ guix repl -- "$tmp/verify.scm" /var/guix/db/db.sqlite "$target/var/guix/db/db.sq
 read from the installer's CD came back wrong. Install again (with
 qubes-guix-create: --force)."
 
+# Root's Guix cache on the installed system: the channels' git checkouts,
+# now holding the commits this system was built from, and the authentication
+# cache. The first 'guix pull' (qubes-guix-update -r, as root) is locked to
+# those commits, so it finds them here and fetches nothing, rather than
+# cloning guix.git through the Qubes updates proxy.
+if [ -d "$XDG_CACHE_HOME/guix/checkouts" ]; then
+    say "Giving the installed system the channels' git checkouts"
+    mkdir -p "$target/root/.cache/guix"
+    for e in "$XDG_CACHE_HOME/guix/checkouts" "$XDG_CACHE_HOME/guix/authentication"; do
+        [ -e "$e" ] || continue
+        rm -rf "$target/root/.cache/guix/${e##*/}"
+        cp -a "$e" "$target/root/.cache/guix/" ||
+            echo "$prog: warning: couldn't copy $e: the first guix pull will fetch it" >&2
+    done
+fi
+
 cat <<EOF
 
 Done: $target is now a Qubes qube. Reboot (back in the installer: Ctrl+Alt+F1,

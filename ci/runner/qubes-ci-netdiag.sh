@@ -16,12 +16,16 @@
 #      counters; the qubes' memory/vCPUs;
 #   5. (TESTS=5) sys-net receiving from the runner: its NIC's interrupt and
 #      packet rates meanwhile, MSI, e1000e's parameters, EEE, pause, rings,
-#      coalescing and offloads (ethtool installed in sys-net for this boot).
+#      coalescing and offloads (ethtool installed in sys-net for this boot);
+#   6. (TESTS=6) sys-net receiving: the runner's socket (ss) and sys-net's
+#      TCP counters (nstat) during a download, then e1000e settings tried
+#      one at a time (GRO, TSO/GSO, rx-usecs, rings, flow control), each
+#      put back after.
 #
 # Usage: qubes-ci-netdiag.sh [LOG]   (default: ./netdiag-DATE.log)
 # Config: as qubes-ci-run.sh (TUNNEL_PORT, SSH_KEY), build-iso-remote.sh
 # (ISO_HOST, ISO_SSH_KEY); /etc/qubes-ci/runner.env.
-#   TESTS   which of the sections below to run (1 2 3 4; 5 on request)
+#   TESTS   which of the sections below to run (1 2 3 4; 5, 6 on request)
 #   MB      size of each transfer, MiB (500)
 #   PORT    the runner's port for test 2 (8099)
 #   SUBS_URL  the substitute server (default: the first url in the
@@ -79,10 +83,11 @@ PY
 cat > "$tmp/client.py" <<'PY'
 import socket, sys, time
 host, port, way = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+secs = float(sys.argv[4]) if len(sys.argv) > 4 else 30
 s = socket.create_connection((host, port), timeout=10)
 s.sendall(b"down" if way == "down" else b"up  ")
 n, buf, t0 = 0, bytes(1 << 20), time.time()
-while time.time() - t0 < 30:
+while time.time() - t0 < secs:
     if way == "down":
         b = s.recv(1 << 20)
         if not b:
@@ -239,6 +244,57 @@ dt=\$((t1 - t0)); [ \$dt -gt 0 ] || dt=1
 echo "-- during that: \$(( (i1 - i0) / dt )) NIC interrupts/s, \$(( (r1 - r0) / dt )) packets/s received"
 EOF
 printf 'qvm-run -q -u root --pass-io --no-gui sys-net "bash -s" <<'"'"'SYSNET'"'"'\n%s\nSYSNET\n' "$(cat "$tmp/sysnet.sh")" | dom0 2>&1
+fi
+
+if want 6; then
+echo
+echo "== 6. sys-net receiving: TCP's view, then e1000e settings tried one at a time"
+# A 20 s download into sys-net with, meanwhile, the sending socket's state
+# on the runner (ss: congestion window, retransmits, RTT) and sys-net's TCP
+# counters (nstat: duplicates, out of order, drops). Then 15 s downloads,
+# each with one NIC setting changed, and put back after. Changing rings or
+# flow control resets the link for a few seconds; sys-net's log is also
+# kept in its /tmp/netdiag6.log in case this connection doesn't survive.
+start_server
+( sleep 12; echo "-- the runner's sending socket, 12 s in:"; ss -tin "( sport = :$PORT )" | sed 's/^/   /' ) > "$tmp/ss" &
+ssp=$!
+cat > "$tmp/sysnet6.sh" <<EOF
+exec > >(tee /tmp/netdiag6.log) 2>&1
+nic=\$(ls /sys/class/net | grep -v -e '^lo\$' -e '^vif' | head -n1)
+command -v ethtool >/dev/null ||
+    { apt-get install -y -qq ethtool >/dev/null 2>&1 || dnf install -y -q ethtool >/dev/null 2>&1; }
+command -v ethtool >/dev/null || { echo "(no ethtool in sys-net)"; exit 1; }
+cat > /tmp/netdiag-client.py <<'PY'
+$(cat "$tmp/client.py")
+PY
+down() { python3 /tmp/netdiag-client.py $ip $PORT down "\$1"; }
+echo "-- baseline, 20 s:"
+nstat -n 2>/dev/null
+down 20
+echo "-- sys-net's TCP counters over it (non-zero):"
+nstat 2>/dev/null | grep -E '^(Tcp|TcpExt|IpExt)' | sed 's/^/   /' || echo "   (no nstat)"
+rx=\$(ethtool -c \$nic | awk '\$1 == "rx-usecs:" {print \$2}')
+rr=\$(ethtool -g \$nic | awk '/^Current/ {c = 1} c && \$1 == "RX:" {print \$2; exit}')
+tr=\$(ethtool -g \$nic | awk '/^Current/ {c = 1} c && \$1 == "TX:" {print \$2; exit}')
+try() {  # NAME SETTLE "CHANGE" "RESTORE"
+    eval "\$3" >/dev/null 2>&1 || { printf '   %-34s (setting refused)\n' "\$1"; return; }
+    sleep "\$2"
+    printf '   %-34s ' "\$1"; down 15
+    eval "\$4" >/dev/null 2>&1
+    sleep "\$2"
+}
+echo "-- one setting at a time (15 s each):"
+try "gro off"                    1 "ethtool -K \$nic gro off"                "ethtool -K \$nic gro on"
+try "tso, gso off"               1 "ethtool -K \$nic tso off gso off"        "ethtool -K \$nic tso on gso on"
+try "rx-usecs 0 (was \$rx)"       1 "ethtool -C \$nic rx-usecs 0"             "ethtool -C \$nic rx-usecs \$rx"
+try "rings 4096 (were \$rr/\$tr)" 8 "ethtool -G \$nic rx 4096 tx 4096"        "ethtool -G \$nic rx \$rr tx \$tr"
+try "flow control off"           8 "ethtool -A \$nic autoneg off rx off tx off" "ethtool -A \$nic autoneg on rx on tx on"
+echo "-- baseline again, 15 s:"
+down 15
+EOF
+printf 'qvm-run -q -u root --pass-io --no-gui sys-net "bash -s" <<'"'"'SYSNET'"'"'\n%s\nSYSNET\n' "$(cat "$tmp/sysnet6.sh")" | dom0 2>&1
+wait "$ssp"
+cat "$tmp/ss"
 fi
 
 echo

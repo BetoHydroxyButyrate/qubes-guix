@@ -738,6 +738,56 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
          (qubes-template-shepherd-services config)
          '()))))
 
+(define %qubes-block-text
+  (mixed-text-file "qubes-block"
+   "#!" (file-append bash-minimal "/bin/sh") "
+# qubes-block ACTION: the hotplug script dom0 names for each block device
+# this qube serves (qvm-block attach, qvm-start --cdrom=QUBE:FILE); xl devd
+# runs it with add or remove, and XENBUS_PATH set. Upstream's (not-script,
+# from qubes-linux-utils), then, on remove, a safety net: upstream's detach
+# of the loop device it made for the file is skipped silently when blkback
+# hasn't let go of the device yet (LOOP_CLR_FD: EBUSY), which left a loop
+# of the (often deleted) file behind each time. Detach any loop still
+# backed by that file once nothing holds it, retrying for 30 s.
+real=" (file-append qubes-linux-utils "/etc/xen/scripts/qubes-block") "
+xen=" xen "
+log=/var/log/xen/xen-hotplug.log
+[ \"${1:-}\" = remove ] || exec \"$real\" \"$@\"
+xsread=$xen/bin/xenstore-read
+[ -x \"$xsread\" ] || xsread=$xen/sbin/xenstore-read
+params=$(\"$xsread\" \"$XENBUS_PATH/params\" 2>/dev/null)
+\"$real\" \"$@\"
+rc=$?
+case $params in /*) ;; *) exit $rc;; esac
+(
+    PATH=" coreutils "/bin:" util-linux "/sbin:" util-linux "/bin
+    for i in $(seq 0 30); do
+        left=
+        for b in /sys/block/loop*/loop/backing_file; do
+            [ -r \"$b\" ] || continue
+            f=$(cat \"$b\")
+            [ \"$f\" = \"$params\" ] || [ \"$f\" = \"$params (deleted)\" ] || continue
+            loop=${b#/sys/block/}; loop=/dev/${loop%%/*}
+            if losetup -d \"$loop\" 2>/dev/null; then
+                echo \"$(date -Is) qubes-block: detached $loop ($params) $i s after remove\" >> \"$log\"
+            else
+                left=\"$left $loop\"
+            fi
+        done
+        [ -z \"$left\" ] && exit 0
+        sleep 1
+    done
+    echo \"$(date -Is) qubes-block: still attached 30 s after remove:$left ($params)\" >> \"$log\"
+) </dev/null >/dev/null 2>&1 &
+exit $rc
+"))
+
+(define %qubes-block-script               ; executable, for xl devd
+  (computed-file "qubes-block"
+                 #~(begin
+                     (copy-file #$%qubes-block-text #$output)
+                     (chmod #$output #o555))))
+
 (define (qubes-etc-files config)
   (let ((core (qubes-guest-core-agent config)))
     `(("qubes-rpc" ,(file-append core "/etc/qubes-rpc"))
@@ -745,9 +795,7 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
       ;; For xl devd: the hotplug script dom0 asks for by this path, and an
       ;; xl.conf so it doesn't complain (a driver domain needs no settings).
       ("xen" ,(file-union "xen-driver-domain"
-                          `(("scripts/qubes-block"
-                             ,(file-append qubes-linux-utils
-                                           "/etc/xen/scripts/qubes-block"))
+                          `(("scripts/qubes-block" ,%qubes-block-script)
                             ("xl.conf"
                              ,(plain-file "xl.conf"
                                           "# Driver domain (xl devd) only.\n"))))))))

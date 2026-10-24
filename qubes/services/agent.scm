@@ -744,40 +744,62 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
 # qubes-block ACTION: the hotplug script dom0 names for each block device
 # this qube serves (qvm-block attach, qvm-start --cdrom=QUBE:FILE); xl devd
 # runs it with add or remove, and XENBUS_PATH set. Upstream's (not-script,
-# from qubes-linux-utils), then, on remove, a safety net: upstream's detach
-# of the loop device it made for the file is skipped silently when blkback
-# hasn't let go of the device yet (LOOP_CLR_FD: EBUSY), which left a loop
-# of the (often deleted) file behind each time. Detach any loop still
-# backed by that file once nothing holds it, retrying for 30 s.
+# from qubes-linux-utils), plus a safety net for the loop device it makes
+# for a file: on remove, not-script opens the loop O_EXCL to detach it,
+# which fails (EBUSY) while blkback still holds it, and the loop stays,
+# with its (often deleted) file. So on add, note which loop the device got
+# (xenstore's physical-device and diskseq, which may be gone by the time
+# of the remove), and on remove, detach it, retrying for 30 s; detaching
+# a loop still open frees it on its last close. Every call, not-script's
+# errors and the outcome go to the log.
 real=" (file-append qubes-linux-utils "/etc/xen/scripts/qubes-block") "
 xen=" xen "
 log=/var/log/xen/xen-hotplug.log
-[ \"${1:-}\" = remove ] || exec \"$real\" \"$@\"
+state=/run/qubes-block
+PATH=" coreutils "/bin:" util-linux "/sbin:" util-linux "/bin
+action=${1:-}
+case $action in add|remove) ;; *) exec \"$real\" \"$@\";; esac
+note() { echo \"$(date -Is) qubes-block $action $XENBUS_PATH: $*\" >> \"$log\"; }
+exec 2>> \"$log\"
 xsread=$xen/bin/xenstore-read
 [ -x \"$xsread\" ] || xsread=$xen/sbin/xenstore-read
-params=$(\"$xsread\" \"$XENBUS_PATH/params\" 2>/dev/null)
+xs() { \"$xsread\" \"$XENBUS_PATH/$1\" 2>/dev/null; }
+key=$state/$(printf %s \"$XENBUS_PATH\" | tr / _)
+params=$(xs params)
+
+if [ \"$action\" = add ]; then
+    \"$real\" \"$@\"
+    rc=$?
+    physdev=$(xs physical-device) diskseq=$(xs diskseq)
+    note \"exit $rc: ${params:-?} on ${physdev:-?}, diskseq ${diskseq:-?}\"
+    if [ $rc = 0 ] && [ -n \"$physdev\" ]; then
+        mkdir -p \"$state\" && printf '%s\\n%s\\n' \"$physdev\" \"$diskseq\" > \"$key\"
+    fi
+    exit $rc
+fi
+
 \"$real\" \"$@\"
 rc=$?
-case $params in /*) ;; *) exit $rc;; esac
+note \"exit $rc (params: ${params:-gone})\"
+[ -r \"$key\" ] || { note \"no record from its add\"; exit $rc; }
+{ read -r physdev; read -r diskseq; } < \"$key\"
+rm -f \"$key\"
+[ \"$((0x${physdev%%:*}))\" = 7 ] || exit $rc        # not a loop device
+loop=loop$((0x${physdev#*:}))
 (
-    PATH=" coreutils "/bin:" util-linux "/sbin:" util-linux "/bin
+    b=/sys/block/$loop
     for i in $(seq 0 30); do
-        left=
-        for b in /sys/block/loop*/loop/backing_file; do
-            [ -r \"$b\" ] || continue
-            f=$(cat \"$b\")
-            [ \"$f\" = \"$params\" ] || [ \"$f\" = \"$params (deleted)\" ] || continue
-            loop=${b#/sys/block/}; loop=/dev/${loop%%/*}
-            if losetup -d \"$loop\" 2>/dev/null; then
-                echo \"$(date -Is) qubes-block: detached $loop ($params) $i s after remove\" >> \"$log\"
-            else
-                left=\"$left $loop\"
-            fi
-        done
-        [ -z \"$left\" ] && exit 0
+        seq=$(cat $b/diskseq 2>/dev/null)
+        if [ ! -e $b/loop/backing_file ] ||
+           { [ -n \"$seq\" ] && [ \"$(printf %x \"$seq\")\" != \"$diskseq\" ]; }; then
+            [ $i = 0 ] && exit 0                      # not-script detached it
+            note \"$loop freed, $i s after remove\"
+            exit 0
+        fi
+        losetup -d /dev/$loop 2>/dev/null
         sleep 1
     done
-    echo \"$(date -Is) qubes-block: still attached 30 s after remove:$left ($params)\" >> \"$log\"
+    note \"$loop still attached 30 s after remove: $(cat $b/loop/backing_file)\"
 ) </dev/null >/dev/null 2>&1 &
 exit $rc
 "))

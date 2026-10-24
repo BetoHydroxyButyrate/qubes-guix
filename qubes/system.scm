@@ -86,6 +86,11 @@
   #:use-module (guix channels)
   #:use-module ((guix describe) #:select (current-channels))
   #:use-module (guix gexp)
+  #:use-module ((guix build-system)
+                #:select (build-system build-system-lower bag bag-build))
+  #:use-module ((guix packages) #:select (package package-build-system))
+  #:use-module ((guix store) #:select (%store-monad))
+  #:use-module (guix monads)                ; mlet, with-monad
   #:use-module (ice-9 match)
   #:use-module (ice-9 pretty-print)
   #:use-module ((gnu packages) #:select (find-best-packages-by-name))
@@ -358,8 +363,47 @@ servers only for what it lacks."
              (any (lambda (c) (eq? (channel-name c) 'qubes)) chans))
         (guix-configuration
          (inherit config)
-         (guix (guix-for-channels* chans)))
+         (guix (let ((p (guix-for-channels* chans)))
+                 (package
+                   (inherit p)
+                   (build-system
+                    (memoized-build-system (package-build-system p)))))))
         config)))
+
+;; guix-for-channels' build system works out its derivation each time the
+;; package is lowered: every channel looked up in its checkout ("Updating
+;; channel ...") and all of Guix evaluated ("Computing Guix derivation"),
+;; minutes each in a small qube. 'guix system reconfigure' lowers the
+;; system once per step (build, switch, bootloader, services), so it did
+;; that four times over. Work it out once per process, for each system and
+;; set of channels.
+(define %system-guix-derivations (make-hash-table))
+
+(define (memoized-build-system bs)
+  (define (key system source channels)
+    (cons system
+          (map (lambda (c)
+                 (list (channel-name c) (channel-url c) (channel-commit c)))
+               (filter channel? (cons source channels)))))
+  (build-system
+    (inherit bs)
+    (lower
+     (lambda args
+       (let ((b (apply (build-system-lower bs) args)))
+         (bag
+           (inherit b)
+           (build
+            (lambda* (name inputs #:key source system (channels '())
+                           #:allow-other-keys #:rest rest)
+              (let ((k (key system source channels)))
+                (match (hash-ref %system-guix-derivations k)
+                  (#f
+                   (mlet %store-monad ((drv (apply (bag-build b)
+                                                   name inputs rest)))
+                     (hash-set! %system-guix-derivations k drv)
+                     (return drv)))
+                  (drv
+                   (with-monad %store-monad (return drv)))))))))))))
 
 (define (as-template config)
   ;; Top level: inside qubes-operating-system, the record's field binding

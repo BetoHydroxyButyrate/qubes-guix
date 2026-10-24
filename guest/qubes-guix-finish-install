@@ -410,8 +410,44 @@ say "Rebuilding $target as a qube (guix system init; builds the Qubes agents)"
 # copied wrong without a word. So: after a failure, drop the page cache and
 # run it again (it copies what's still missing, redoing a partial item); then
 # check the copy (below).
+#
+# And the copy itself, one Guile process at 100% of one CPU, at a few MB/s
+# (28 minutes for 3.4 GB): for every file, 'guix system init' reads it
+# through Guile ports and hashes it, to deduplicate it in $target's store
+# (copy-file/deduplicate). So run it with that store-copy step told not to
+# deduplicate: a plain copy-file, in C. The copy takes some more space (no
+# hard links between identical files; 'guix gc --optimize' in the installed
+# system makes them, if wanted), and is registered just the same (each
+# item's hash comes from this store's database, not the copy). If the
+# override doesn't apply (a Guix whose 'guix system' no longer works that
+# way), it's plain 'guix system init'.
+cat > "$tmp/init.scm" <<'INIT'
+(use-modules (guix ui))
+(define said? #f)
+(define (say msg)
+  (unless said?
+    (set! said? #t)
+    (format (current-error-port) "qubes-guix-finish-install: ~a~%" msg)))
+;; Any trouble setting it up (a Guix without these modules or binding):
+;; leave 'guix system' as it is.
+(unless (false-if-exception
+         (let ((m (resolve-module '(guix scripts system)))
+               (copy (module-ref (resolve-interface '(guix build store-copy))
+                                 'copy-store-item)))
+           (module-define! m 'copy-store-item
+             (lambda* (item target #:key (deduplicate? #t)
+                            (log-port (%make-void-port "w")))
+               (say "copying without deduplication")
+               (copy item target #:deduplicate? #f #:log-port log-port)))
+           #t))
+  (say "couldn't turn deduplication off; copying the usual (slow) way"))
+(apply run-guix-command 'system (cdr (command-line)))
+INIT
+init() {
+    qguix repl -- "$tmp/init.scm" init "$@"
+}
 attempt=1
-until qguix system init ${subs:+"--substitute-urls=$subs"} "$config" "$target"; do
+until init ${subs:+"--substitute-urls=$subs"} "$config" "$target"; do
     [ "$attempt" -lt 3 ] || die "guix system init failed $attempt times; see the errors above"
     attempt=$((attempt + 1))
     say "guix system init failed; dropping the page cache and trying again ($attempt of 3)"

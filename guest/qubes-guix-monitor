@@ -81,5 +81,10 @@ if [ "$right" = builds ]; then
 else
     tmux split-window -t "$session:0.1" -h -l 50% sh "$here/qubes-guix-netacct" watch
 fi
+# Keep the proportions when the terminal is resized (split-window's sizes
+# are fixed once made: only the top pane would grow or shrink): COMMAND
+# 60% of the height, the two below half the width each.
+tmux set-hook -t "$session" window-resized \
+    "resize-pane -t $session:0.0 -y 60% ; resize-pane -t $session:0.1 -x 50%"
 tmux select-pane -t "$session:0.0"
 exec tmux attach-session -t "$session"

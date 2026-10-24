@@ -24,6 +24,11 @@
 #                    building here (a nonguix newer than its Guix, say)
 #   --allow-downgrades  for the pull AND the reconfigure: needed once after a
 #                    channel's history was rewritten
+#   --no-monitor     from a terminal, it runs under a monitor (tmux: this
+#                    update above, htop and what's being built or fetched
+#                    below; its output also in /var/log/qubes-guix-update.log):
+#                    this runs it plain instead. Without a terminal (qvm-run,
+#                    qubes-guix-create) it always runs plain
 #   Channels in the config's #:follow-head always follow their branch head,
 #   in this pull too: e.g. set #:follow-head '(qubes), then run with -r.
 # Installed by the qubes channel (qubes/services/agent.scm).
@@ -42,6 +47,25 @@ if [ "$(id -u)" -ne 0 ]; then
     exec sudo -H QUBES_GUIX_CONFIG="${QUBES_GUIX_CONFIG:-}" "$0" "$@"
 fi
 
+# From a terminal, and not already in tmux: run this again under the
+# monitor (tmux: this update above, htop and below right what's being
+# built or fetched; in a qube with a netvm, the traffic per address).
+monitor=@MONITOR@
+use_monitor=1
+for a in "$@"; do
+    case $a in --no-monitor|-h|--help) use_monitor=0;; esac
+done
+if [ "$use_monitor" = 1 ] && [ -t 0 ] && [ -t 1 ] && [ -z "${TMUX:-}" ] &&
+   [ -x "$monitor" ]; then
+    right=netacct
+    [ "$(@QUBESDB_READ@ /qubes-service/updates-proxy-setup 2>/dev/null)" = 1 ] &&
+        right=builds     # all through the updates proxy: no per-address traffic
+    QUBES_GUIX_MONITOR_SESSION=qubes-guix-update \
+    QUBES_GUIX_MONITOR_LOG=/var/log/qubes-guix-update.log \
+    QUBES_GUIX_MONITOR_RIGHT=$right \
+        exec "$monitor" "$0" "$@"
+fi
+
 reconfigure=0
 pin=
 chans=
@@ -58,6 +82,7 @@ while [ $# -gt 0 ]; do
                    chans="$chans $2"; reconfigure=1; shift 2;;
         --channel=*) chans="$chans ${1#*=}"; reconfigure=1; shift;;
         --allow-downgrades) downgrades=--allow-downgrades; shift;;
+        --no-monitor) shift;;
         -h|--help) sed -n '2,/^# Installed by/p' "$0"; exit 0;;
         *) break;;
     esac

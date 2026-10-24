@@ -1,23 +1,46 @@
 #!/bin/sh
-# qubes-guix-monitor — run a command (an install) with a monitor around it,
-# as root on the console of the stock Guix installer:
+# qubes-guix-monitor — run a command (an install, an update) with a monitor
+# around it, as root: on the console of the stock Guix installer, or by
+# qubes-guix-update from a terminal.
 #
 #   qubes-guix-monitor COMMAND [ARG...]
 #
-# A tmux session: COMMAND above, its output also appended to
-# /root/qubes-guix-monitor.log; htop below left, and the network traffic
-# per remote address (qubes-guix-netacct watch) below right. What the
-# qubes-guix ISO shows on its tty1, for the stock ISO, which has none of
-# tmux, htop or nftables: they come from 'guix shell' first. When COMMAND
-# ends (unless it powers the machine off), its pane says how, and a shell
-# follows there. Ctrl-b d leaves tmux; 'tmux attach' goes back.
+# A tmux session: COMMAND above, its output also appended to a log; htop
+# below left, and below right either the network traffic per remote
+# address (qubes-guix-netacct watch) or the store items being built or
+# fetched (from 'guix processes'). What the qubes-guix ISO shows on its
+# tty1. Without tmux or htop (the stock ISO, an installed qube) they come
+# from 'guix shell' first. When COMMAND ends (unless it powers the machine
+# off), its pane says how, and a shell follows there. Ctrl-b d leaves tmux;
+# 'tmux attach' goes back.
+#
+# Env: QUBES_GUIX_MONITOR_SESSION  tmux session name     (qubes-guix)
+#      QUBES_GUIX_MONITOR_LOG      COMMAND's log  (/root/qubes-guix-monitor.log)
+#      QUBES_GUIX_MONITOR_RIGHT    netacct or builds      (netacct)
 #
 # Without tmux (guix shell failed: no network?), COMMAND just runs.
 
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
-session=qubes-guix
-log=/root/qubes-guix-monitor.log
+session=${QUBES_GUIX_MONITOR_SESSION:-qubes-guix}
+log=${QUBES_GUIX_MONITOR_LOG:-/root/qubes-guix-monitor.log}
+right=${QUBES_GUIX_MONITOR_RIGHT:-netacct}
+
+# The "builds" pane: the store items guix-daemon holds a lock on, i.e. is
+# building or fetching, every 3 seconds.
+if [ "${1:-}" = --watch-builds ]; then
+    while :; do
+        rows=$(stty size 2>/dev/null | cut -d' ' -f1)
+        case $rows in ''|*[!0-9]*) rows=24;; esac
+        items=$(guix processes 2>/dev/null |
+                sed -n 's|^LockHeld: /gnu/store/[0-9a-z]*-\(.*\)\.lock$|\1|p' |
+                sed 's/\.drv$//' | sort -u)
+        n=$(printf '%s' "$items" | grep -c .)
+        printf '\033[H\033[2J%s: %s being built or fetched\n\n%s\n' \
+            "$(date +%T)" "$n" "$(printf '%s\n' "$items" | head -n $((rows - 4)))"
+        sleep 3
+    done
+fi
 # The socket under /run: cow-store hides /tmp once an install starts.
 export TMUX_TMPDIR=/run
 
@@ -53,6 +76,10 @@ tmux -f /dev/null new-session -d -s "$session" -x 200 -y 50 \
 tmux set-option -t "$session" status-right "C-b d: leave tmux " >/dev/null
 tmux set-option -t "$session" status-right-length 40 >/dev/null
 tmux split-window -t "$session:0.0" -v -l 40% htop
-tmux split-window -t "$session:0.1" -h -l 50% sh "$here/qubes-guix-netacct" watch
+if [ "$right" = builds ]; then
+    tmux split-window -t "$session:0.1" -h -l 50% sh "$here/qubes-guix-monitor" --watch-builds
+else
+    tmux split-window -t "$session:0.1" -h -l 50% sh "$here/qubes-guix-netacct" watch
+fi
 tmux select-pane -t "$session:0.0"
 exec tmux attach-session -t "$session"

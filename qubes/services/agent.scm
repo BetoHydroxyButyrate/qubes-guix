@@ -744,14 +744,19 @@ Xorg on :1 (dummyqbs + qubes drivers), relayed to the GUI domain.")
 # qubes-block ACTION: the hotplug script dom0 names for each block device
 # this qube serves (qvm-block attach, qvm-start --cdrom=QUBE:FILE); xl devd
 # runs it with add or remove, and XENBUS_PATH set. Upstream's (not-script,
-# from qubes-linux-utils), plus a safety net for the loop device it makes
-# for a file: on remove, not-script opens the loop O_EXCL to detach it,
-# which fails (EBUSY) while blkback still holds it, and the loop stays,
-# with its (often deleted) file. So on add, note which loop the device got
-# (xenstore's physical-device and diskseq, which may be gone by the time
-# of the remove), and on remove, detach it, retrying for 30 s; detaching
-# a loop still open frees it on its last close. Every call, not-script's
-# errors and the outcome go to the log.
+# from qubes-linux-utils), plus the detach of two kinds of loop device that
+# upstream leaves behind, each keeping its (often deleted) file:
+#  - one not-script made for a file: on remove, it opens the loop O_EXCL
+#    to detach it, which fails (EBUSY) while blkback still holds it;
+#  - a cdrom's (qvm-start --cdrom=QUBE:FILE): qvm-start makes the loop
+#    itself (losetup -f --show FILE, in this qube) and hands dom0 the
+#    loop, which not-script rightly leaves alone, and nothing detaches it.
+# Other loops (one you made and attached with qvm-block) stay. On add,
+# note which loop the device got (xenstore's physical-device and diskseq,
+# which may be gone by the time of the remove), and on remove, detach it,
+# retrying for 30 s; detaching a loop still open frees it on its last
+# close (an HVM's cdrom is attached to its stubdomain too). Every call,
+# not-script's errors and the outcome go to the log.
 real=" (file-append qubes-linux-utils "/etc/xen/scripts/qubes-block") "
 xen=" xen "
 log=/var/log/xen/xen-hotplug.log
@@ -771,8 +776,12 @@ if [ \"$action\" = add ]; then
     \"$real\" \"$@\"
     rc=$?
     physdev=$(xs physical-device) diskseq=$(xs diskseq)
-    note \"exit $rc: ${params:-?} on ${physdev:-?}, diskseq ${diskseq:-?}\"
-    if [ $rc = 0 ] && [ -n \"$physdev\" ]; then
+    path=$(xs physical-device-path) type=$(xs device-type)
+    if [ \"$path\" != \"$params\" ]; then why=\"not-script's loop\"
+    elif [ \"$type\" = cdrom ]; then why=cdrom
+    else why=; fi
+    note \"exit $rc: ${params:-?} on ${physdev:-?}, diskseq ${diskseq:-?}${why:+; detach on remove: $why}\"
+    if [ $rc = 0 ] && [ -n \"$physdev\" ] && [ -n \"$why\" ]; then
         mkdir -p \"$state\" && printf '%s\\n%s\\n' \"$physdev\" \"$diskseq\" > \"$key\"
     fi
     exit $rc
@@ -781,7 +790,7 @@ fi
 \"$real\" \"$@\"
 rc=$?
 note \"exit $rc (params: ${params:-gone})\"
-[ -r \"$key\" ] || { note \"no record from its add\"; exit $rc; }
+[ -r \"$key\" ] || exit $rc                    # not ours to detach
 { read -r physdev; read -r diskseq; } < \"$key\"
 rm -f \"$key\"
 [ \"$((0x${physdev%%:*}))\" = 7 ] || exit $rc        # not a loop device

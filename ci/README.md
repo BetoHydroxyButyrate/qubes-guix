@@ -44,9 +44,12 @@ How it fits together:
   - SSH and passwordless sudo from the runner to guix-subs;
   - a full run by hand from the runner: ISO built on guix-subs, the
     unattended template install and update (3h10m), and `qubes-guix-test`
-    on an AppVM (15 passed).
-- **Not yet run:** the variants (`test-variants.sh`), `ISO_OFFLINE=1`, and
-  the Gitea workflow end to end.
+    on an AppVM (15 passed);
+  - the Gitea workflow end to end, on a push to main (0230ead, 2h33m):
+    the ISO built on guix-subs (`ISO_OFFLINE=1`), the template installed
+    from it and tested on an AppVM, a qube booted from the ISO kept in a
+    Guix AppVM (and its loop device freed after), and all six variants
+    (template, AppVM and standalone; HVM and PVH) passing.
 
 | File | Runs on | What it does |
 |---|---|---|
@@ -326,7 +329,7 @@ Then `systemctl daemon-reload && systemctl enable --now act_runner`.
 # 1. runner → ci-ctl → dom0 and back, nothing built (a few seconds)
 mkdir -p /tmp/payload && ci/runner/qubes-ci-run.sh /tmp/payload /tmp/results
 
-# 2. the full run: build the ISO on guix-subs, then install and test (an hour or more)
+# 2. the full run: build the ISO on guix-subs, then install and test (2-3 hours)
 git pull
 ci/runner/build-iso-remote.sh main "$(git rev-parse HEAD)" /tmp/payload/qubes-guix-installer.iso
 cp -r dom0 /tmp/payload/ && ci/runner/qubes-ci-run.sh /tmp/payload /tmp/results

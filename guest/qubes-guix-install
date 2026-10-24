@@ -4,7 +4,8 @@
 # for a Qubes HVM:
 #   1. partitions DISK (GPT: 1 MiB BIOS boot partition + ext4 root; Qubes HVMs
 #      boot with SeaBIOS) and mounts the root on /mnt;
-#   2. writes /mnt/etc/config.scm: Xfce, %desktop-services, one user;
+#   2. writes /mnt/etc/config.scm: no desktop (each application's window
+#      is drawn in dom0's), xterm, %desktop-services, one user;
 #   3. runs qubes-guix-finish-install, which wraps it in
 #      (qubes-operating-system ...) and runs 'guix system init' with the
 #      qubes channel;
@@ -192,7 +193,8 @@ EOF
 ;; (or 'qubes-guix-update -r').
 
 (use-modules (gnu))
-(use-service-modules desktop xorg)
+(use-service-modules desktop)
+(use-package-modules xorg)
 
 (operating-system
   (locale "$locale")
@@ -209,9 +211,15 @@ EOF
                   (supplementary-groups '("wheel" "netdev" "audio" "video")))
                 %base-user-accounts))
 
-  (services
-   (append (list (service xfce-desktop-service-type))
-           %desktop-services))
+  ;; No desktop environment: under Qubes, each application's window is
+  ;; drawn in dom0's desktop. A terminal, for qvm-run and the Qubes menu;
+  ;; add what you use (or list it in dom0's qubes-guix-packages).
+  (packages (cons xterm %base-packages))
+
+  ;; %desktop-services for dbus, elogind, polkit, PulseAudio and fonts,
+  ;; which the Qubes agents and applications use (its graphical login and
+  ;; networking are removed for the qube).
+  (services %desktop-services)
 
   (bootloader (bootloader-configuration
                 (bootloader grub-bootloader)

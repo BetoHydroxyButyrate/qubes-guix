@@ -72,7 +72,7 @@ A TemplateVM is detected even without `--template`. It gets `updates-proxy-setup
 
 That script:
 1. **Disk:** partitions `/dev/xvda` as GPT, with a 1 MiB BIOS boot partition and an ext4 root labelled `guix-root`. It refuses a disk that already has partitions unless you pass `--force`.
-2. **Configuration:** writes `/etc/config.scm` with Xfce, `%desktop-services`, the user `user`, dom0's timezone, and the qube's name as host name.
+2. **Configuration:** writes `/etc/config.scm` with xterm and no desktop environment (each window is drawn in dom0's desktop), `%desktop-services`, the user `user`, dom0's timezone, and the qube's name as host name.
 3. **Build:** runs `qubes-guix-finish-install`.
 4. **Power off:** sets the passwords and powers off.
 

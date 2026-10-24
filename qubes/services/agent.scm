@@ -96,7 +96,8 @@
   ;; Only those present in the system profile are requested. Without it,
   ;; dom0 lists every application (e.g. all of Xfce's settings dialogs).
   (default-menu-items qubes-guest-default-menu-items
-                      (default '("xfce4-terminal.desktop" "thunar.desktop"
+                      (default '("xterm.desktop"
+                                 "xfce4-terminal.desktop" "thunar.desktop"
                                  "Thunar.desktop" "Alacritty.desktop"
                                  "firefox.desktop" "icecat.desktop"
                                  "emacs.desktop" "mousepad.desktop"

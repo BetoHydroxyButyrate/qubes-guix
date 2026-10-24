@@ -25,7 +25,7 @@
 ;;;     -e '((@ (qubes installer) qubes-installation-os))'
 ;;;
 ;;; #:offline? #t also puts in the ISO everything the default install
-;;; (qubes-guix-install: Xfce, user 'user', git) needs, and the git checkouts
+;;; (qubes-guix-install: xterm, user 'user', git) needs, and the git checkouts
 ;;; of the channels: that install then needs no network at all. It makes the
 ;;; ISO a few GiB larger.
 ;;;
@@ -41,8 +41,8 @@
   #:use-module ((gnu packages version-control) #:select (git))
   #:use-module ((gnu packages) #:select (specification->package))
   #:use-module ((gnu packages bash) #:select (bash-minimal))
-  #:use-module ((gnu services desktop)
-                #:select (%desktop-services xfce-desktop-service-type))
+  #:use-module ((gnu services desktop) #:select (%desktop-services))
+  #:use-module ((gnu packages xorg) #:select (xterm))
   #:use-module (guix channels)
   #:use-module ((guix describe) #:select (current-channels))
   #:autoload   (guix git) (url-cache-directory %repository-cache-directory)
@@ -74,7 +74,7 @@
    (features-request? #f)))
 
 (define (qubes-reference-os branch)
-  "The system qubes-guix-install writes (Xfce, user 'user', git), wrapped as
+  "The system qubes-guix-install writes (xterm, user 'user', git), wrapped as
 qubes-guix-finish-install wraps it. Only its packages matter: in the offline
 ISO, its closure means an install needs no substitutes. Keep it in step with
 the config.scm that guest/qubes-guix-install writes."
@@ -91,9 +91,8 @@ the config.scm that guest/qubes-guix-install writes."
                      (home-directory "/home/user")
                      (supplementary-groups '("wheel" "netdev" "audio" "video")))
                    %base-user-accounts))
-     (services
-      (append (list (service xfce-desktop-service-type))
-              %desktop-services))
+     (packages (cons xterm %base-packages))
+     (services %desktop-services)
      (bootloader (bootloader-configuration
                    (bootloader grub-bootloader)
                    (targets (list "/dev/xvda"))

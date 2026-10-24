@@ -168,7 +168,7 @@ Options:
                         hash; --no-password: none), then types into VT3 the
                         network setup, a clone of this repository and
                         guest/qubes-guix-install: partition /dev/xvda,
-                        write config.scm (Xfce; user 'user'; dom0's
+                        write config.scm (xterm, no desktop; user 'user'; dom0's
                         timezone), qubes-guix-finish-install, power off.
                         Then waits for NAME to stop and starts it from its
                         disk (--no-wait: don't). --force: wipe a disk that
@@ -1721,7 +1721,7 @@ cat <<EOF
 4. Unattended: at the installer's first screen, in dom0:
      $prog --unattended$( [ "$template" = 1 ] && echo ' --template')$( [ "$branch" != main ] && echo " -b $branch") $name
    (skip steps 2 and 3: it sets the network itself). It asks for a password,
-   then types the rest: partition, config.scm (Xfce, user 'user'), the
+   then types the rest: partition, config.scm (xterm, user 'user'), the
    qubes channel, guix system init, power off; then starts $name again.
 
    Or install as usual, up to the 'Installation complete' screen. DON'T

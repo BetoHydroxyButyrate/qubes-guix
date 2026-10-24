@@ -133,6 +133,31 @@ else
     proxy=0
 fi
 
+# Building Guix itself (when the pull or the reconfigure finds no substitute
+# for it) takes several GB of memory. Warn a small qube now, rather than have
+# that build killed by the kernel (out of memory) an hour in.
+qube=$(@QUBESDB_READ@ /name 2>/dev/null || echo "<this qube>")
+mem=$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)
+if [ "${mem:-0}" -lt 3800 ]; then
+    echo "$prog: warning: this qube has $mem MiB. If Guix has to be built here
+(no substitute for it), that needs several GB, and the build can be killed for
+lack of memory. To be safe, shut it down and in dom0:
+  qvm-prefs $qube memory 8000; qvm-prefs $qube maxmem 8000" >&2
+fi
+
+# STATUS WHAT: after a failed pull or reconfigure. 137 is SIGKILL, from the
+# kernel's out-of-memory killer as a rule: say so, rather than leave a bare
+# "Killed".
+failed() {
+    if [ "$1" = 137 ]; then
+        echo "$prog: $2 was killed (SIGKILL): most likely out of memory
+(sudo dmesg | grep -i 'killed process'). Shut this qube down, give it more
+memory, and run this again. In dom0:
+  qvm-prefs $qube memory 8000; qvm-prefs $qube maxmem 8000" >&2
+    fi
+    exit "$1"
+}
+
 # Root's pulled Guix once there is one, else the system's.
 current=/root/.config/guix/current/bin/guix
 guix=$current
@@ -347,7 +372,8 @@ else
     pins=
 fi
 if [ -z "$pins" ] && [ -z "$follow" ]; then
-    "$guix" pull -C /etc/guix/channels.scm ${downgrades:+"$downgrades"} "$@"
+    "$guix" pull -C /etc/guix/channels.scm ${downgrades:+"$downgrades"} "$@" ||
+        failed $? "guix pull"
 else
     [ -n "$follow" ] && echo "$prog: following the branch head: $follow"
     case $follow in
@@ -365,11 +391,13 @@ else
       cat /etc/guix/channels.scm
       printf '%s\n' "))"
     } > "$tmp/channels.scm"
-    "$guix" pull -C "$tmp/channels.scm" ${downgrades:+"$downgrades"} "$@"
+    "$guix" pull -C "$tmp/channels.scm" ${downgrades:+"$downgrades"} "$@" ||
+        failed $? "guix pull"
 fi
 
 if [ "$reconfigure" = 1 ]; then
-    "$current" system reconfigure ${downgrades:+"$downgrades"} "$config"
+    "$current" system reconfigure ${downgrades:+"$downgrades"} "$config" ||
+        failed $? "guix system reconfigure"
 
     # The Qubes menu, as other templates' package managers do after an
     # install: advertise default-menu-items again (from the new system's

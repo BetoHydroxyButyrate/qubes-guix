@@ -449,6 +449,12 @@ else
             pass "boot from an ISO here" "$cd_vm booted from $vm:$cd_file; its agent answered in $(( $(date +%s) - t0 ))s"
         else
             fail "boot from an ISO here" "qvm-start --cdrom=$vm:$cd_file${cd_err:+: $(printf '%s' "$cd_err" | tail -n1)}; see /var/log/xen/console/guest-$cd_vm.log"
+            # The backend's side, from this qube, which goes when the test
+            # ends: xl devd, which runs the hotplug script, and the script.
+            for f in /var/log/xen/xl-devd.log /var/log/xen/xen-hotplug.log; do
+                echo "      --- $vm:$f (last lines):"
+                in_qube -u root "tail -n 15 $f 2>&1" | sed 's/^/      /'
+            done
         fi
         qvm-kill "$cd_vm" >/dev/null 2>&1 || true
         qvm-remove -f "$cd_vm" >/dev/null 2>&1 || true

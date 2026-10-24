@@ -391,6 +391,13 @@ public repository.
    - pushes `results/` back to ci-ctl.
 7. **Fetches the results:** `qubes-guix-create.log`, logs, JUnit XML, the
    dom0 journal, Xen and qube consoles, and the full console output.
+   The job log ends with a summary of every step (the install, the boot
+   from an ISO, the variants, any test modules), also in
+   `results/summary.txt`.
+
+**Where the results are:** the **qubes-results** artifact on the run's page
+in Gitea (a zip of `results/`), and `~/ci-run/results/` in ci-ctl and in
+dom0 until the next run starts.
 
 **The variants** (`test-variants.sh`), for each boot mode: HVM, and PVH
 when dom0 has `/var/lib/qubes/vm-kernels/pvgrub2-pvh`:

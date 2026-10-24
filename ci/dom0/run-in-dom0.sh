@@ -23,6 +23,15 @@ set -uo pipefail
 cd "$(dirname "$0")"
 mkdir -p results
 export DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority
+
+# Every step's outcome, for the summary at the end (and results/summary.txt):
+# step NAME PASS|FAIL [NOTE]. A FAIL fails the run.
+steps=()
+step() {
+    steps+=("$(printf '%-5s %s%s' "$2" "$1" "${3:+  ($3)}")")
+    [ "$2" = FAIL ] && failed=1
+    return 0
+}
 STATE=$HOME/.qubes-ci-templates
 CI_QUBE=${CI_QUBE:-ci-guix}
 VARIANTS=${VARIANTS:-1}
@@ -67,7 +76,8 @@ for rpm in ./*.rpm; do
     name=$(rpm -qp --qf '%{NAME}' "$rpm" 2>/dev/null)
     name=${name#qubes-template-}
     echo "==> installing template $name from $rpm"
-    qvm-template install --nogpgcheck "$rpm" || { failed=1; continue; }
+    qvm-template install --nogpgcheck "$rpm" || { step "install $name (RPM)" FAIL; continue; }
+    step "install $name (RPM)" PASS
     echo "$name" >>"$STATE"
     templates+=("$name")
 done
@@ -80,11 +90,11 @@ ISO_QUBE=${ISO_QUBE:-} ISO_PATH=${ISO_PATH:-}
 while [ -n "$ISO_PATH" ]; do
     if ! qvm-run -q -p "$ISO_QUBE" "test -s '$ISO_PATH'" </dev/null; then
         echo "==> FAIL: no installer ISO at $ISO_QUBE:$ISO_PATH"
-        failed=1; break
+        step "install $CI_QUBE" FAIL "no installer ISO at $ISO_QUBE:$ISO_PATH"; break
     fi
     if [ ! -x dom0/qubes-guix-create ]; then
         echo "==> FAIL: an installer ISO, but no dom0/qubes-guix-create in the payload"
-        failed=1; break
+        step "install $CI_QUBE" FAIL "no dom0/qubes-guix-create in the payload"; break
     fi
     echo "==> qubes-guix-create --unattended --template --test $CI_QUBE from $ISO_QUBE:$ISO_PATH"
     (cd dom0 && ./qubes-guix-create --yes --unattended --template --no-password --force --test \
@@ -94,8 +104,11 @@ while [ -n "$ISO_PATH" ]; do
     # nothing on root's PATH (no setsid, ls, ...), so qubes-guix-create can't
     # resume it. The next run starts over. ISO_OFFLINE=1 on the runner keeps
     # the install off the network, the usual cause.
-    if [ "$rc" != 0 ]; then
-        failed=1
+    if [ "$rc" = 0 ]; then
+        step "install $CI_QUBE, and qubes-guix-test on an AppVM of it" PASS
+    else
+        step "install $CI_QUBE, and qubes-guix-test on an AppVM of it" FAIL \
+            "exit $rc; results/qubes-guix-create.log"
         # A failed install leaves the installer running, with its log in
         # /root; it has cat but few other tools, so fetch the whole log.
         if qvm-check -q --running "$CI_QUBE" 2>/dev/null; then
@@ -113,10 +126,21 @@ while [ -n "$ISO_PATH" ]; do
         echo "==> qubes-guix-test --cdrom-iso $ISO_QUBE:$ISO_PATH $CI_QUBE"
         (cd dom0 && ./qubes-guix-test --cdrom-iso "$ISO_QUBE:$ISO_PATH" "$CI_QUBE") </dev/null 2>&1 |
             tee results/qubes-guix-test-cdrom.log
-        [ "${PIPESTATUS[0]}" = 0 ] || failed=1
+        if [ "${PIPESTATUS[0]}" = 0 ]; then
+            step "boot a qube from an ISO in a Guix AppVM (--cdrom-iso)" PASS
+        else
+            step "boot a qube from an ISO in a Guix AppVM (--cdrom-iso)" FAIL \
+                "results/qubes-guix-test-cdrom.log"
+        fi
     fi
     if [ "$rc" = 0 ] && [ "$VARIANTS" = 1 ] && [ -x ./test-variants.sh ]; then
-        ./test-variants.sh "$CI_QUBE" dom0 results || failed=1
+        ./test-variants.sh "$CI_QUBE" dom0 results
+        n=$?
+        if [ "$n" = 0 ]; then
+            step "variants: template, AppVM, standalone; HVM, PVH" PASS "results/variants-summary.txt"
+        else
+            step "variants: template, AppVM, standalone; HVM, PVH" FAIL "$n failed; results/variants-summary.txt"
+        fi
     fi
     break
 done
@@ -151,12 +175,20 @@ run_module() {
 }
 
 for spec in ${SYSTEM_TESTS:-}; do
-    run_module "${spec%%:*}" "$( [[ $spec == *:* ]] && echo "${spec##*:}" || echo 3600 )" || failed=1
+    if run_module "${spec%%:*}" "$( [[ $spec == *:* ]] && echo "${spec##*:}" || echo 3600 )"; then
+        step "${spec%%:*}" PASS
+    else
+        step "${spec%%:*}" FAIL "results/${spec%%:*}.log"
+    fi
 done
 
 if [ -x ./dom0-tests.sh ]; then
     echo "==> project dom0-tests.sh"
-    ./dom0-tests.sh > results/dom0-tests.log 2>&1 || failed=1
+    if ./dom0-tests.sh > results/dom0-tests.log 2>&1; then
+        step "dom0-tests.sh" PASS
+    else
+        step "dom0-tests.sh" FAIL "results/dom0-tests.log"
+    fi
     tail -20 results/dom0-tests.log
 fi
 
@@ -164,4 +196,12 @@ sudo journalctl -b --no-pager --since "-12h" > results/dom0-journal.log 2>/dev/n
 sudo cp -r /var/log/xen/console results/xen-console 2>/dev/null
 sudo cp -r /var/log/qubes results/qubes-logs 2>/dev/null
 sudo chown -R "$(id -u):$(id -g)" results
+
+echo
+echo "==> summary"
+if [ ${#steps[@]} = 0 ]; then
+    echo "    (nothing tested: an empty payload)"
+else
+    printf '    %s\n' "${steps[@]}"
+fi | tee results/summary.txt
 exit $failed

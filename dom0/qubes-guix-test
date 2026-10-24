@@ -47,7 +47,8 @@
 # xenstore); the xen-blkback module and the xen-driver-domain (xl devd) and
 # qubes-block-devices services;
 # block devices (a loop device listed by qvm-block, then gone); a qube
-# booting from an ISO here (--cdrom-iso); GUI (a terminal window appears in dom0); split-gpg2 and
+# booting from an ISO here, and its loop device freed after (--cdrom-iso);
+# GUI (a terminal window appears in dom0); split-gpg2 and
 # split-ssh (optional); and a clean shutdown.
 
 set -uo pipefail
@@ -458,6 +459,25 @@ else
         fi
         qvm-kill "$cd_vm" >/dev/null 2>&1 || true
         qvm-remove -f "$cd_vm" >/dev/null 2>&1 || true
+        # Once that qube is gone, this one detaches the loop device it made
+        # for the ISO (the qubes-block hotplug script's remove), or it keeps
+        # the file's space, one more loop per boot from an ISO.
+        cd_loops=
+        for i in $(seq 0 45); do
+            # "ok" last, so a failed qvm-run doesn't read as no loops.
+            cd_loops=$(in_qube -u root "losetup -j $cd_file | cut -d: -f1 | tr '\n' ' '; echo ok")
+            case $cd_loops in *ok) cd_loops=${cd_loops%ok};; *) cd_loops="?";; esac
+            [ -z "${cd_loops// }" ] && break
+            sleep 1
+        done
+        if [ -z "${cd_loops// }" ]; then
+            pass "ISO's loop device freed" "${i}s after $cd_vm went"
+        else
+            fail "ISO's loop device freed" "${cd_loops% } still on $cd_file 45s after $cd_vm went"
+            echo "      --- $vm:/var/log/xen/xen-hotplug.log (last lines):"
+            in_qube -u root "tail -n 15 /var/log/xen/xen-hotplug.log 2>&1" | sed 's/^/      /'
+            in_qube -u root "losetup -d $cd_loops" >/dev/null 2>&1 || true
+        fi
     fi
     in_qube "rm -f $cd_file" >/dev/null || true
 fi

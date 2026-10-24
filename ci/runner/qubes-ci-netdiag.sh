@@ -18,6 +18,7 @@
 # Usage: qubes-ci-netdiag.sh [LOG]   (default: ./netdiag-DATE.log)
 # Config: as qubes-ci-run.sh (TUNNEL_PORT, SSH_KEY), build-iso-remote.sh
 # (ISO_HOST, ISO_SSH_KEY); /etc/qubes-ci/runner.env.
+#   TESTS   which of the sections below to run (1 2 3 4)
 #   MB      size of each transfer, MiB (500)
 #   PORT    the runner's port for test 2 (8099)
 #   SUBS_URL  the substitute server (default: the first url in the
@@ -32,6 +33,8 @@ SSH_KEY=${SSH_KEY:-$HOME/.ssh/qubes_ci_ed25519}
 ISO_HOST=${ISO_HOST:-guix-subs}
 ISO_SSH_KEY=${ISO_SSH_KEY:-$HOME/.ssh/qubes_ci_ed25519}
 MB=${MB:-500}
+TESTS=${TESTS:-1 2 3 4}
+want() { case " $TESTS " in *" $1 "*) return 0;; esac; return 1; }
 PORT=${PORT:-8099}
 SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10
           -o StrictHostKeyChecking=accept-new -o HostKeyAlias=qubes-ci-ctl)
@@ -44,10 +47,11 @@ srv=
 trap '[ -n "$srv" ] && kill "$srv" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 exec > >(tee "$LOG") 2>&1
-echo "== qubes-ci-netdiag $(date -Is), $MB MiB per transfer"
+echo "== qubes-ci-netdiag $(date -Is), $MB MiB per transfer, tests: $TESTS"
 ctl true || { echo "no tunnel to ci-ctl"; exit 1; }
 bytes=$((MB * 1048576))
 
+if want 1; then
 echo
 echo "== 1. runner -> ci-ctl through the tunnel (ssh), xentop in dom0 meanwhile"
 printf 'xentop -b -d 3 -i 6 | grep -E "NAME|sys-|ci-ctl|Domain-0"\n' | dom0 > "$tmp/xentop" 2>&1 &
@@ -62,6 +66,8 @@ wait "$xt"
 echo "-- dom0 xentop, 3 s apart, during the transfer:"
 cat "$tmp/xentop"
 
+fi
+if want 2; then
 echo
 echo "== 2. plain TCP over the LAN, both ways (no ssh, no tunnel), 30 s each"
 # The runner listens on PORT; each qube connects to it (python3, sent on
@@ -132,6 +138,8 @@ for q in sys-firewall sys-net; do
 done
 kill "$srv" 2>/dev/null; srv=
 
+fi
+if want 3; then
 echo
 echo "== 3. a nar from the substitute server"
 url=${SUBS_URL:-$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$HERE/../../dom0/qubes-guix-substitutes" 2>/dev/null | head -n1)}
@@ -155,6 +163,8 @@ else
     fi
 fi
 
+fi
+if want 4; then
 echo
 echo "== 4. ci-ctl's disk, sys-net's link, the qubes"
 ctl "dd if=/dev/zero of=\$HOME/netdiag.tmp bs=1M count=$MB oflag=direct 2>&1 | tail -n1; rm -f \$HOME/netdiag.tmp"
@@ -184,5 +194,6 @@ echo "-- kernel messages about $nic / e1000e:"
 dmesg 2>/dev/null | grep -iE "$nic|e1000e" | tail -n 15' </dev/null
 EOF
 
+fi
 echo
 echo "== done: $LOG"

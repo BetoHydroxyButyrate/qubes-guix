@@ -25,10 +25,14 @@ mkdir -p results
 export DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority
 
 # Every step's outcome, for the summary at the end (and results/summary.txt):
-# step NAME PASS|FAIL [NOTE]. A FAIL fails the run.
+# step NAME PASS|FAIL [NOTE]. A FAIL fails the run. Each step's time is
+# from the step before it (the first: from the end of the setup).
 steps=()
+last=$SECONDS
+hms() { printf '%dh%02dm' $(($1 / 3600)) $(($1 % 3600 / 60)); }
 step() {
-    steps+=("$(printf '%-5s %s%s' "$2" "$1" "${3:+  ($3)}")")
+    steps+=("$(printf '%-5s %s  %s%s' "$2" "$(hms $((SECONDS - last)))" "$1" "${3:+  ($3)}")")
+    last=$SECONDS
     [ "$2" = FAIL ] && failed=1
     return 0
 }
@@ -68,6 +72,8 @@ if [ -f "$STATE" ]; then
     done <"$STATE"
     rm -f "$STATE"
 fi
+
+setup=$SECONDS last=$SECONDS
 
 # --- install this run's templates
 templates=()
@@ -199,9 +205,12 @@ sudo chown -R "$(id -u):$(id -g)" results
 
 echo
 echo "==> summary"
-if [ ${#steps[@]} = 0 ]; then
-    echo "    (nothing tested: an empty payload)"
-else
-    printf '    %s\n' "${steps[@]}"
-fi | tee results/summary.txt
+{
+    if [ ${#steps[@]} = 0 ]; then
+        echo "    (nothing tested: an empty payload)"
+    else
+        printf '    %s\n' "${steps[@]}"
+    fi
+    echo "    in dom0: $(hms $SECONDS) (setup: leftovers removed, dom0 packages: $(hms "$setup"))"
+} | tee results/summary.txt
 exit $failed

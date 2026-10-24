@@ -26,8 +26,11 @@ pvgrub=/var/lib/qubes/vm-kernels/pvgrub2-pvh
 summary=()
 failed=0
 
+# Each variant's time: from the one before (so making its qube counts).
+last=$SECONDS
 record() {  # LABEL PASS|FAIL|SKIP [why]
-    summary+=("$(printf '%-5s %s%s' "$2" "$1" "${3:+  ($3)}")")
+    summary+=("$(printf '%-5s %3dm  %s%s' "$2" $(((SECONDS - last) / 60)) "$1" "${3:+  ($3)}")")
+    last=$SECONDS
     [ "$2" = FAIL ] && failed=$((failed + 1))
     return 0
 }

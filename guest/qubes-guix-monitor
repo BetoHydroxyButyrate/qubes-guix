@@ -12,7 +12,10 @@
 # tty1. Without tmux or htop (the stock ISO, an installed qube) they come
 # from 'guix shell' first. When COMMAND ends (unless it powers the machine
 # off), its pane says how, and a shell follows there. Ctrl-b d leaves tmux;
-# 'tmux attach' goes back.
+# running qubes-guix-monitor again goes back to a session still running its
+# COMMAND, and replaces one whose COMMAND has ended (its output is in the
+# log). The socket is under /run, so a bare 'tmux attach' won't find it:
+# TMUX_TMPDIR=/run tmux attach -t SESSION.
 #
 # Env: QUBES_GUIX_MONITOR_SESSION  tmux session name     (qubes-guix)
 #      QUBES_GUIX_MONITOR_LOG      COMMAND's log  (/root/qubes-guix-monitor.log)
@@ -55,8 +58,12 @@ if ! command -v tmux >/dev/null 2>&1 || ! command -v htop >/dev/null 2>&1; then
 fi
 
 if tmux has-session -t "$session" 2>/dev/null; then
-    echo "qubes-guix-monitor: a '$session' tmux session already runs: tmux attach -t $session" >&2
-    exit 1
+    if [ -z "$(tmux show-options -qv -t "$session" @done)" ]; then
+        echo "qubes-guix-monitor: '$session' is still running $(tmux show-options -qv -t "$session" @command); attaching to it (not running $*)" >&2
+        sleep 2
+        exec tmux attach-session -t "$session"
+    fi
+    tmux kill-session -t "$session"
 fi
 
 # COMMAND's pane: its output to the pane and the log, then how it ended,
@@ -68,11 +75,13 @@ echo "== $(date): $*" >> "$log"
 { "$@"; echo $? > "$log.status"; } 2>&1 | tee -a "$log"
 st=$(cat "$log.status" 2>/dev/null || echo "?")
 echo
+tmux set-option @done "$st" 2>/dev/null
 echo "== exited $st ($(date +%T)). Its output: $log. A shell follows (Ctrl-b d leaves tmux)."
 exec "${SHELL:-sh}" -i'
 
 tmux -f /dev/null new-session -d -s "$session" -x 200 -y 50 \
     sh -c "$run" qubes-guix-monitor "$log" "$@"
+tmux set-option -t "$session" @command "$*" >/dev/null
 tmux set-option -t "$session" status-right "C-b d: leave tmux " >/dev/null
 tmux set-option -t "$session" status-right-length 40 >/dev/null
 tmux split-window -t "$session:0.0" -v -l 40% htop

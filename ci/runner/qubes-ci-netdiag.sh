@@ -13,12 +13,15 @@
 #   3. a nar from the substitute server: fetched on the runner, then in
 #      ci-ctl (what installs and updates download);
 #   4. ci-ctl's own disk; sys-net's link, address, routes, qdiscs and NIC
-#      counters; the qubes' memory/vCPUs.
+#      counters; the qubes' memory/vCPUs;
+#   5. (TESTS=5) sys-net receiving from the runner: its NIC's interrupt and
+#      packet rates meanwhile, MSI, e1000e's parameters, EEE, pause, rings,
+#      coalescing and offloads (ethtool installed in sys-net for this boot).
 #
 # Usage: qubes-ci-netdiag.sh [LOG]   (default: ./netdiag-DATE.log)
 # Config: as qubes-ci-run.sh (TUNNEL_PORT, SSH_KEY), build-iso-remote.sh
 # (ISO_HOST, ISO_SSH_KEY); /etc/qubes-ci/runner.env.
-#   TESTS   which of the sections below to run (1 2 3 4)
+#   TESTS   which of the sections below to run (1 2 3 4; 5 on request)
 #   MB      size of each transfer, MiB (500)
 #   PORT    the runner's port for test 2 (8099)
 #   SUBS_URL  the substitute server (default: the first url in the
@@ -47,33 +50,10 @@ srv=
 trap '[ -n "$srv" ] && kill "$srv" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 exec > >(tee "$LOG") 2>&1
-echo "== qubes-ci-netdiag $(date -Is), $MB MiB per transfer, tests: $TESTS"
-ctl true || { echo "no tunnel to ci-ctl"; exit 1; }
-bytes=$((MB * 1048576))
 
-if want 1; then
-echo
-echo "== 1. runner -> ci-ctl through the tunnel (ssh), xentop in dom0 meanwhile"
-printf 'xentop -b -d 3 -i 6 | grep -E "NAME|sys-|ci-ctl|Domain-0"\n' | dom0 > "$tmp/xentop" 2>&1 &
-xt=$!
-sleep 1
-t0=$(now)
-head -c "$bytes" /dev/zero | ctl 'cat > /dev/null'
-t1=$(now)
-secs=$(awk -v a="$t0" -v b="$t1" 'BEGIN {printf "%.1f", b - a}')
-echo "tunnel: $(mbs "$bytes" "$secs") ($secs s)"
-wait "$xt"
-echo "-- dom0 xentop, 3 s apart, during the transfer:"
-cat "$tmp/xentop"
-
-fi
-if want 2; then
-echo
-echo "== 2. plain TCP over the LAN, both ways (no ssh, no tunnel), 30 s each"
-# The runner listens on PORT; each qube connects to it (python3, sent on
-# stdin) and either reads (down: runner -> qube) or writes (up: qube ->
-# runner) for 30 s, and prints the rate. sys-net's NIC counters are read
-# around its own transfers.
+# Tests 2 and 5: a TCP server on the runner, and the client each qube runs
+# (python3, sent on stdin): it reads (down: runner -> qube) or writes (up:
+# qube -> runner) for 30 s and prints the rate.
 ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}')
 cat > "$tmp/server.py" <<'PY'
 import socket, sys, threading
@@ -114,9 +94,38 @@ while time.time() - t0 < 30:
 dt = time.time() - t0
 print("%5s %.1f MB/s (%d MB in %.0f s)" % (way, n / dt / 1e6, n // 1000000, dt))
 PY
-python3 "$tmp/server.py" "$PORT" >/dev/null 2>&1 &
-srv=$!
+start_server() {
+    [ -n "$srv" ] && return 0
+    python3 "$tmp/server.py" "$PORT" >/dev/null 2>&1 &
+    srv=$!
+    sleep 1
+}
+echo "== qubes-ci-netdiag $(date -Is), $MB MiB per transfer, tests: $TESTS"
+ctl true || { echo "no tunnel to ci-ctl"; exit 1; }
+bytes=$((MB * 1048576))
+
+if want 1; then
+echo
+echo "== 1. runner -> ci-ctl through the tunnel (ssh), xentop in dom0 meanwhile"
+printf 'xentop -b -d 3 -i 6 | grep -E "NAME|sys-|ci-ctl|Domain-0"\n' | dom0 > "$tmp/xentop" 2>&1 &
+xt=$!
 sleep 1
+t0=$(now)
+head -c "$bytes" /dev/zero | ctl 'cat > /dev/null'
+t1=$(now)
+secs=$(awk -v a="$t0" -v b="$t1" 'BEGIN {printf "%.1f", b - a}')
+echo "tunnel: $(mbs "$bytes" "$secs") ($secs s)"
+wait "$xt"
+echo "-- dom0 xentop, 3 s apart, during the transfer:"
+cat "$tmp/xentop"
+
+fi
+if want 2; then
+echo
+echo "== 2. plain TCP over the LAN, both ways (no ssh, no tunnel), 30 s each"
+# From each qube, both ways. sys-net's NIC counters are read around its
+# own transfers.
+start_server
 echo "runner at $ip:$PORT"
 echo "-- runner to itself:"
 python3 "$tmp/client.py" 127.0.0.1 "$PORT" down
@@ -195,5 +204,42 @@ dmesg 2>/dev/null | grep -iE "$nic|e1000e" | tail -n 15' </dev/null
 EOF
 
 fi
+if want 5; then
+echo
+echo "== 5. sys-net receiving: its NIC's interrupts, MSI, EEE, rings, coalescing"
+# ethtool, for this boot of sys-net only (apt, through its own network).
+start_server
+cat > "$tmp/sysnet.sh" <<EOF
+nic=\$(ls /sys/class/net | grep -v -e '^lo\$' -e '^vif' | head -n1)
+command -v ethtool >/dev/null ||
+    { apt-get install -y -qq ethtool >/dev/null 2>&1 || dnf install -y -q ethtool >/dev/null 2>&1; }
+command -v ethtool >/dev/null || echo "(couldn't install ethtool in sys-net)"
+echo "-- \$nic: driver \$(ethtool -i \$nic 2>/dev/null | awk '/^(version|firmware)/ {printf "%s ", \$0}')"
+echo "-- kernel command line: \$(cat /proc/cmdline)"
+echo "-- e1000e module parameters:"
+for f in /sys/module/e1000e/parameters/*; do [ -e "\$f" ] && echo "   \${f##*/}=\$(cat \$f)"; done
+dev=\$(basename \$(readlink -f /sys/class/net/\$nic/device))
+echo "-- PCI \$dev: MSI/MSI-X, power:"
+lspci -vv -s \$dev 2>/dev/null | grep -E "MSI|LnkSta|LnkCtl" || echo "   (no lspci)"
+echo "   power/control=\$(cat /sys/class/net/\$nic/device/power/control 2>/dev/null) msi_irqs=\$(ls /sys/class/net/\$nic/device/msi_irqs 2>/dev/null | xargs)"
+echo "-- EEE:"; ethtool --show-eee \$nic 2>&1 | sed 's/^/   /'
+echo "-- pause:"; ethtool -a \$nic 2>&1 | sed 's/^/   /'
+echo "-- rings:"; ethtool -g \$nic 2>&1 | sed 's/^/   /'
+echo "-- coalescing:"; ethtool -c \$nic 2>&1 | grep -E "rx-usecs|tx-usecs|Adaptive" | sed 's/^/   /'
+echo "-- offloads:"; ethtool -k \$nic 2>&1 | grep -E "^(tcp-segmentation-offload|generic-receive-offload|generic-segmentation-offload|large-receive-offload|rx-checksumming|scatter-gather):" | sed 's/^/   /'
+ints() { grep -E "\$nic|e1000e" /proc/interrupts | awk '{for (i = 2; i <= NF; i++) if (\$i ~ /^[0-9]+\$/) s += \$i} END {print s + 0}'; }
+echo "-- /proc/interrupts lines for the NIC:"; grep -E "\$nic|e1000e" /proc/interrupts | sed 's/^/   /'
+cat > /tmp/netdiag-client.py <<'PY'
+$(cat "$tmp/client.py")
+PY
+i0=\$(ints); r0=\$(cat /sys/class/net/\$nic/statistics/rx_packets); t0=\$(date +%s)
+python3 /tmp/netdiag-client.py $ip $PORT down
+i1=\$(ints); r1=\$(cat /sys/class/net/\$nic/statistics/rx_packets); t1=\$(date +%s)
+dt=\$((t1 - t0)); [ \$dt -gt 0 ] || dt=1
+echo "-- during that: \$(( (i1 - i0) / dt )) NIC interrupts/s, \$(( (r1 - r0) / dt )) packets/s received"
+EOF
+printf 'qvm-run -q -u root --pass-io --no-gui sys-net "bash -s" <<'"'"'SYSNET'"'"'\n%s\nSYSNET\n' "$(cat "$tmp/sysnet.sh")" | dom0 2>&1
+fi
+
 echo
 echo "== done: $LOG"

@@ -22,7 +22,9 @@
 #   ISO_SYNC_CMD   run on ISO_HOST before the build, so the server has built
 #                  the head and the other channels' commits match it (empty:
 #                  skip). Default: guix-subs' own build script, through
-#                  passwordless sudo (see ci/README.md)
+#                  passwordless sudo, building qubes-guix alone at its head
+#                  (--qubes-only: the other channels stay at the server's
+#                  published commits; see ci/README.md)
 set -euo pipefail
 
 [ -f /etc/qubes-ci/runner.env ] && . /etc/qubes-ci/runner.env
@@ -32,7 +34,7 @@ ISO_HOST=${ISO_HOST:-guix-subs}
 ISO_DIR=${ISO_DIR:-proj/qubes-guix}
 ISO_SSH_KEY=${ISO_SSH_KEY:-$HOME/.ssh/qubes_ci_ed25519}
 ISO_OFFLINE=${ISO_OFFLINE:-0}
-ISO_SYNC_CMD=${ISO_SYNC_CMD-sudo -n /etc/guix-subs/build-qubes.sh 2>&1 | sudo -n tee -a /var/log/qubes-builds.log}
+ISO_SYNC_CMD=${ISO_SYNC_CMD-sudo -n /etc/guix-subs/build-qubes.sh --qubes-only 2>&1 | sudo -n tee -a /var/log/qubes-builds.log}
 SSH_OPTS=(-i "$ISO_SSH_KEY" -o BatchMode=yes -o ServerAliveInterval=60)
 
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "not a full commit hash: $SHA"; exit 1; }

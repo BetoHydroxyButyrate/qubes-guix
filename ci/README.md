@@ -157,7 +157,7 @@ ISO_OFFLINE=1                   # ISO with the channels' checkouts: no clone at 
   config doesn't make one.) It runs as root: as `beto` it fails at
   `guix pull` on `/root/.cache`.
 - **Sudo:** before building, the runner brings the server up to date with
-  `sudo -n /etc/guix-subs/build-qubes.sh 2>&1 | sudo -n tee -a /var/log/qubes-builds.log`.
+  `sudo -n /etc/guix-subs/build-qubes.sh --qubes-only 2>&1 | sudo -n tee -a /var/log/qubes-builds.log`.
   That needs passwordless sudo for those two commands. Read
   [Security](#security) first. In guix-subs' `operating-system`:
 
@@ -343,8 +343,10 @@ public repository.
    commit on GitHub.
 2. **Builds the ISO on guix-subs** (`runner/build-iso-remote.sh`):
    - fetches the commit into `~/proj/qubes-guix`;
-   - runs `/etc/guix-subs/build-qubes.sh` through sudo, so the server's
-     last-built commits are at the head;
+   - runs `/etc/guix-subs/build-qubes.sh --qubes-only` through sudo: the
+     server builds qubes-guix at its head, with the other channels at the
+     commits it last published, so its published commits include this
+     one (quick if its poll already built it);
    - in a worktree at that commit, runs `iso/qubes-guix-iso -b BRANCH
      --qubes-commit SHA --server <first url in dom0/qubes-guix-substitutes>`.
      qubes is exactly the pushed commit, and the other channels are at what

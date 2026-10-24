@@ -18,7 +18,7 @@ Status: release candidate, [v0.1.0-rc1](NEWS.md). Daily-driven on Qubes R4.3, as
 | Feature advertisement (`qvm-features`, Services tab)                                         | ✅                                                      |
 | U2F **and** FIDO2/passkeys via the CTAP proxy (sys-usb)                                      | ✅                                                      |
 | split-gpg2 client (`gpg`, `git commit -S` with keys in a vault qube)                         | ✅                                                      |
-| Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`)                     | ✅ listed in dom0 (`--cdrom` from a Guix qube: not yet tested) |
+| Block devices for dom0 (`qvm-block`, `qvm-start --cdrom=guix:/file.iso`)                     | ✅ listed in dom0 (`--cdrom` from a Guix qube: currently some issues) |
 | split-ssh client (`ssh`, `git` over SSH with keys in a vault qube)                           | ✅                                                      |
 | TemplateVM / AppVM based on a Guix template                                                  | ✅ (AppVMs: little use so far)                          |
 | USB devices from sys-usb (`qvm-usb attach`, the devices widget)                              | ✅                                                      |

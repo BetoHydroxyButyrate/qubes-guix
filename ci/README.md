@@ -60,6 +60,7 @@ How it fits together:
 | `runner/build-iso-remote.sh` | runner, each run | syncs guix-subs, builds the ISO there at the pushed commit, copies it back |
 | `runner/qubes-ci-run.sh` | runner, each run | stages the payload in ci-ctl, runs dom0's part, fetches results |
 | `runner/qubes-ci-reinstall.sh` | runner, on demand | wipes the NUC's bootloader and reboots it into the OEM installer |
+| `runner/qubes-ci-netdiag.sh` | runner, on demand | measures the tunnel, the LAN into ci-ctl, substitute downloads and ci-ctl's disk; one log |
 | `../.gitea/workflows/qubes-tests.yml` | Gitea | the workflow |
 
 ## Security

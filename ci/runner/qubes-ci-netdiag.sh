@@ -7,17 +7,20 @@
 #      with dom0's xentop sampled meanwhile (CPU of sys-net, sys-firewall,
 #      ci-ctl);
 #   2. runner -> ci-ctl as plain HTTP over the LAN (no ssh, no tunnel): a
-#      file served from the runner, fetched in ci-ctl through sys-firewall
-#      and sys-net;
+#      file served from the runner, fetched in ci-ctl, then in sys-firewall
+#      and in sys-net themselves (30 s each), to see which hop is slow;
 #   3. a nar from the substitute server: fetched on the runner, then in
 #      ci-ctl (what installs and updates download);
-#   4. ci-ctl's own disk, and sys-net's link and the qubes' memory/vCPUs.
+#   4. ci-ctl's own disk; sys-net's link, address, routes, qdiscs and NIC
+#      counters; the qubes' memory/vCPUs.
 #
 # Usage: qubes-ci-netdiag.sh [LOG]   (default: ./netdiag-DATE.log)
 # Config: as qubes-ci-run.sh (TUNNEL_PORT, SSH_KEY), build-iso-remote.sh
 # (ISO_HOST, ISO_SSH_KEY); /etc/qubes-ci/runner.env.
 #   MB      size of each transfer, MiB (500)
 #   PORT    the runner's port for test 2 (8099)
+#   SUBS_URL  the substitute server (default: the first url in the
+#           checkout's dom0/qubes-guix-substitutes)
 set -uo pipefail
 
 [ -f /etc/qubes-ci/runner.env ] && . /etc/qubes-ci/runner.env
@@ -67,16 +70,20 @@ srv=$!
 sleep 1
 echo "runner at $ip:$PORT"
 echo "local (runner itself): $(curl -s -o /dev/null -w '%{speed_download}' "http://127.0.0.1:$PORT/blob" | awk '{printf "%.1f MB/s", $1 / 1e6}')"
-echo "ci-ctl: $(ctl "curl -s -o /dev/null --max-time 300 -w '%{speed_download} %{http_code}' http://$ip:$PORT/blob" |
-                awk '{printf "%.1f MB/s (HTTP %s)", $1 / 1e6, $2}')"
+fetch="curl -s -o /dev/null --max-time 30 -w '%{speed_download} %{http_code}' http://$ip:$PORT/blob"
+speed() { awk '{printf "%.1f MB/s (HTTP %s)", $1 / 1e6, $2}'; }
+echo "ci-ctl:       $(ctl "$fetch" | speed)"
+for q in sys-firewall sys-net; do
+    echo "$(printf '%-13s' "$q:") $(printf 'qvm-run -q -u root --pass-io --no-gui %s %q </dev/null\n' "$q" "$fetch" | dom0 2>&1 | speed)"
+done
 kill "$srv" 2>/dev/null; srv=
 rm -f "$tmp/blob"
 
 echo
 echo "== 3. a nar from the substitute server"
-url=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$HERE/../../dom0/qubes-guix-substitutes" 2>/dev/null | head -n1)
+url=${SUBS_URL:-$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' "$HERE/../../dom0/qubes-guix-substitutes" 2>/dev/null | head -n1)}
 item=$(ssh -i "$ISO_SSH_KEY" -o BatchMode=yes "$ISO_HOST" \
-       'ls -d /gnu/store/*-linux-libre-[0-9]* 2>/dev/null | grep -v "\.drv$" | head -n1')
+       'ls -d /gnu/store/*-linux-libre-[0-9]* 2>/dev/null | grep -E -- "-linux-libre-[0-9.]+$" | head -n1')
 if [ -z "$url" ] || [ -z "$item" ]; then
     echo "skipped: no substitute url ($url) or no linux-libre item on $ISO_HOST ($item)"
 else
@@ -106,7 +113,20 @@ qvm-run -q -u root --pass-io --no-gui sys-net '
 for i in $(ls /sys/class/net | grep -v -e "^lo$" -e "^vif"); do
     echo "sys-net $i: $(cat /sys/class/net/$i/speed 2>/dev/null) Mb/s, $(cat /sys/class/net/$i/duplex 2>/dev/null), driver $(basename $(readlink /sys/class/net/$i/device/driver) 2>/dev/null)"
 done
-ethtool -k $(ls /sys/class/net | grep -v -e "^lo$" -e "^vif" | head -n1) 2>/dev/null | grep -E "^(tcp-segmentation|generic-receive|scatter-gather)"' </dev/null
+nic=$(ls /sys/class/net | grep -v -e "^lo$" -e "^vif" | head -n1)
+echo "-- addresses, routes, qdiscs:"
+ip -4 -br addr; ip -4 route; tc qdisc show 2>/dev/null
+echo "-- $nic counters (errors, drops, pause, crc):"
+for f in /sys/class/net/$nic/statistics/*; do
+    case ${f##*/} in *err*|*drop*|*collision*|rx_bytes|tx_bytes) echo "${f##*/} $(cat $f)";; esac
+done
+ethtool -S $nic 2>/dev/null | grep -iE "err|drop|pause|crc|miss|fifo" | grep -v ": 0$"
+ethtool $nic 2>/dev/null | grep -iE "speed|duplex|auto-neg|link detected"
+ethtool -a $nic 2>/dev/null
+ethtool -k $nic 2>/dev/null | grep -E "^(tcp-segmentation|generic-receive|generic-segmentation|scatter-gather|rx-checksumming|tx-checksumming):"
+command -v ethtool >/dev/null || echo "(no ethtool in sys-net)"
+echo "-- kernel messages about $nic / e1000e:"
+dmesg 2>/dev/null | grep -iE "$nic|e1000e" | tail -n 15' </dev/null
 EOF
 
 echo

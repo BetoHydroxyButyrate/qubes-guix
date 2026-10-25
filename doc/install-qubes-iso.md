@@ -6,9 +6,13 @@ The qubes-guix installer ISO has the Qubes agent and the Qubes packages already 
 
 In short:
 
-1. On a Guix machine (a Guix qube will do): `qubes-guix/iso/qubes-guix-iso`, which writes `qubes-guix-installer.iso`.
-2. Get the dom0 scripts into dom0: `qubes-guix-refresh` ([how](install-stock-iso.md#creating-the-qube-dom0)).
+1. Get the dom0 scripts into dom0: `qubes-guix-refresh` ([how](install-stock-iso.md#creating-the-qube-dom0)).
+2. Build the ISO. From dom0, with a Guix template you have: `qg-build-iso --template TEMPLATE` ([below](#building-it-from-dom0)). Or on any Guix machine: `qubes-guix/iso/qubes-guix-iso`, which writes `qubes-guix-installer.iso`.
 3. In dom0: `qg-create --unattended guix QUBE:/path/to/qubes-guix-installer.iso` (add `--template` for a template).
+
+## Building it from dom0
+
+`qg-build-iso` (`dom0/qubes-guix-build-iso`) builds the ISO in a builder qube, `qg-iso-builder`, which it makes the first time from the Guix template you name (`--template`). The builder is a StandaloneVM, so it keeps its Guix store, and later builds reuse what earlier ones fetched or built (`--appvm` makes an AppVM instead, whose store resets to its template's at every start). It has 4 vCPUs, 6000 MiB, its default netvm, 40 GiB for `/home` and 120 GiB of root for the store. Each run then, in the builder: clones or fetches qubes-guix into `~/qubes-guix` at the branch (`-b`, default `main`) or `--qubes-commit`; copies in your substitute servers (`~/.config/qubes-guix/qubes-guix-substitutes`, as `qg-config` writes it) and authorizes their keys there; and runs `iso/qubes-guix-iso`, with its output in your terminal and in `~/qubes-guix-iso.log` there. `--offline` puts what a default install needs in the ISO; options after `--` go to `qubes-guix-iso` as they are. The ISO stays in the builder (dom0 has little room), and the script ends with the `qg-create` line that installs from it.
 
 ## The ISO
 

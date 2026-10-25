@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# qubes-guix-build-iso — in dom0: build a qubes-guix installer ISO in a
+# builder qube made from a Guix template, with your settings.
+#
+#   qubes-guix-build-iso [options] [-- QUBES-GUIX-ISO-OPTIONS...]
+#
+# The first time, name a Guix template (--template T): it makes the builder
+# qube from it (NAME, default qg-iso-builder), a StandaloneVM, so it keeps
+# its Guix store and the next build reuses what this one fetched or built;
+# with network, 4 vCPUs, 6000 MiB and room for the store and the ISO. Then,
+# in the builder:
+#   1. a checkout of qubes-guix (~/qubes-guix, cloned or fetched) at the
+#      branch, or --qubes-commit;
+#   2. your substitute servers (~/.config/qubes-guix/qubes-guix-substitutes,
+#      as qubes-guix-create finds it), with their keys authorized there;
+#   3. iso/qubes-guix-iso, its output here and in ~/qubes-guix-iso.log there.
+# The ISO stays in the builder (dom0 has little room), and it says how to
+# install from it:  qg-create --unattended NAME BUILDER:/home/user/...iso
+#
+#   --template T        the Guix template to make the builder from (needed
+#                       only when the builder doesn't exist yet)
+#   --name NAME         the builder qube        (default qg-iso-builder)
+#   --appvm             make it an AppVM instead: no disk of its own for the
+#                       store, but every start resets the store to its
+#                       template's, so each build fetches or builds again
+#   -b, --branch B      qubes-guix branch       (default main)
+#   --qubes-commit C    the qubes channel at commit C (default: the branch
+#                       head, or your server's build)
+#   --offline           put what a default install needs in the ISO, and
+#                       the channels' checkouts: installs from it need no
+#                       network (an ISO bigger by ~1 GiB)
+#   -o FILE             the ISO in the builder  (default
+#                       /home/user/qubes-guix-installer.iso)
+#   -y                  don't ask before making the builder
+# After '--': passed to iso/qubes-guix-iso as they are (see its --help:
+# --guix-commit, --server, --no-server, ...).
+
+set -euo pipefail
+prog=${0##*/}
+here=$(dirname "$(readlink -f "$0")")
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/qubes-guix
+repo_url=https://github.com/BetoHydroxyButyrate/qubes-guix
+
+die() { echo "$prog: $*" >&2; exit 1; }
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
+run() { printf '+'; printf ' %q' "$@"; printf '\n'; "$@"; }
+
+template= name=qg-iso-builder class=StandaloneVM branch=main qubes_commit= offline=0
+out=/home/user/qubes-guix-installer.iso yes=0
+while [ $# -gt 0 ]; do
+    case $1 in
+        --template) [ $# -ge 2 ] || die "$1 needs a value"; template=$2; shift 2;;
+        --name) [ $# -ge 2 ] || die "$1 needs a value"; name=$2; shift 2;;
+        --appvm) class=AppVM; shift;;
+        --standalone) class=StandaloneVM; shift;;   # the default
+        -b|--branch) [ $# -ge 2 ] || die "$1 needs a value"; branch=$2; shift 2;;
+        --qubes-commit) [ $# -ge 2 ] || die "$1 needs a value"; qubes_commit=$2; shift 2;;
+        --offline) offline=1; shift;;
+        -o) [ $# -ge 2 ] || die "$1 needs a value"; out=$2; shift 2;;
+        -y|--yes) yes=1; shift;;
+        -h|--help) usage; exit 0;;
+        --) shift; break;;
+        *) die "unknown option $1 (see --help)";;
+    esac
+done
+extra=("$@")
+[[ $name =~ ^[a-zA-Z][a-zA-Z0-9_.-]{0,30}$ ]] || die "bad qube name '$name'"
+[[ $branch =~ ^[A-Za-z0-9._/-]+$ ]] || die "bad branch name '$branch'"
+[ -z "$qubes_commit" ] || [[ $qubes_commit =~ ^[0-9a-f]{40}$ ]] ||
+    die "--qubes-commit: a full commit hash"
+case $out in /home/user/*) ;; *) die "-o: a path under /home/user (the builder's private volume)";; esac
+
+inq() { qvm-run -q --pass-io --no-gui "$name" "$1" </dev/null; }        # as user
+inq_root() { qvm-run -q -u root --pass-io --no-gui "$name" "$1" </dev/null; }
+
+# --- the builder ------------------------------------------------------------
+
+if ! qvm-check -q "$name" 2>/dev/null; then
+    [ -n "$template" ] || die "no qube '$name' yet: give the Guix template to make it from (--template T)"
+    [ "$(qvm-prefs "$template" klass 2>/dev/null)" = TemplateVM ] ||
+        die "'$template' isn't a TemplateVM"
+    echo "$prog will make $name: a $class from $template, HVM/PVH as it is, 4 vCPU,"
+    echo "  6000 MiB, its default netvm, private volume 40 GiB$( [ "$class" = StandaloneVM ] && echo ", root 120 GiB (the store)")."
+    if [ "$yes" != 1 ]; then
+        printf 'Go ahead? [y/N] '; read -r a
+        case $a in y|Y|yes) ;; *) echo "Nothing made."; exit 1;; esac
+    fi
+    run qvm-create -q --class "$class" --template "$template" --label gray "$name"
+    for p in virt_mode kernel; do
+        run qvm-prefs "$name" "$p" "$(qvm-prefs "$template" "$p")"
+    done
+    run qvm-prefs "$name" vcpus 4
+    run qvm-prefs "$name" memory 6000
+    run qvm-prefs "$name" maxmem 0           # no balancing: guix builds want it all
+    run qvm-prefs "$name" qrexec_timeout 300
+    run qvm-prefs "$name" netvm --default
+    run qvm-volume extend "$name:private" 40g
+    [ "$class" = StandaloneVM ] && run qvm-volume extend "$name:root" 120g
+    # A copy of a template has its updates proxy set up; the builder uses
+    # its netvm, as an AppVM would.
+    [ "$class" = StandaloneVM ] && run qvm-service "$name" updates-proxy-setup off
+elif [ -n "$template" ] && [ "$(qvm-prefs "$name" template 2>/dev/null)" != "$template" ] &&
+     [ "$(qvm-prefs "$name" klass)" = AppVM ]; then
+    echo "$prog: note: $name is based on $(qvm-prefs "$name" template), not $template; keeping it" >&2
+fi
+echo "Starting $name"
+qvm-start -q --skip-if-running "$name"
+inq_root 'test -d /gnu/store && command -v guix >/dev/null' ||
+    die "$name isn't a Guix qube (no /gnu/store or guix)"
+
+# --- 1. the checkout ----------------------------------------------------------
+
+echo "== $name: ~/qubes-guix at $branch${qubes_commit:+ ($qubes_commit)}"
+inq "set -e
+if [ -d ~/qubes-guix/.git ]; then
+    git -C ~/qubes-guix fetch -q $(printf %q "$repo_url") $(printf %q "$branch")
+else
+    git clone -q -b $(printf %q "$branch") $(printf %q "$repo_url") ~/qubes-guix
+fi
+cd ~/qubes-guix
+git checkout -q --detach ${qubes_commit:-FETCH_HEAD} 2>/dev/null || git checkout -q --detach origin/$(printf %q "$branch")
+git log -1 --format='   %h %s'" || die "couldn't get qubes-guix in $name"
+
+# --- 2. your substitute servers -------------------------------------------------
+
+subs=
+for d in "$PWD" "$config_dir" "$here"; do
+    [ -f "$d/qubes-guix-substitutes" ] && { subs=$d/qubes-guix-substitutes; break; }
+done
+subs_args=()
+if [ -n "$subs" ] && grep -q '^[[:space:]]*url[[:space:]]' "$subs"; then
+    echo "== substitute servers from $subs"
+    grep -E '^[[:space:]]*(url|key)[[:space:]]' "$subs" |
+        qvm-run -q --pass-io --no-gui "$name" "cat > ~/qubes-guix-substitutes"
+    # Their keys authorized there, by root (qubes-guix-iso only warns).
+    inq_root "sed -n 's/^[[:space:]]*key[[:space:]]\\{1,\\}//p' /home/user/qubes-guix-substitutes |
+              while IFS= read -r k; do echo \"\$k\" | guix archive --authorize; done" ||
+        echo "$prog: warning: couldn't authorize the servers' keys in $name" >&2
+    subs_args=(--substitutes /home/user/qubes-guix-substitutes)
+else
+    echo "== no substitute servers of yours (~/.config/qubes-guix/qubes-guix-substitutes): Guix's own"
+    subs_args=(--no-server)
+fi
+
+# --- 3. the build ----------------------------------------------------------------
+
+args=(-b "$branch" "${subs_args[@]}" -o "$out")
+[ -n "$qubes_commit" ] && args+=(--qubes-commit "$qubes_commit")
+[ "$offline" = 1 ] && args+=(--offline)
+args+=("${extra[@]}")
+cmd="cd ~/qubes-guix && iso/qubes-guix-iso$(printf ' %q' "${args[@]}") 2>&1 | tee ~/qubes-guix-iso.log"
+echo "== $name: $cmd"
+t0=$SECONDS
+if ! qvm-run -q --pass-io --no-gui "$name" "set -o pipefail; $cmd" </dev/null; then
+    die "the build failed in $name after $(( (SECONDS - t0) / 60 )) min: its log is ~/qubes-guix-iso.log there"
+fi
+size=$(inq "du -h $(printf %q "$out") | cut -f1") || size=?
+echo
+echo "Built in $(( (SECONDS - t0) / 60 )) min: $name:$out ($size)."
+echo "Install from it:"
+echo "  qg-create --unattended NAME $name:$out          (--template for a template)"

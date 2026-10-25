@@ -1778,5 +1778,8 @@ cat <<EOF
    it, then 'sh /tmp/qubes-guix-bootstrap.sh'.
 
    If the console window goes away once the Qubes GUI agent runs, get it
-   back with:  qvm-start-daemon --force-stubdomain $name
+   back, while $name is HVM, with:  qvm-start-daemon --force-stubdomain $name
+   A PVH qube (as --unattended leaves one) has no emulated VGA to show: its
+   console is Xen's, in dom0:  sudo xl console $name  (Ctrl+] leaves), or
+   in a disposable qube:  qvm-console-dispvm $name
 EOF

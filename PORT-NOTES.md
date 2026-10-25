@@ -475,6 +475,8 @@ Two independent faults, both now fixed:
   bug) -> nothing displayed. Verified during the "lockout": tty0 active =
   tty8, seat0 ActiveSession = c3 (XFCE), state active — XFCE untouched.
   RECOVERY (dom0, no reboot): `qvm-start-daemon --force-stubdomain guix`.
+  (HVM only. A PVH qube has no stubdomain or VGA: `sudo xl console guix`,
+  or `qvm-console-dispvm guix`.)
   qrexec keeps working throughout (separate from GUI).
 - GOTCHA: substitute* lines include the trailing "\n" — `$` never matches;
   anchor on "\n" instead.

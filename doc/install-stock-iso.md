@@ -131,7 +131,7 @@ sudo reboot
 
 If any step fails it stops, and `/etc/config.scm` is left as it was. Running it again is safe, since steps already done are skipped.
 
-After the reboot the network comes from QubesDB, and dom0 hides the emulated VGA window once the Qubes GUI agent connects. If you need the console back, run `qvm-start-daemon --force-stubdomain guix`. Check from dom0:
+After the reboot the network comes from QubesDB, and dom0 hides the emulated VGA window once the Qubes GUI agent connects. If you need the console back while the qube is HVM, run `qvm-start-daemon --force-stubdomain guix`. A PVH qube, as `--unattended` leaves it, has no emulated VGA, so that does nothing: its console is Xen's, `sudo xl console guix` in dom0 (Ctrl+] leaves), or `qvm-console-dispvm guix` for a terminal in a disposable qube. Check from dom0:
 
 ```
 qvm-run --pass-io guix 'ip -br addr'

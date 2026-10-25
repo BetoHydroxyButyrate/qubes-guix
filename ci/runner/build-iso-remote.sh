@@ -47,6 +47,20 @@ ssh "${SSH_OPTS[@]}" "$ISO_HOST" \
 set -euo pipefail
 dir=$HOME/$1 branch=$2 sha=$3 sync=$4 offline=$5
 out=$HOME/ci-iso
+mkdir -p "$out"
+# One build at a time. When Gitea cancels a run, only the runner's ssh is
+# killed: the build here goes on, an orphan, and when it ends it removes
+# the worktree, under whichever build is using it by then ("getcwd: No
+# such file or directory"). So stop such a build (its whole process
+# group) and wait for it to go, rather than share the worktree with it.
+exec 9>"$out/lock"
+if ! flock -n 9; then
+    old=$(cat "$out/pgid" 2>/dev/null || :)
+    echo "==> on $(hostname): stopping an earlier build still running here (process group ${old:-?}): a cancelled run's"
+    [ -n "$old" ] && kill -TERM -- "-$old" 2>/dev/null || :
+    flock -w 120 9 || { echo "the earlier build (process group ${old:-?}) didn't stop"; exit 1; }
+fi
+awk '{print $5}' /proc/$$/stat > "$out/pgid"
 cd "$dir"
 url=$(sed -n 's/.*(url "\(.*\)").*/\1/p' guest/channels.scm.txt | head -n1)
 git fetch -q "$url" "$branch"
@@ -56,7 +70,6 @@ if [ -n "$sync" ]; then
     bash -o pipefail -c "$sync" </dev/null
 fi
 wt=$out/worktree
-mkdir -p "$out"
 git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
 git worktree prune
 git worktree add -q --detach "$wt" "$sha"

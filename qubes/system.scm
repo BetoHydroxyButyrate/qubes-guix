@@ -92,6 +92,7 @@
                 #:select (package package? package-name package-build-system))
   #:use-module ((guix build-system trivial) #:select (trivial-build-system))
   #:use-module ((guix licenses) #:prefix license:)
+  #:use-module ((gnu packages fonts) #:select (font-dejavu))
   #:use-module ((guix store) #:select (%store-monad))
   #:use-module (guix monads)                ; mlet, with-monad
   #:use-module (ice-9 match)
@@ -130,7 +131,9 @@ config.scm never stops a reconfigure."
 
 ;; Guix's xterm has no .desktop file, so dom0's Qubes menu (which lists the
 ;; qube's applications from them) wouldn't show it. Added when the system
-;; has xterm.
+;; has xterm, with font-dejavu: the GUI agent's X resources set xterm to
+;; DejaVu Sans Mono (TrueType, so faceSize and its font menu work; the X
+;; server has no bitmap fonts but its built-in 'fixed').
 (define xterm-desktop-entry
   (package
     (name "qubes-xterm-desktop-entry")
@@ -523,7 +526,7 @@ with a warning."
       (users (map add-qubes-group (operating-system-users os)))
       (packages (append (operating-system-packages os)
                         (if (has-package? "xterm" (operating-system-packages os))
-                            (list xterm-desktop-entry)
+                            (list xterm-desktop-entry font-dejavu)
                             '())
                         (available-packages extra-packages)))
       (sudoers-file (if passwordless-sudo?

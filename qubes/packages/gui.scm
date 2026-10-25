@@ -326,9 +326,31 @@ exec " pa " --start -n --file=" #$output "/etc/pulse/qubes-default.pa \\
                 ;; exits 0 after bind), so `wait` returns at once: the script
                 ;; must then block forever like upstream's `sleep inf`, or
                 ;; xinit sees the client exit and shuts the X server down.
+                ;; X resources: ours (xterm in DejaVu Sans Mono, which the
+                ;; system has with xterm: its faceSize and font menu then
+                ;; work, which they don't with the core 'fixed'), then the
+                ;; user's ~/.Xresources, which wins (xterm*... over our
+                ;; XTerm*...). Loaded before anything runs in the session,
+                ;; since programs read them when they start.
+                (let ((xres (string-append #$output "/etc/X11/qubes-Xresources")))
+                  (mkdir-p (dirname xres))
+                  (call-with-output-file xres
+                    (lambda (port)
+                      (display "! qubes-guix's defaults: qubes-session loads these, then ~/.Xresources.
+XTerm*faceName: DejaVu Sans Mono
+XTerm*faceSize: 11
+" port))))
                 (write-script "qubes-session"
                   (string-append "
 " xsetroot " -solid white || true
+# X resources (see qubes-Xresources). xrdb runs cpp for #include and
+# #define; without one, read the files as they are.
+xrdb_merge() {
+    " (search-input-file inputs "/bin/xrdb") " -merge \"$1\" 2>/dev/null ||
+        " (search-input-file inputs "/bin/xrdb") " -nocpp -merge \"$1\" || true
+}
+xrdb_merge " #$output "/etc/X11/qubes-Xresources
+[ -r \"$HOME/.Xresources\" ] && xrdb_merge \"$HOME/.Xresources\"
 " #$output "/lib/qubes/qubes-keymap.sh &
 " #$output "/bin/qubes-start-pulseaudio &
 " (search-input-file inputs "/bin/mkdir") " -p \"$HOME/.cache\"
@@ -373,6 +395,7 @@ exec " sleep " infinity
            pulseaudio                   ; libpulse.pc + the daemon we start
            libltdl                      ; pulsecore/module.h includes ltdl.h
            xsetroot
+           xrdb                         ; X resources (qubes-session)
            qubes-core-vchan-xen
            qubes-core-qubesdb
            qubes-core-qrexec

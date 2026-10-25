@@ -31,7 +31,7 @@ There are three ways in. Each ends with the same kind of qube; they differ in wh
 
 |                        | [Stock Guix ISO](doc/install-stock-iso.md) | [qubes-guix ISO](doc/install-qubes-iso.md) | [Full setup](doc/full-setup.md)                  |
 |------------------------|--------------------------------------------|--------------------------------------------|--------------------------------------------------|
-| Build first            | nothing                                    | the installer ISO, on any x86_64 Guix      | a [guix-subs](https://github.com/BetoHydroxyButyrate/guix-subs) server, and the ISO from it |
+| Build first            | nothing                                    | the installer ISO (`qg-build-iso`)         | a [guix-subs](https://github.com/BetoHydroxyButyrate/guix-subs) server, and the ISO from it |
 | By hand in the install | a GRUB edit, and a click                   | nothing                                    | nothing                                          |
 | Qubes agents           | built from source, in every new qube       | prebuilt, in the ISO                       | prebuilt, on your server                         |
 | Downloads from         | Guix's substitute servers                  | Guix's substitute servers                  | your server, nearly all                          |
@@ -45,13 +45,16 @@ There are three ways in. Each ends with the same kind of qube; they differ in wh
 
 *The installer's monitor (its console, tty1) during an automatic install from the ISO, `qubes-guix-create --unattended`: htop above, the traffic per remote address below. The ISO was built from guix-subs (`--server`): 2.2 GiB came from it, over the LAN, and a few MiB from anywhere else.*
 
+Each way starts the same in dom0: `qubes-guix-refresh` gets the dom0 scripts from your checkout in a qube (and names them `qg-create`, `qg-config`, `qg-build-iso`, `qg-test`), and `qg-config` sets up what new qubes get. And each ends with a qube with no desktop environment of its own, since its windows are drawn in dom0's: `xterm` to start with, and what you add (`--desktop xfce` for Xfce).
+
 ## Software in AppVMs
 
 An AppVM's root, `/gnu/store` included, is its template's again at every start: `guix install` there lasts until shutdown. What most AppVMs need goes in the template. What one AppVM needs goes in `~/.config/guix/manifest.scm` (or a Guix Home, `~/.config/guix/home.scm`), which `qubes-guix-profile` puts back at each login, from your substitute server when it has the packages. See [Software in AppVMs](doc/templates.md#software-in-appvms).
 
 ## Documentation
 
-- [Configuring the system](doc/configuration.md): the channel, `qubes-operating-system` and its options, extra packages and channels.
+- [Getting the dom0 scripts](doc/install-stock-iso.md#creating-the-qube-dom0): `qubes-guix-refresh`, the `qg-` names, `qg-config` and `~/.config/qubes-guix`.
+- [Configuring the system](doc/configuration.md): the channel, `qubes-operating-system` and its options, extra packages and channels, the desktop, X resources, the agent's dialogs.
 - [Templates and AppVMs](doc/templates.md): a Guix template, and AppVMs based on it.
 - [Features](doc/features.md): U2F/FIDO2, split-gpg2, split-ssh, USB devices.
 - [Updating](doc/updating.md): `qubes-guix-update`, following the head or locking to commits, Firefox ESR from nonguix.

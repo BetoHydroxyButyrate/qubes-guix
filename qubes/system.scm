@@ -88,7 +88,10 @@
   #:use-module (guix gexp)
   #:use-module ((guix build-system)
                 #:select (build-system build-system-lower bag bag-build))
-  #:use-module ((guix packages) #:select (package package-build-system))
+  #:use-module ((guix packages)
+                #:select (package package? package-name package-build-system))
+  #:use-module ((guix build-system trivial) #:select (trivial-build-system))
+  #:use-module ((guix licenses) #:prefix license:)
   #:use-module ((guix store) #:select (%store-monad))
   #:use-module (guix monads)                ; mlet, with-monad
   #:use-module (ice-9 match)
@@ -118,9 +121,51 @@ config.scm never stops a reconfigure."
    specs))
 
 (define %networking-service-names
-  ;; service-type-name of the stock services that provision 'networking.
-  ;; By name rather than by value, so this module needn't import them all.
-  '(network-manager connman dhcp-client dhcpcd wicd))
+  ;; service-type-name of the stock services that provision 'networking,
+  ;; and NetworkManager's applet (%desktop-services adds it to the profile):
+  ;; with the network from QubesDB, its "Network Connections" would be the
+  ;; qube's only menu entry, and list no devices. By name rather than by
+  ;; value, so this module needn't import them all.
+  '(network-manager connman dhcp-client dhcpcd wicd network-manager-applet))
+
+;; Guix's xterm has no .desktop file, so dom0's Qubes menu (which lists the
+;; qube's applications from them) wouldn't show it. Added when the system
+;; has xterm.
+(define xterm-desktop-entry
+  (package
+    (name "qubes-xterm-desktop-entry")
+    (version "1")
+    (source #f)
+    (build-system trivial-build-system)
+    (arguments
+     (list #:modules '((guix build utils))
+           #:builder
+           #~(begin
+               (use-modules (guix build utils))
+               (let ((dir (string-append #$output "/share/applications")))
+                 (mkdir-p dir)
+                 (call-with-output-file (string-append dir "/xterm.desktop")
+                   (lambda (port)
+                     (display "[Desktop Entry]
+Type=Application
+Name=XTerm
+Comment=Terminal emulator
+Exec=xterm
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+" port)))))))
+    (home-page "https://github.com/BetoHydroxyButyrate/qubes-guix")
+    (synopsis "Desktop entry for xterm, for the Qubes menu")
+    (description "A @file{share/applications/xterm.desktop}, so that dom0's
+Qubes menu lists xterm, whose Guix package has none.")
+    (license license:gpl3+)))
+
+(define (has-package? name packages)
+  (any (lambda (p)
+         (let ((p (if (pair? p) (car p) p)))   ; (package "output") too
+           (and (package? p) (string=? (package-name p) name))))
+       packages))
 
 (define %display-manager-service-names
   '(gdm slim sddm lightdm))
@@ -477,6 +522,9 @@ with a warning."
                       (operating-system-bootloader os)))
       (users (map add-qubes-group (operating-system-users os)))
       (packages (append (operating-system-packages os)
+                        (if (has-package? "xterm" (operating-system-packages os))
+                            (list xterm-desktop-entry)
+                            '())
                         (available-packages extra-packages)))
       (sudoers-file (if passwordless-sudo?
                         (qubes-sudoers (operating-system-sudoers-file os))

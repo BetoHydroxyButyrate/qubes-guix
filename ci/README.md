@@ -49,7 +49,12 @@ How it fits together:
     the ISO built on guix-subs (`ISO_OFFLINE=1`), the template installed
     from it and tested on an AppVM, a qube booted from the ISO kept in a
     Guix AppVM (and its loop device freed after), and all six variants
-    (template, AppVM and standalone; HVM and PVH) passing.
+    (template, AppVM and standalone; HVM and PVH) passing;
+  - the same, all passing, at e6cc097: the default system without Xfce
+    (xterm, with its window found by the GUI check), installed with the
+    copy without deduplication, and BBR on the senders (see "The
+    network" below). In dom0 1h12m: the install 46m, its first update
+    16m, the boot from an ISO 1m, the variants 6m.
 
 | File | Runs on | What it does |
 |---|---|---|
@@ -196,6 +201,28 @@ ssh -i ~/.ssh/qubes_ci_ed25519 beto@guix-subs \
 `sudo -l` with a command only asks whether it's allowed. Don't test with
 `build-qubes.sh --help`: the script ignores its arguments and runs a full
 server build.
+
+**The network: BBR on the senders.** Everything big a run moves goes into
+the NUC: the ISO (runner → ci-ctl) and the substitutes (guix-subs → the
+installer and the template). If a sender is on a faster link than the
+NUC's 1 Gb/s, and on another switch (here: a 10 Gb/s Proxmox host,
+across a LAG), its bursts overflow the switch port into the NUC, and with
+the default congestion control (cubic) TCP collapses: ~8% loss, 2 MB/s,
+while the NUC sends at line rate. Pause frames don't reach across the
+switches. BBR, which paces what it sends, gets ~90 MB/s on the same path.
+Set it wherever the runner and guix-subs run:
+
+```sh
+# the Proxmox host (as root): the module, and the default for it and its containers
+echo tcp_bbr > /etc/modules-load.d/bbr.conf
+printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' > /etc/sysctl.d/90-bbr.conf
+# the runner's container (as root): per network namespace, so its own too
+echo 'net.ipv4.tcp_congestion_control = bbr' > /etc/sysctl.d/90-bbr.conf
+```
+
+guix-subs sets it in its own Guix config (its `tcp-bbr` service).
+`ci/runner/qubes-ci-netdiag.sh` measures each path, both ways (`TESTS=2`
+for just that), if transfers look slow again.
 
 ## 3. Install Qubes on the NUC
 

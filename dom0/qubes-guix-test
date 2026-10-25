@@ -482,7 +482,9 @@ else
     in_qube "rm -f $cd_file" >/dev/null || true
 fi
 
-# GUI: a terminal, and its window in dom0, whose title names the qube.
+# GUI: a terminal, and its window in dom0, found by a title of our own
+# (-T, which xterm, xfce4-terminal and alacritty all take): xterm's own
+# title ("xterm") doesn't name the qube, and dom0 doesn't add it.
 if [ "$(qvm-features "$template" gui 2>/dev/null)" != 1 ]; then
     skip "GUI" "no GUI agent"
 elif ! command -v xdotool >/dev/null 2>&1; then
@@ -492,24 +494,22 @@ else
     if [ -z "$term" ]; then
         skip "GUI" "no xterm, xfce4-terminal or alacritty in the qube"
     else
-        # A NEW window with the qube's name in its title: one already
-        # there (the qube tested in place, or a dom0 terminal whose title
-        # names it) doesn't count.
-        pattern=${vm//./\\.}
-        before=$(dom0_x xdotool search --name "$pattern" 2>/dev/null | sort)
-        qvm-run -q "$vm" "$term" </dev/null >/dev/null 2>&1 &
+        title="qgt-$$-$vm"
+        # Its errors, if it doesn't start, in the qube.
+        qvm-run -q "$vm" "$term -T $title 2>/tmp/qgt-terminal.err" </dev/null >/dev/null 2>&1 &
         win=
         for _ in $(seq 1 20); do
             sleep 2
-            win=$(dom0_x xdotool search --name "$pattern" 2>/dev/null | sort |
-                  comm -13 <(printf '%s\n' "$before") - | head -n1)
+            win=$(dom0_x xdotool search --name "${title//./\\.}" 2>/dev/null | head -n1)
             [ -n "$win" ] && break
         done
         if [ -n "$win" ]; then
             pass "GUI" "$term window: $(dom0_x xdotool getwindowname "$win" 2>/dev/null)"
             in_qube "pkill -x $term" >/dev/null || true
         else
-            fail "GUI" "no new $vm window within 40s (herd status qubes-gui-agent)"
+            fail "GUI" "no $term window within 40s (herd status qubes-gui-agent)"
+            echo "      --- $vm: $term's errors (/tmp/qgt-terminal.err):"
+            in_qube "cat /tmp/qgt-terminal.err 2>&1" | tail -n 10 | sed 's/^/      /'
         fi
     fi
 fi

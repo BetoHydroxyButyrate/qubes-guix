@@ -91,7 +91,9 @@ Package fields (`qrexec`, `qubesdb`, `core-agent`, `gui-agent`, `ctap`) can be o
 
 ## Extra packages and channels
 
-These dom0 files are read at install time (`--unattended`, `--finish-install` and `--bootstrap`), by either ISO. Each comes from the current directory, else `~/.config/qubes-guix/`, else the repository's sample next to the scripts (where `qubes-guix-refresh` puts them; it never touches `~/.config`).
+These dom0 files are read at install time (`--unattended`, `--finish-install` and `--bootstrap`), by either ISO. Each comes from the current directory, else `~/.config/qubes-guix/`, else the repository's sample next to the scripts (where `qubes-guix-refresh` puts them; it never touches `~/.config`). `qg-config` writes the `~/.config/qubes-guix/` ones by question and answer ([how](install-stock-iso.md#creating-the-qube-dom0)).
+
+**Desktop:** none by default: the system has `xterm` and `%desktop-services`, and each application's window is drawn in dom0's desktop. `qg-create --unattended --desktop xfce` (or `xfce` in `~/.config/qubes-guix/qubes-guix-desktop`, as `qg-config` writes it) installs the Xfce desktop as before. Xfce isn't on the qubes-guix ISO, so that install downloads it.
 
 **Extra packages:** list them in `dom0/qubes-guix-packages`, one or more per line, with `#` for comments. Copy it to `~/.config/qubes-guix/` in dom0 and edit it there, or pass another file with `--packages FILE`. Without one you get `git`. They go into the qube's `config.scm` as `#:extra-packages '("git" …)` in the `(qubes-operating-system …)` form. A name Guix doesn't have is skipped with a warning, never an error, both at install time and at every later reconfigure. To change the set, edit that list in `/etc/config.scm`, then run `qubes-guix-update -r`. `--finish-install` and `--bootstrap` read the same file.
 

@@ -1,6 +1,7 @@
 # qubes-guix-packages: extra packages for an unattended Guix install
-# (qubes-guix-create --unattended). Copy this next to qubes-guix-create in
-# dom0 and edit it, or pass another file with --packages FILE.
+# (qubes-guix-create --unattended). qubes-guix-config writes yours, in
+# ~/.config/qubes-guix in dom0 (from this sample); or copy it there and edit
+# it, or pass another file with --packages FILE.
 #
 # One or more package names per line; '#' starts a comment. name@version
 # works too. Names Guix doesn't have are skipped with a warning, so a typo

@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# qubes-guix-config — in dom0: set up what new Guix qubes get, by question
+# and answer, in ~/.config/qubes-guix, where qubes-guix-create looks:
+#
+#   substitute server   none, or your own (e.g. guix-subs): its URL and
+#                       signing key, fetched and shown for you to check
+#                       -> qubes-guix-substitutes
+#   non-free (nonguix)  its channel, and its substitute server and key
+#                       -> qubes-guix-channels, qubes-guix-substitutes
+#   desktop             none (xterm; each window drawn in dom0's desktop),
+#                       or Xfce -> qubes-guix-desktop
+#   packages            groups to add (the Xfce applications, a browser),
+#                       then the list in your editor -> qubes-guix-packages
+#
+#   qubes-guix-config [--show]
+#
+# dom0 has no network: keys and servers are fetched through a qube that has
+# one (asked; by default the one qubes-guix-refresh copies from). A key is
+# shown with its fingerprint: check it against the server's own
+# (/etc/guix/signing-key.pub there; nonguix's README for theirs) before you
+# accept it, since every qube made from then on trusts what it signs.
+#
+# These files are written whole. One you edited by hand (no "Written by
+# qubes-guix-config" line) is kept as FILE.bak first. --show prints them.
+
+set -euo pipefail
+prog=${0##*/}
+here=$(dirname "$(readlink -f "$0")")
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/qubes-guix
+state=$config_dir/config.state
+marker="Written by qubes-guix-config; run it again to change this."
+
+die() { echo "$prog: $*" >&2; exit 1; }
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
+
+case ${1:-} in
+    -h|--help) usage; exit 0;;
+    --show)
+        for f in qubes-guix-substitutes qubes-guix-channels qubes-guix-desktop \
+                 qubes-guix-packages source; do
+            echo "== $config_dir/$f"
+            cat "$config_dir/$f" 2>/dev/null || echo "(none: the sample next to the scripts, if any)"
+            echo
+        done
+        exit 0;;
+    '') ;;
+    *) die "unknown argument $1 (see --help)";;
+esac
+
+mkdir -p "$config_dir"
+# Earlier answers (KEY=VALUE lines), the defaults for this run's questions.
+server_url= server_key= server_caches= nonguix=n nonguix_key= desktop=none groups= net_qube=
+# shellcheck disable=SC1090
+[ -f "$state" ] && . "$state"
+
+# ask QUESTION DEFAULT: the answer (the default on an empty line).
+ask() {
+    local a
+    printf '%s [%s] ' "$1" "$2" >&2
+    read -r a || a=
+    echo "${a:-$2}"
+}
+yes_no() {  # QUESTION y|n -> status
+    case $(ask "$1 (y/n)" "$2") in y|Y|yes) return 0;; *) return 1;; esac
+}
+# write FILE [COMMENT]: stdin to $config_dir/FILE, after the marker as a
+# COMMENT (default '#'; ';;' for the channels' Scheme); a hand-edited one
+# kept as FILE.bak.
+write() {
+    local f=$config_dir/$1
+    if [ -s "$f" ] && ! grep -qF "$marker" "$f"; then
+        cp "$f" "$f.bak"
+        echo "  (your $1 is kept as $1.bak)"
+    fi
+    { echo "${2:-#} $marker"; cat; } > "$f.new"
+    mv "$f.new" "$f"
+}
+
+# The qube to fetch through.
+if [ -z "$net_qube" ] && [ -s "$config_dir/source" ]; then
+    net_qube=$(head -n1 "$config_dir/source" | cut -d: -f1)
+fi
+net_qube=$(ask "Qube with network, to fetch keys and check servers through:" "${net_qube:-work}")
+qvm-check -q "$net_qube" 2>/dev/null || die "no qube '$net_qube'"
+fetch() {  # URL: its body on stdout, via $net_qube; status: curl's
+    qvm-run -q --pass-io --no-gui "$net_qube" \
+        "curl -fsSL --max-time 20 $(printf %q "$1")" </dev/null
+}
+# A guix publish key, as one line; empty if it isn't one.
+key_line() {
+    tr -s ' \n\t' ' ' | sed 's/^ //; s/ $//; s/( /(/g; s/ )/)/g' |
+        grep -E '^\(public-key \(ecc \(curve Ed25519\) \(q #[0-9A-Fa-f]{64}#\)\)\)$' || :
+}
+fingerprint() { sed 's/.*#\([0-9A-Fa-f]*\)#.*/\1/' | tr a-f A-F | sed 's/.\{8\}/& /g; s/ $//'; }
+# get_key URL WHAT: fetch URL/signing-key.pub, show it, have it accepted;
+# the key line on stdout, empty if refused or not fetched.
+get_key() {
+    local k
+    k=$(fetch "$1/signing-key.pub" | key_line) || k=
+    if [ -z "$k" ]; then
+        echo "  couldn't fetch a signing key from $1/signing-key.pub" >&2
+        return 0
+    fi
+    {
+        echo "  $2's signing key:"
+        echo "    $(echo "$k" | fingerprint)"
+    } >&2
+    if yes_no "  Is that the key you expect (check it at its source)?" n; then
+        echo "$k"
+    fi
+}
+
+echo
+echo "== Substitute server"
+echo "Your own (guix publish, or guix-subs): new qubes fetch from it first."
+if [ -n "$server_url" ]; then
+    echo "Now: $server_url$( [ -n "$server_caches" ] && echo " (with its /bordeaux and /ci caches)")"
+fi
+url=$(ask "Its URL, or 'none':" "${server_url:-none}")
+case $url in
+    none|'') server_url= server_key= server_caches=;;
+    http://*|https://*)
+        url=${url%/}
+        if [ "$url" != "$server_url" ] || [ -z "$server_key" ]; then
+            server_key=$(get_key "$url" "$url")
+            [ -n "$server_key" ] || die "no key accepted for $url: nothing written"
+        fi
+        server_url=$url server_caches=
+        if fetch "$url/bordeaux/nix-cache-info" >/dev/null 2>&1; then
+            server_caches=1
+            echo "  it caches bordeaux and ci too (/bordeaux, /ci): using those"
+        fi
+        fetch "$url/channel-commits" >/dev/null 2>&1 &&
+            echo "  it publishes /channel-commits: installs lock to its builds (--guix-commit server)";;
+    *) die "'$url' isn't a URL";;
+esac
+
+echo
+echo "== Non-free software (nonguix: firefox-esr, non-free firmware and kernels)"
+if yes_no "Add the nonguix channel?" "$nonguix"; then
+    nonguix=y
+    if [ -z "$nonguix_key" ]; then
+        nonguix_key=$(get_key https://substitutes.nonguix.org "nonguix's substitute server")
+        [ -n "$nonguix_key" ] ||
+            echo "  without its key, nonguix's packages are built from source"
+    fi
+else
+    nonguix=n nonguix_key=
+fi
+
+echo
+echo "== Desktop"
+echo "Under Qubes a qube needs none: each window is drawn in dom0's desktop."
+desktop=$(ask "Desktop: none (xterm) or xfce (the whole Xfce desktop):" "$desktop")
+case $desktop in none|xfce) ;; *) die "'$desktop' isn't none or xfce";; esac
+
+echo
+echo "== Packages"
+echo "Groups to add (each a few packages; edit the list after):"
+echo "  apps     Xfce's applications without its desktop: xfce4-terminal thunar mousepad"
+echo "  browser  $( [ "$nonguix" = y ] && echo firefox-esr || echo icecat)"
+groups=$(ask "Groups, space-separated, or 'none':" "${groups:-none}")
+[ "$groups" = none ] && groups=
+
+# --- write ------------------------------------------------------------------
+
+echo
+echo "Writing $config_dir:"
+{
+    echo "# Substitute servers for new qubes, tried before Guix's own."
+    if [ -n "$server_url" ]; then
+        echo "url $server_url"
+        [ -n "$server_caches" ] && echo "url $server_url/bordeaux" && echo "url $server_url/ci"
+        echo "key $server_key"
+    fi
+    if [ "$nonguix" = y ] && [ -n "$nonguix_key" ]; then
+        echo "url https://substitutes.nonguix.org"
+        echo "key $nonguix_key"
+    fi
+} | write qubes-guix-substitutes
+echo "  qubes-guix-substitutes"
+
+{
+    echo ";; Extra channels for new qubes."
+    if [ "$nonguix" = y ]; then
+        # nonguix's channel and introduction, as its README gives them
+        # (https://gitlab.com/nonguix/nonguix): compare before you rely on it.
+        cat <<'EOF'
+(channel
+ (name 'nonguix)
+ (url "https://gitlab.com/nonguix/nonguix")
+ (introduction
+  (make-channel-introduction
+   "897c1a470da759236cc11798f4e0a5f7d4d59fbc"
+   (openpgp-fingerprint
+    "2A39 3FFF 68F4 EF7A 3D29  12AF 6F51 20A0 22FB B2D5"))))
+EOF
+    fi
+} | write qubes-guix-channels ';;'
+echo "  qubes-guix-channels$( [ "$nonguix" = y ] && echo ": nonguix (check its introduction against nonguix's README)")"
+
+echo "$desktop" | write qubes-guix-desktop
+echo "  qubes-guix-desktop: $desktop"
+
+# Packages: yours if there, else the sample; the groups' lines between
+# markers, replaced each time.
+pk=$config_dir/qubes-guix-packages
+base=$pk
+[ -f "$pk" ] || base=$here/qubes-guix-packages
+{
+    [ -f "$base" ] && grep -vF "$marker" "$base" |
+        sed '/^# --- qubes-guix-config groups/,/^# --- end of groups/d'
+    if [ -n "$groups" ]; then
+        echo "# --- qubes-guix-config groups: $groups"
+        for g in $groups; do
+            case $g in
+                apps) echo "xfce4-terminal thunar mousepad";;
+                browser) [ "$nonguix" = y ] && echo firefox-esr || echo icecat;;
+                *) echo "  (no group '$g': skipped)" >&2;;
+            esac
+        done
+        echo "# --- end of groups"
+    fi
+} > "$pk.tmp"
+write qubes-guix-packages < "$pk.tmp"
+rm -f "$pk.tmp"
+if yes_no "Edit the package list now (${EDITOR:-vi})?" y; then
+    ${EDITOR:-vi} "$pk"
+fi
+echo "  qubes-guix-packages: $(sed 's/#.*//' "$pk" | xargs)"
+
+cat > "$state" <<EOF
+server_url=$(printf %q "$server_url")
+server_key=$(printf %q "$server_key")
+server_caches=$server_caches
+nonguix=$nonguix
+nonguix_key=$(printf %q "$nonguix_key")
+desktop=$desktop
+groups=$(printf %q "$groups")
+net_qube=$(printf %q "$net_qube")
+EOF
+
+echo
+echo "Done. qg-create uses these for every new qube (a file in the current"
+echo "directory, or an option such as --packages FILE, still wins). See them all:"
+echo "  $prog --show"

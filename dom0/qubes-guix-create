@@ -41,6 +41,7 @@ no_password=0
 locale=en_US.utf8
 wait_start=1
 packages_file=
+desktop=
 channels_file=
 subs_file=
 guix_commit=
@@ -231,6 +232,12 @@ Options:
                         ~/.config/qubes-guix or next to this script, the
                         first found; else just git). Names Guix doesn't have are skipped
                         with a warning, not an error.
+      --desktop D       with --unattended: none (the default: xterm, no
+                        desktop environment; under Qubes each window is
+                        drawn in dom0's desktop) or xfce (Xfce, as before;
+                        not on the qubes-guix ISO, so downloaded). Default:
+                        the first word of qubes-guix-desktop, found as the
+                        files above, else none.
   -b, --branch B        the qubes-guix branch that --bootstrap,
                         --finish-install and --unattended clone and build
                         from (default main; on the qubes-guix ISO, its own
@@ -393,6 +400,7 @@ while [ $# -gt 0 ]; do
         --locale)   [ $# -ge 2 ] || die "$1 needs a value"; locale=$2; shift 2;;
         --no-wait)  wait_start=0; shift;;
         --packages) [ $# -ge 2 ] || die "$1 needs a value"; packages_file=$2; shift 2;;
+        --desktop) [ $# -ge 2 ] || die "$1 needs a value"; desktop=$2; shift 2;;
         --channels) [ $# -ge 2 ] || die "$1 needs a value"; channels_file=$2; shift 2;;
         --substitutes) [ $# -ge 2 ] || die "$1 needs a value"; subs_file=$2; shift 2;;
         --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
@@ -746,6 +754,24 @@ read_packages() {
     fi
 }
 
+# The desktop environment, into $desktop: --desktop D, or the first word of
+# qubes-guix-desktop (data_file), else none.
+read_desktop() {
+    [ -n "${desktop_read:-}" ] && return 0
+    desktop_read=1
+    local f
+    if [ -z "$desktop" ] && f=$(data_file qubes-guix-desktop) && [ -n "$f" ]; then
+        desktop=$(sed 's/#.*//' "$f" | xargs | cut -d' ' -f1)
+        desktop_from=" (from $f)"
+    fi
+    desktop=${desktop:-none}
+    case $desktop in
+        none) echo "  desktop: none (xterm; each window drawn in dom0's desktop)";;
+        xfce) echo "  desktop: Xfce${desktop_from:-}: not on the qubes-guix ISO, so downloaded";;
+        *) die "--desktop: '$desktop' isn't none or xfce";;
+    esac
+}
+
 # dom0's timezone, into $tz: the installed system gets the same.
 dom0_tz() {
     tz=$(timedatectl show -p Timezone --value 2>/dev/null) || tz=
@@ -800,6 +826,7 @@ install_plan() {
         echo "  scripts: branch $branch of $repo_url"
     fi
     read_packages
+    read_desktop
     read_channels
     read_substitutes
     resolve_lock "$1"
@@ -1291,6 +1318,8 @@ unattended() {
     [ "$force" = 1 ] && iargs="$iargs --force"
     [ -n "$hash" ] && iargs="$iargs --password-hash '$hash'"
     [ -n "$packages" ] && iargs="$iargs --packages '$packages'"
+    read_desktop
+    [ "$desktop" != none ] && iargs="$iargs --desktop $desktop"
     t0=${t0:-$(date +%s)}
     read_channels
     ch_lines=

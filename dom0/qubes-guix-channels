@@ -1,7 +1,8 @@
 ;; qubes-guix-channels: extra Guix channels for a new Guix qube
-;; (qubes-guix-create --unattended, --finish-install, --bootstrap). Copy this
-;; next to qubes-guix-create in dom0 and edit it, or pass another file with
-;; --channels FILE. While everything here is commented out, no extra
+;; (qubes-guix-create --unattended, --finish-install, --bootstrap).
+;; qubes-guix-config writes yours (nonguix, if you want it), in
+;; ~/.config/qubes-guix in dom0; or copy this there and edit it, or pass
+;; another file with --channels FILE. While everything here is commented out, no extra
 ;; channels are added.
 ;;
 ;; Only (channel ...) forms; ';' starts a comment. They end up in the

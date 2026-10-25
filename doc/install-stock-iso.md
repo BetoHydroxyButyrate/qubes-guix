@@ -29,6 +29,8 @@ qg-create guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-l
 
 `qubes-guix-refresh` shows the checkout's commit, its signature and any local changes to `dom0/`, and asks before going on. It then copies `dom0/` to `~/.local/share/qubes-guix` and links each script into `~/bin`, twice: by its name, and short (`qg-create`, `qg-test`, `qg-refresh`). It remembers QUBE:PATH, so after a `git pull` in that qube, `qg-refresh` alone brings dom0 up to date. Keep your own settings (`qubes-guix-packages`, `-channels`, `-substitutes`) in `~/.config/qubes-guix`, which a refresh never touches. The scripts look for each in the current directory, then there, then for the repository's sample next to them.
 
+`qg-config` writes those settings for you, by question and answer: a substitute server of your own (its URL, and its signing key, fetched through a qube with network and shown by fingerprint for you to check), non-free software (the nonguix channel, with its substitute server and key), a desktop (none, the default: xterm, with each window drawn in dom0's desktop; or Xfce, which `qg-create --desktop xfce` also gives), and the package list, with optional groups (Xfce's applications without its desktop, a browser), then your editor. `qg-config --show` prints what's set.
+
 ```
 qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
   defaults: 2 vCPUs, 4000 MiB, MAXMEM = MEMORY (no balancing); -s root size (60g), -l label, -n netvm, --dry-run

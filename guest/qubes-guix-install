@@ -24,6 +24,7 @@
 #                       manual Guix install (set them later with passwd);
 #                       qvm-run works regardless, and the qubes group's sudo
 #                       needs no password.
+#   --desktop D         none (default: xterm, no desktop environment) or xfce
 #   --packages "A B"    extra packages (default: git), by name or
 #                       name@version: #:extra-packages in config.scm. Ones
 #                       this Guix doesn't have are skipped with a warning,
@@ -54,6 +55,7 @@ timezone=UTC
 locale=en_US.utf8
 hash=
 packages=git
+desktop=none
 channels_file=
 subs_file=
 guix_commit=
@@ -76,6 +78,7 @@ while [ $# -gt 0 ]; do
         --locale) need "$@"; locale=$2; shift 2;;
         --password-hash) need "$@"; hash=$2; shift 2;;
         --packages) need "$@"; packages=$2; shift 2;;
+        --desktop) need "$@"; desktop=$2; shift 2;;
         --channels) need "$@"; channels_file=$2; shift 2;;
         --guix-commit) need "$@"; guix_commit=$2; shift 2;;
         --substitutes) need "$@"; subs_file=$2; shift 2;;
@@ -96,6 +99,13 @@ esac
     die "qubes-guix-finish-install missing next to $prog"
 case $user in
     ''|*[!a-z0-9_-]*|[!a-z_]*) die "bad user name '$user'";;
+esac
+case $desktop in
+    none) desktop_modules="desktop" desktop_services="%desktop-services";;
+    xfce) desktop_modules="desktop xorg"
+          desktop_services="(append (list (service xfce-desktop-service-type))
+           %desktop-services)";;
+    *) die "--desktop: '$desktop' isn't none or xfce";;
 esac
 case $host_name in
     ''|*[!A-Za-z0-9.-]*) die "bad host name '$host_name'";;
@@ -193,7 +203,7 @@ EOF
 ;; (or 'qubes-guix-update -r').
 
 (use-modules (gnu))
-(use-service-modules desktop)
+(use-service-modules $desktop_modules)
 (use-package-modules xorg)
 
 (operating-system
@@ -219,7 +229,7 @@ EOF
   ;; %desktop-services for dbus, elogind, polkit, PulseAudio and fonts,
   ;; which the Qubes agents and applications use (its graphical login and
   ;; networking are removed for the qube).
-  (services %desktop-services)
+  (services $desktop_services)
 
   (bootloader (bootloader-configuration
                 (bootloader grub-bootloader)

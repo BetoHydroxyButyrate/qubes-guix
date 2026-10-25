@@ -22,6 +22,9 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 mkdir -p results
+# This run's start: the logs kept at the end are from it on.
+run_start=$(date +%s)
+touch results/.started
 export DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority
 
 # Every step's outcome, for the summary at the end (and results/summary.txt):
@@ -198,9 +201,16 @@ if [ -x ./dom0-tests.sh ]; then
     tail -20 results/dom0-tests.log
 fi
 
-sudo journalctl -b --no-pager --since "-12h" > results/dom0-journal.log 2>/dev/null
-sudo cp -r /var/log/xen/console results/xen-console 2>/dev/null
-sudo cp -r /var/log/qubes results/qubes-logs 2>/dev/null
+# This run's logs only: dom0's journal since it started, and the qube and
+# Xen console logs written since (not every qube's logs ever kept).
+sudo journalctl --no-pager --since "@$run_start" > results/dom0-journal.log 2>/dev/null
+for d in /var/log/xen/console:xen-console /var/log/qubes:qubes-logs; do
+    src=${d%%:*} dst=results/${d#*:}
+    mkdir -p "$dst"
+    sudo find "$src" -maxdepth 1 -type f -newer results/.started \
+        -exec cp -p {} "$dst"/ \; 2>/dev/null
+done
+rm -f results/.started
 sudo chown -R "$(id -u):$(id -g)" results
 
 echo

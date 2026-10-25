@@ -191,7 +191,8 @@ case $desktop in none|xfce) ;; *) die "'$desktop' isn't none or xfce";; esac
 echo
 echo "== Packages"
 echo "Groups to add (each a few packages; edit the list after):"
-echo "  apps     Xfce's applications without its desktop: xfce4-terminal thunar mousepad"
+echo "  apps     Xfce's applications without its desktop: xfce4-terminal thunar mousepad,"
+echo "           and the Qubes agent's GTK dialogs (qubes-zenity: file chooser, copy errors)"
 echo "  browser  $( [ "$nonguix" = y ] && echo firefox-esr || echo icecat)"
 groups=$(ask "Groups, space-separated, or 'none':" "${groups:-none}")
 [ "$groups" = none ] && groups=
@@ -248,7 +249,7 @@ base=$pk
         echo "# --- qubes-guix-config groups: $groups"
         for g in $groups; do
             case $g in
-                apps) echo "xfce4-terminal thunar mousepad";;
+                apps) echo "xfce4-terminal thunar mousepad qubes-zenity";;
                 browser) [ "$nonguix" = y ] && echo firefox-esr || echo icecat;;
                 *) echo "  (no group '$g': skipped)" >&2;;
             esac

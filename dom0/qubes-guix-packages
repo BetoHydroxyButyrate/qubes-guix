@@ -16,6 +16,8 @@ git
 # vim
 # icecat              # the browser in Guix proper
 # alacritty           # needs OpenGL: brings Mesa and LLVM (hundreds of MB)
+# qubes-zenity        # the Qubes agent's GTK dialogs (file chooser, qvm-copy
+#                     # errors): GTK 4 and GStreamer, several hundred MB
 # mousepad
 # htop
 # keepassxc

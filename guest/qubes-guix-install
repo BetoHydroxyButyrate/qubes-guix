@@ -104,7 +104,9 @@ case $desktop in
     none) desktop_modules="desktop" desktop_services="%desktop-services";;
     xfce) desktop_modules="desktop xorg"
           desktop_services="(append (list (service xfce-desktop-service-type))
-           %desktop-services)";;
+           %desktop-services)"
+          # and the Qubes agent's GTK dialogs, which a desktop expects
+          packages="$packages qubes-zenity";;
     *) die "--desktop: '$desktop' isn't none or xfce";;
 esac
 case $host_name in

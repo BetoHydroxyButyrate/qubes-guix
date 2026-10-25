@@ -983,6 +983,14 @@ exec guix \"$@\"
                  (for-each (lambda (f) (chmod (string-append bin "/" f) #o555))
                            '("qubes-guix-update" "pguix"
                              "qubes-guix-profile"))))))
+    ;; What the builder names itself, listed too: Guix grafts a package's
+    ;; references by its inputs, so without these this package kept the
+    ;; ungrafted core agent, and with it a second copy of its whole closure
+    ;; in every qube and in the ISO.
+    (inputs (list bash-minimal
+                  (qubes-guest-qubesdb config)
+                  (qubes-guest-qrexec config)
+                  (qubes-guest-core-agent config)))
     (home-page "https://github.com/BetoHydroxyButyrate/qubes-guix")
     (synopsis "guix (pull, reconfigure) through the Qubes updates proxy")
     (description "@command{pguix} runs @command{guix} through the Qubes updates

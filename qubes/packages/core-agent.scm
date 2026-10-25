@@ -12,6 +12,7 @@
   #:use-module (guix git-download)
   #:use-module (guix build-system gnu)
   #:use-module (guix build-system pyproject)
+  #:use-module (guix build-system trivial)
   #:use-module ((guix licenses) #:prefix license:)
   #:use-module (gnu packages bash)
   #:use-module (gnu packages python)
@@ -25,6 +26,59 @@
   #:use-module (qubes packages linux-utils)   ; qubes-linux-utils
   #:use-module (qubes packages qrexec)        ; qubes-core-qrexec
   #:use-module (qubes packages qubesdb))      ; qubes-core-qubesdb
+
+;; The core agent's GTK dialogs: qfile-agent/qfile-unpacker's error
+;; popups, qubes.SelectFile/SelectDirectory (a file chooser some dom0 tools
+;; open in the qube), qvm-open-in-vm's prompt. zenity 4 brings GTK 4 and
+;; GStreamer with all its plugins (ffmpeg, openjdk, samba, ...): most of a
+;; qube's closure, for dialogs seldom seen. So they're optional: the agent
+;; runs zenity through this path, which only a system with the qubes-zenity
+;; package has; without it, those dialogs don't appear (the errors still go
+;; to stderr), and the rest works as before.
+(define %qubes-zenity "/run/current-system/profile/libexec/qubes-zenity")
+
+;; zenity, as the core agent runs it: GTK 4's GSettings schemas compiled
+;; for it, since zenity aborts without them and qrexec sessions don't have
+;; GTK on XDG_DATA_DIRS. Add it to a qube's packages for the dialogs.
+(define-public qubes-zenity
+  (package
+    (name "qubes-zenity")
+    (version "1")
+    (source #f)
+    (build-system trivial-build-system)
+    (arguments
+     (list #:modules '((guix build utils))
+           #:builder
+           #~(begin
+               (use-modules (guix build utils))
+               (let ((schemas (string-append #$output "/share/qubes/gsettings-schemas"))
+                     (wrapper (string-append #$output "/libexec/qubes-zenity")))
+                 (mkdir-p schemas)
+                 (for-each (lambda (f) (install-file f schemas))
+                           (find-files #$(file-append gtk "/share/glib-2.0/schemas")
+                                       "\\.gschema\\.xml$"))
+                 (invoke (string-append #$glib:bin "/bin/glib-compile-schemas")
+                         schemas)
+                 (mkdir-p (dirname wrapper))
+                 (call-with-output-file wrapper
+                   (lambda (port)
+                     (format port "#!~a
+export GSETTINGS_SCHEMA_DIR=~a
+exec ~a \"$@\"
+"
+                             #$(file-append bash-minimal "/bin/sh")
+                             schemas
+                             #$(file-append zenity "/bin/zenity"))))
+                 (chmod wrapper #o755)))))
+    ;; Listed, though the builder names them itself: so they're grafted.
+    (inputs (list bash-minimal zenity gtk `(,glib "bin")))
+    (home-page "https://github.com/BetoHydroxyButyrate/qubes-guix")
+    (synopsis "GTK dialogs for the Qubes core agent")
+    (description "zenity, wrapped as the Qubes core agent runs it: its file
+chooser (qubes.SelectFile, qubes.SelectDirectory) and the error and
+confirmation dialogs of qvm-copy and qvm-open-in-vm.  Without it in the
+system, those dialogs don't appear.")
+    (license license:gpl3+)))
 
 (define-public qubes-core-agent
   (package
@@ -57,12 +111,12 @@
           ;; No DEVEL_BUILD: its $ORIGIN rpath only helps when the libs share
           ;; our prefix; ld-wrapper already adds RUNPATH for the input libs.
           ;; gui-fatal.c (error dialogs of qfile-agent/qfile-unpacker)
-          ;; execlp()s /usr/bin/zenity.
+          ;; execlp()s /usr/bin/zenity. The dialogs are optional (see
+          ;; %qubes-zenity): zenity from qubes-zenity, if the system has it.
           (add-before 'build 'patch-zenity
             (lambda* (#:key inputs #:allow-other-keys)
               (substitute* "qubes-rpc/gui-fatal.c"
-                (("/usr/bin/zenity")
-                 (string-append #$output "/libexec/qubes-zenity")))))
+                (("/usr/bin/zenity") #$%qubes-zenity))))
           ;; release4.3 creates suspend-pre.d, suspend-post.d and
           ;; post-install.d as $(DESTDIR)/etc/qubes/... but installs into
           ;; $(QUBESCONFDIR)/... -> "cannot create directory '/etc/qubes'".
@@ -84,41 +138,14 @@
                       (string-append "BINDIR=" #$output "/bin")
                       (string-append "LIBDIR=" #$output "/lib")
                       (string-append "SYSCONFDIR=" #$output "/etc"))))
-          ;; zenity 4 (GTK4) aborts unless GSettings finds GTK's schemas
-          ;; (org.gtk.gtk4.Settings.FileChooser); qrexec sessions don't have
-          ;; GTK on XDG_DATA_DIRS. Compile GTK's schemas into our own dir and
-          ;; call zenity through a wrapper that points GSETTINGS_SCHEMA_DIR
-          ;; at it.
-          (add-after 'install 'install-zenity-wrapper
-            (lambda* (#:key inputs #:allow-other-keys)
-              (let* ((schemas (string-append #$output "/share/qubes/gsettings-schemas"))
-                     (gtk-xml (search-input-file
-                               inputs
-                               "/share/glib-2.0/schemas/org.gtk.gtk4.Settings.FileChooser.gschema.xml"))
-                     (wrapper (string-append #$output "/libexec/qubes-zenity")))
-                (mkdir-p schemas)
-                (for-each (lambda (f) (install-file f schemas))
-                          (find-files (dirname gtk-xml) "\\.gschema\\.xml$"))
-                (invoke "glib-compile-schemas" schemas)
-                (mkdir-p (dirname wrapper))
-                (call-with-output-file wrapper
-                  (lambda (port)
-                    (format port "#!~a
-export GSETTINGS_SCHEMA_DIR=~a
-exec ~a \"$@\"
-"
-                            (search-input-file inputs "/bin/sh")
-                            schemas
-                            (search-input-file inputs "/bin/zenity"))))
-                (chmod wrapper #o755))))
-          (add-after 'install-zenity-wrapper 'fix-script-paths
+          (add-after 'install 'fix-script-paths
             (lambda* (#:key inputs #:allow-other-keys)
               (let* ((qubeslib  (string-append #$output "/lib/qubes/"))
                      (client-vm (search-input-file
                                  inputs "/usr/bin/qrexec-client-vm"))
                      (bash      (search-input-file inputs "/bin/bash"))
                      (vmexec    (search-input-file inputs "/bin/qubes-vmexec"))
-                     (zenity    (string-append #$output "/libexec/qubes-zenity"))
+                     (zenity    #$%qubes-zenity)
                      ;; Regular non-ELF files only: substitute* would turn
                      ;; symlinks into copies (qubes.VMExecGUI),
                      ;; choke on the dangling /dev/tcp ones, and mangle
@@ -214,8 +241,6 @@ exec ~a \"$@\"
                   `("GUIX_PYTHONPATH" ":" prefix (,(getenv "GUIX_PYTHONPATH")))
                   `("XDG_DATA_DIRS" ":" suffix
                     ("/run/current-system/profile/share")))))))))
-    (native-inputs
-     (list `(,glib "bin")))             ; glib-compile-schemas
     (inputs
      (list bash                         ; full bash: VMShell is interactive
            python                       ; shebangs of qrun-in-vm, xdg-icon,
@@ -225,8 +250,6 @@ exec ~a \"$@\"
                                         ; kept until a build proves it unneeded
            qubes-core-qrexec            ; qrexec-client-vm path
            python-qubesagent            ; qubes-vmexec for qubes.VMExec
-           zenity                       ; SelectFile/SelectDirectory, dialogs
-           gtk                          ; its GSettings schemas (see wrapper)
            python-pyxdg                 ; xdg-icon (qubes.GetImageRGBA)
            graphicsmagick               ; gm in qubes.GetImageRGBA
            librsvg))                    ; rsvg-convert in qubes.GetImageRGBA

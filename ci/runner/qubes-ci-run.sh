@@ -13,6 +13,8 @@
 #   TEST_TEMPLATES (optional) override which templates are tested
 #   VARIANTS       0: don't test the HVM/PVH template/AppVM/standalone variants
 #   CONNECT_TIMEOUT 600   seconds to wait for the tunnel (e.g. after a reboot)
+#   CI_SUBSTITUTES (optional) your substitute servers, for the install in
+#                  dom0 (see build-iso-remote.sh)
 set -euo pipefail
 
 [ -f /etc/qubes-ci/runner.env ] && . /etc/qubes-ci/runner.env
@@ -39,6 +41,12 @@ until ctl true 2>/dev/null; do
     sleep 10
 done
 log "connected to ci-ctl"
+
+# The runner's substitute servers (CI_SUBSTITUTES), for dom0's install: as
+# the payload's dom0/qubes-guix-substitutes (the repository's is empty).
+if [ -n "${CI_SUBSTITUTES:-}" ] && [ -d "$PAYLOAD/dom0" ]; then
+    cp "$CI_SUBSTITUTES" "$PAYLOAD/dom0/qubes-guix-substitutes"
+fi
 
 # 1. stage the payload in ci-ctl
 ctl 'rm -rf ci-run && mkdir -p ci-run'

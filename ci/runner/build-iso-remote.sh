@@ -7,7 +7,7 @@
 # work) is left alone. The build is iso/qubes-guix-iso -b BRANCH
 # --qubes-commit SHA --server URL: qubes exactly at SHA, the other channels
 # at the commits URL last built (URL is the first url in the commit's
-# dom0/qubes-guix-substitutes). Pinning qubes to SHA means the "server last
+# dom0/qubes-guix-substitutes, from CI_SUBSTITUTES). Pinning qubes to SHA means the "server last
 # built an older qubes" check doesn't stop the build.
 #
 # Usage: build-iso-remote.sh <branch> <sha> <out.iso>
@@ -19,6 +19,10 @@
 #   ISO_OFFLINE    1: build with --offline, so the ISO carries the channels'
 #                  git checkouts and the install needs no network for them
 #                  (a bigger ISO, a longer copy; fewer network flakes)
+#   CI_SUBSTITUTES a file here in dom0/qubes-guix-substitutes' format: your
+#                  substitute server(s). Written into the build's checkout as
+#                  that file, so the ISO carries them and --server is the
+#                  first url. Unset: none (the repository's sample is empty)
 #   ISO_SYNC_CMD   run on ISO_HOST before the build, so the server has built
 #                  the head and the other channels' commits match it (empty:
 #                  skip). Default: guix-subs' own build script, through
@@ -37,15 +41,22 @@ ISO_OFFLINE=${ISO_OFFLINE:-0}
 ISO_SYNC_CMD=${ISO_SYNC_CMD-sudo -n /etc/guix-subs/build-qubes.sh --qubes-only 2>&1 | sudo -n tee -a /var/log/qubes-builds.log}
 SSH_OPTS=(-i "$ISO_SSH_KEY" -o BatchMode=yes -o ServerAliveInterval=60)
 
+CI_SUBSTITUTES=${CI_SUBSTITUTES:-}
+subs=
+if [ -n "$CI_SUBSTITUTES" ]; then
+    [ -r "$CI_SUBSTITUTES" ] || { echo "CI_SUBSTITUTES: can't read $CI_SUBSTITUTES"; exit 1; }
+    subs=$(cat "$CI_SUBSTITUTES")
+fi
+
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || { echo "not a full commit hash: $SHA"; exit 1; }
 [[ $BRANCH =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "bad branch name: $BRANCH"; exit 1; }
 
 # Everything after the ssh destination is one quoted command line; the
 # script itself goes over stdin.
 ssh "${SSH_OPTS[@]}" "$ISO_HOST" \
-    "bash -s -- $(printf '%q ' "$ISO_DIR" "$BRANCH" "$SHA" "$ISO_SYNC_CMD" "$ISO_OFFLINE")" <<'EOF'
+    "bash -s -- $(printf '%q ' "$ISO_DIR" "$BRANCH" "$SHA" "$ISO_SYNC_CMD" "$ISO_OFFLINE" "$subs")" <<'EOF'
 set -euo pipefail
-dir=$HOME/$1 branch=$2 sha=$3 sync=$4 offline=$5
+dir=$HOME/$1 branch=$2 sha=$3 sync=$4 offline=$5 subs=$6
 out=$HOME/ci-iso
 mkdir -p "$out"
 # One build at a time. When Gitea cancels a run, only the runner's ssh is
@@ -75,6 +86,8 @@ git worktree prune
 git worktree add -q --detach "$wt" "$sha"
 trap 'git -C "$dir" worktree remove --force "$wt" 2>/dev/null || :' EXIT
 cd "$wt"
+# The runner's substitute servers (CI_SUBSTITUTES), as the checkout's file.
+[ -n "$subs" ] && printf '%s\n' "$subs" > dom0/qubes-guix-substitutes
 server=$(sed -n 's/^[[:space:]]*url[[:space:]]\{1,\}//p' dom0/qubes-guix-substitutes 2>/dev/null | head -n1)
 echo "==> on $(hostname): qubes-guix-iso at $(git log -1 --format='%h %s')"
 rm -f "$out/qubes-guix-installer.iso" "$out/qubes-guix-installer.iso.channels"

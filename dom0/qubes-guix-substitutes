@@ -1,7 +1,15 @@
-# qubes-guix-substitutes (dom0, next to qubes-guix-create): guix-subs on the
-# vl03 VLAN. Its own builds (signed with its key), then its caches of
-# bordeaux and ci; the defaults stay as the fallback.
-url https://guix-subs.zepherin.com
-url https://guix-subs.zepherin.com/bordeaux
-url https://guix-subs.zepherin.com/ci
-key (public-key (ecc (curve Ed25519) (q #B690E745D098BABC1CF2C66D11C1124A62438B5AC722FF79882041A003A4E823#)))
+# qubes-guix-substitutes: extra substitute servers for a new Guix qube
+# (qubes-guix-create --unattended, --finish-install), tried before Guix's
+# own. qubes-guix-config writes yours, in ~/.config/qubes-guix in dom0
+# (picking from your qubes-guix-servers list); or copy this there and edit
+# it, or pass another file with --substitutes FILE. While everything here
+# is commented out, only Guix's own servers are used.
+#
+# "url URL" lines, then "key" lines with each server's signing key (as in
+# its /etc/guix/signing-key.pub, on one line). For a guix-subs server, its
+# own builds, then its caches of bordeaux and ci:
+#
+# url https://guix-subs.example.org
+# url https://guix-subs.example.org/bordeaux
+# url https://guix-subs.example.org/ci
+# key (public-key (ecc (curve Ed25519) (q #0123...#)))

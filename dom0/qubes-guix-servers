@@ -1,0 +1,7 @@
+# qubes-guix-servers: substitute servers qubes-guix-config offers by number.
+# Keep yours in ~/.config/qubes-guix/qubes-guix-servers in dom0 (it offers
+# to add one there when you type a new URL). "NAME URL" per line; '#'
+# starts a comment. Their keys are fetched (URL/signing-key.pub) and shown
+# for you to check each time you pick one anew.
+#
+# home  https://guix-subs.example.org

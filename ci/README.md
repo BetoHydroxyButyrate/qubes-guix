@@ -146,8 +146,17 @@ ISO_HOST=beto@guix-subs         # the full DNS name if the short one doesn't res
 ISO_DIR=proj/qubes-guix         # the checkout on guix-subs, under beto's home
 TUNNEL_PORT=2222
 ISO_OFFLINE=1                   # ISO with the channels' checkouts: no clone at install (recommended)
+CI_SUBSTITUTES=/etc/qubes-ci/qubes-guix-substitutes   # guix-subs, for the ISO and the install
 # ISO_SYNC_CMD=...              # default: guix-subs' build script via sudo; empty skips it
 ```
+
+`CI_SUBSTITUTES` names a file on the runner in `dom0/qubes-guix-substitutes`'
+format: guix-subs' `url` lines (its own builds, `/bordeaux`, `/ci`) and its
+`key`. The repository's own file is an empty sample, so without this the CI
+uses no server of its own: the ISO isn't built at guix-subs' commits
+(`--server`), and the install fetches from Guix's servers. With it, the
+build writes it into its checkout (so the ISO carries it), and the install
+in dom0 gets it in the payload.
 
 **On guix-subs, as `beto`:**
 
@@ -352,7 +361,7 @@ public repository.
      commits it last published, so its published commits include this
      one (quick if its poll already built it);
    - in a worktree at that commit, runs `iso/qubes-guix-iso -b BRANCH
-     --qubes-commit SHA --server <first url in dom0/qubes-guix-substitutes>`.
+     --qubes-commit SHA --server <first url in CI_SUBSTITUTES>`.
      qubes is exactly the pushed commit, and the other channels are at what
      the server just built;
    - copies the ISO back to the runner.

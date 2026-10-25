@@ -7,8 +7,8 @@ The qubes-guix installer ISO has the Qubes agent and the Qubes packages already 
 In short:
 
 1. On a Guix machine (a Guix qube will do): `qubes-guix/iso/qubes-guix-iso`, which writes `qubes-guix-installer.iso`.
-2. Copy `dom0/qubes-guix-create` into dom0 ([how](install-stock-iso.md#creating-the-qube-dom0)).
-3. In dom0: `./qubes-guix-create --unattended guix QUBE:/path/to/qubes-guix-installer.iso` (add `--template` for a template).
+2. Get the dom0 scripts into dom0: `qubes-guix-refresh` ([how](install-stock-iso.md#creating-the-qube-dom0)).
+3. In dom0: `qg-create --unattended guix QUBE:/path/to/qubes-guix-installer.iso` (add `--template` for a template).
 
 ## The ISO
 

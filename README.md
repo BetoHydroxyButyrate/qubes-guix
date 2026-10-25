@@ -37,7 +37,7 @@ There are three ways in. Each ends with the same kind of qube; they differ in wh
 | Downloads from         | Guix's substitute servers                  | Guix's substitute servers                  | your server, nearly all                          |
 | Suits                  | trying it out                              | a few qubes                                | many qubes, templates kept in step               |
 
-- **[Stock Guix ISO](doc/install-stock-iso.md):** Guix's own installer ISO, and one script copied into dom0. The quickest start, and the slowest install.
+- **[Stock Guix ISO](doc/install-stock-iso.md):** Guix's own installer ISO, and the dom0 scripts copied in (`qubes-guix-refresh`). The quickest start, and the slowest install.
 - **[qubes-guix ISO](doc/install-qubes-iso.md):** build the installer ISO once; then one dom0 command installs a qube from it, with no manual steps.
 - **[Full setup](doc/full-setup.md):** your own substitute server builds every channel at one set of commits; the ISO and every qube installed from it use those builds. An install then comes almost entirely from your LAN:
 

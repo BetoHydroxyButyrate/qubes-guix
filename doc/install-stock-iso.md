@@ -6,24 +6,28 @@ For trying qubes-guix with nothing to build first. It installs from Guix's own i
 
 In short, in dom0:
 
-1. Copy `dom0/qubes-guix-create` into dom0, and create the qube from the ISO: `./qubes-guix-create guix QUBE:/path/to/guix-system-install.iso`.
+1. Get the dom0 scripts into dom0 ([how](#creating-the-qube-dom0)), and create the qube from the ISO: `qg-create guix QUBE:/path/to/guix-system-install.iso`.
 2. At the installer's GRUB menu, add `nomodeset` to the kernel line ([how](#creating-the-qube-dom0)).
-3. Then either `./qubes-guix-create --unattended guix` for an install with no dialogs, or the installer's dialogs followed by `./qubes-guix-create --finish-install --run guix` ([before the first reboot](#before-the-first-reboot-recommended)).
+3. Then either `qg-create --unattended guix` for an install with no dialogs, or the installer's dialogs followed by `qg-create --finish-install --run guix` ([before the first reboot](#before-the-first-reboot-recommended)).
 
-Or all of it in one command: `./qubes-guix-create --unattended guix QUBE:/path/to/guix-system-install.iso` (with whatever options the install takes). It lists what it will do and asks, explains the GRUB step, and starts the qube when you press Enter. You do the GRUB edit in its console, then press Enter in the dom0 terminal once the installer's first screen is up; the rest is typed into the installer, and the qube is started, updated and tested as with `--unattended guix`.
+Or all of it in one command: `qg-create --unattended guix QUBE:/path/to/guix-system-install.iso` (with whatever options the install takes). It lists what it will do and asks, explains the GRUB step, and starts the qube when you press Enter. You do the GRUB edit in its console, then press Enter in the dom0 terminal once the installer's first screen is up; the rest is typed into the installer, and the qube is started, updated and tested as with `--unattended guix`.
 
 Add `--template` throughout for a template ([templates and AppVMs](templates.md)).
 
 ## Creating the qube (dom0)
 
-`dom0/qubes-guix-create` creates the qube and boots it from an installer ISO: the qubes-guix one ([its own page](install-qubes-iso.md)), or the stock Guix System installer ISO, which this section is about. Download the ISO from [guix.gnu.org](https://guix.gnu.org/en/download/) into any qube, then copy the script into dom0. Read it first: anything you copy into dom0 runs with full control of the machine.
+`dom0/qubes-guix-create` creates the qube and boots it from an installer ISO: the qubes-guix one ([its own page](install-qubes-iso.md)), or the stock Guix System installer ISO, which this section is about. Download the ISO from [guix.gnu.org](https://guix.gnu.org/en/download/) into any qube, then get the dom0 scripts into dom0. Read them first: anything you copy into dom0 runs with full control of the machine, and whoever controls the qube with your checkout controls these scripts.
+
+The first time, copy `dom0/` by hand and run its `qubes-guix-refresh`, giving it your checkout as QUBE:PATH:
 
 ```
 # dom0 — <qube> is where you cloned this repository
-qvm-run --pass-io <qube> 'cat qubes-guix/dom0/qubes-guix-create' > qubes-guix-create
-chmod +x qubes-guix-create
-./qubes-guix-create guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
+qvm-run --pass-io <qube> 'tar c -C ~/qubes-guix dom0' | tar x -C /tmp
+/tmp/dom0/qubes-guix-refresh <qube>:~/qubes-guix
+qg-create guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
 ```
+
+`qubes-guix-refresh` shows the checkout's commit, its signature and any local changes to `dom0/`, and asks before going on. It then copies `dom0/` to `~/.local/share/qubes-guix` and links each script into `~/bin`, twice: by its name, and short (`qg-create`, `qg-test`, `qg-refresh`). It remembers QUBE:PATH, so after a `git pull` in that qube, `qg-refresh` alone brings dom0 up to date. Keep your own settings (`qubes-guix-packages`, `-channels`, `-substitutes`) in `~/.config/qubes-guix`, which a refresh never touches. The scripts look for each in the current directory, then there, then for the repository's sample next to them.
 
 ```
 qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]

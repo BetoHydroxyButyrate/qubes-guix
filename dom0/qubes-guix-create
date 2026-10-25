@@ -14,6 +14,9 @@
 set -euo pipefail
 
 prog=${0##*/}
+# The directory this script is really in: through a link (qg-create, in
+# ~/bin, from qubes-guix-refresh), where its companion files are.
+here=$(dirname "$(readlink -f "$0")")
 
 # Defaults. MEMORY is what the qube gets for the whole install: there is no
 # memory balancing until the Qubes agent runs, and `guix system init`
@@ -202,7 +205,8 @@ Options:
       --channels FILE   with --unattended, --finish-install, --bootstrap:
                         extra channels, FILE holding (channel ...) forms
                         (default: qubes-guix-channels in the current
-                        directory, else next to this script). They go into config.scm as
+                        directory, ~/.config/qubes-guix or next to this
+                        script, the first found). They go into config.scm as
                         #:extra-channels; --unattended and --finish-install
                         also build with them, so --packages can name their
                         packages.
@@ -210,7 +214,8 @@ Options:
                         with --unattended, --finish-install: extra
                         substitute servers, e.g. your own 'guix publish' or
                         cache (default: qubes-guix-substitutes in the current
-                        directory, else next to this script). FILE has lines
+                        directory, ~/.config/qubes-guix or next to this
+                        script, the first found). FILE has lines
                           url http://host/...
                           key (public-key (ecc (curve Ed25519) (q #...#)))
                         They're tried before the default servers for the
@@ -222,8 +227,9 @@ Options:
       --packages FILE   with --unattended, --finish-install, --bootstrap:
                         extra packages for config.scm (#:extra-packages),
                         one or more per line, # starts a comment (default:
-                        qubes-guix-packages in the current directory, else
-                        next to this script; else just git). Names Guix doesn't have are skipped
+                        qubes-guix-packages in the current directory,
+                        ~/.config/qubes-guix or next to this script, the
+                        first found; else just git). Names Guix doesn't have are skipped
                         with a warning, not an error.
   -b, --branch B        the qubes-guix branch that --bootstrap,
                         --finish-install and --unattended clone and build
@@ -348,7 +354,7 @@ run_qubes_guix_test() {
     [ "$split_ssh" = 1 ] && args+=(--split-ssh)
     [ "$split_gpg" = 1 ] && args+=(--split-gpg)
     echo "Testing $1: qubes-guix-test ${args[*]}"
-    "$(dirname "$0")/qubes-guix-test" "${args[@]}" "$1" ||
+    "$here/qubes-guix-test" "${args[@]}" "$1" ||
         { echo "$prog: qubes-guix-test found problems (above)" >&2; exit 1; }
 }
 
@@ -620,20 +626,22 @@ detect_template() {
 }
 
 # Extra packages, into $packages: from --packages FILE, or qubes-guix-packages
-# next to this script. Checked here: they're typed into a root shell.
+# (data_file, below). Checked here: they're typed into a root shell.
 # Extra channels, into $channels_text: from --channels FILE, or
-# qubes-guix-channels next to this script. (channel ...) forms, typed into
+# qubes-guix-channels (data_file). (channel ...) forms, typed into
 # the qube as a file, so: tabs become spaces (a tab would trigger completion),
 # and no line may be the here-document's end marker.
 # The data file NAME (qubes-guix-packages, -channels, -substitutes) when no
-# option names one: in the current directory, else next to this script;
-# nothing if neither has it.
+# option names one: in the current directory, else in ~/.config/qubes-guix
+# (yours: qubes-guix-refresh never touches it), else next to this script
+# (the repository's samples); nothing if none has it.
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/qubes-guix
 data_file() {
-    if [ -f "./$1" ]; then
-        echo "$PWD/$1"
-    elif [ -f "$(dirname "$0")/$1" ]; then
-        echo "$(dirname "$0")/$1"
-    fi
+    local d
+    for d in "$PWD" "$config_dir" "$here"; do
+        [ -f "$d/$1" ] && { echo "$d/$1"; return 0; }
+    done
+    return 0
 }
 
 read_channels() {
@@ -667,7 +675,7 @@ channels_heredoc() {
 }
 
 # Extra substitute servers, into $subs_text: from --substitutes FILE, or
-# qubes-guix-substitutes next to this script. Only "url URL" and
+# qubes-guix-substitutes (data_file). Only "url URL" and
 # "key (public-key ...)" lines (comments and blank lines dropped), checked
 # here: they're typed into a root shell as a file.
 read_substitutes() {

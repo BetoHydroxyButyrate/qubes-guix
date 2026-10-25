@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# qubes-guix-refresh — in dom0: get (again) this repository's dom0 scripts
+# from the qube with your checkout of it, and link them into ~/bin.
+#
+#   qubes-guix-refresh [-y] [QUBE:PATH]
+#
+# QUBE:PATH is the checkout (e.g. work:/home/user/qubes-guix, or
+# work:~/qubes-guix); the first time, give it, and it's remembered (in
+# ~/.config/qubes-guix/source) for the next. Then:
+#   1. shows the checkout's commit, its signature and any local changes to
+#      dom0/, and asks before going on (-y: don't ask);
+#   2. copies its dom0/ to ~/.local/share/qubes-guix, replacing what was
+#      there;
+#   3. links each script there into ~/bin twice: by its name, and short,
+#      qubes-guix-create as qg-create, qubes-guix-test as qg-test, and so
+#      on (this one: qg-refresh). Old links into it go.
+#
+# Your own settings (qubes-guix-packages, -channels, -substitutes) belong in
+# ~/.config/qubes-guix, which this never touches; the scripts look there
+# before their own samples, next to them.
+#
+# The first time, get this script itself by hand, e.g.:
+#   qvm-run --pass-io work 'tar c -C ~/qubes-guix dom0' | tar x -C /tmp &&
+#     /tmp/dom0/qubes-guix-refresh work:~/qubes-guix
+#
+# Mind what this is: code from a qube, to run in dom0, which Qubes keeps
+# apart for good reason. Whoever controls that qube's checkout controls
+# these scripts. Step 1 shows what you're about to take; the commit's
+# signature is checked in the qube, so it's only as trustworthy as the qube.
+
+set -euo pipefail
+prog=${0##*/}
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/qubes-guix
+dest=${XDG_DATA_HOME:-$HOME/.local/share}/qubes-guix
+bin=$HOME/bin
+
+die() { echo "$prog: $*" >&2; exit 1; }
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
+
+yes=0 src=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -y|--yes) yes=1; shift;;
+        -h|--help) usage; exit 0;;
+        -*) die "unknown option $1 (see --help)";;
+        *) [ -z "$src" ] || die "one QUBE:PATH only"; src=$1; shift;;
+    esac
+done
+if [ -z "$src" ]; then
+    [ -s "$config_dir/source" ] ||
+        die "where's your checkout? Give QUBE:PATH the first time (see --help)."
+    src=$(head -n1 "$config_dir/source")
+fi
+case $src in
+    *:/*|*:~/*) ;;
+    *) die "'$src' isn't QUBE:PATH, with PATH absolute or ~/...";;
+esac
+qube=${src%%:*} path=${src#*:}
+qvm-check -q "$qube" 2>/dev/null || die "no qube '$qube'"
+
+# PATH, quoted for the qube's shell; ~/ left for it to expand.
+case $path in
+    "~/"*) qpath="~/$(printf %q "${path#\~/}")";;
+    *) qpath=$(printf %q "$path");;
+esac
+inq() { qvm-run -q --pass-io --no-gui "$qube" "$1" </dev/null; }
+
+inq "test -f $qpath/dom0/qubes-guix-create" ||
+    die "$src has no dom0/qubes-guix-create: not a qubes-guix checkout?"
+
+echo "From $src:"
+inq "cd $qpath && git log -1 --date=short --format='  %h %ad %an%n  %s' 2>/dev/null &&
+     { git verify-commit HEAD >/dev/null 2>&1 && echo '  signature: good (as checked in $qube)' ||
+       echo '  signature: NONE or not good (as checked in $qube)'; } &&
+     { c=\$(git status --porcelain -- dom0 | head -n 20); [ -z \"\$c\" ] ||
+       printf '  local changes in dom0/:\n%s\n' \"\$c\"; } ||
+     echo '  (not a git checkout, or no git there)'"
+if [ "$yes" != 1 ]; then
+    printf 'Copy its dom0/ into %s and link it into %s? [y/N] ' "$dest" "$bin"
+    read -r answer
+    case $answer in y|Y|yes) ;; *) echo "Nothing changed."; exit 1;; esac
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+inq "tar c -C $qpath dom0" | tar x -C "$tmp" ||
+    die "couldn't copy $src/dom0"
+[ -x "$tmp/dom0/qubes-guix-create" ] || die "the copy has no qubes-guix-create"
+
+# Replace the old copy whole (a file gone from dom0/ goes here too).
+mkdir -p "$(dirname "$dest")"
+rm -rf "$dest.old"
+[ -e "$dest" ] && mv "$dest" "$dest.old"
+mv "$tmp/dom0" "$dest"
+rm -rf "$dest.old"
+
+# Links: drop the old ones into $dest, then link each script.
+mkdir -p "$bin"
+for l in "$bin"/qubes-guix-* "$bin"/qg-*; do
+    [ -L "$l" ] || continue
+    case $(readlink "$l") in "$dest"/*) rm -f "$l";; esac
+done
+linked=()
+for f in "$dest"/qubes-guix-*; do
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    name=${f##*/}
+    ln -sfn "$f" "$bin/$name"
+    ln -sfn "$f" "$bin/qg-${name#qubes-guix-}"
+    linked+=("qg-${name#qubes-guix-}")
+done
+
+mkdir -p "$config_dir"
+printf '%s\n' "$src" > "$config_dir/source"
+
+echo "Copied to $dest; in $bin: ${linked[*]} (and their qubes-guix- names)."
+case ":$PATH:" in
+    *":$bin:"*) ;;
+    *) echo "$bin isn't on your PATH: open a new terminal (dom0's .bashrc adds it once it exists), or add it.";;
+esac
+echo "Your settings go in $config_dir (packages, channels, substitutes): the"
+echo "scripts look there before their samples in $dest."

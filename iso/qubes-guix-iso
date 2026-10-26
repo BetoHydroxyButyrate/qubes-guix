@@ -249,6 +249,54 @@ if [ -n "$dry_run" ]; then
     echo "(dry run: nothing built)"
     exit 0
 fi
+
+# A builder that names a store item it doesn't depend on: "NAME points to
+# inexistent file or dangling symlink PATH" in its log. Seen once, on an
+# --offline build right after a big channel update (a rerun built): the
+# system's etc had been worked out twice, differently, within one build.
+# Compare the two derivations now, while they're still in the store (the
+# next garbage collection takes them), and keep that in OUT.diagnosis.
+diagnose_dangling() {
+    drv=$(sed -n "s|^builder for \`\(/gnu/store/[^']*\.drv\)' failed.*|\1|p" "$tmp/err" | head -n1)
+    log=$(sed -n "s|^View build log at '\(.*\)'\.\$|\1|p" "$tmp/err" | head -n1)
+    [ -n "$drv" ] && [ -n "$log" ] && [ -f "$log" ] || return 0
+    msg=$( { case $log in
+                 *.gz) gzip -dc "$log";;
+                 *.bz2) bzip2 -dc "$log";;
+                 *) cat "$log";;
+             esac; } 2>/dev/null |
+           grep -o '[A-Za-z0-9._-]* points to inexistent file or dangling symlink /gnu/store/[^ ]*' |
+           head -n1)
+    [ -n "$msg" ] || return 0
+    name=${msg%% points to*}
+    named=${msg##* }
+    {
+        echo "== Diagnosis: $drv"
+        echo "Its builder names $name = $named, which isn't in the store."
+        echo "What it depends on for $name instead:"
+        for dep in $(guix gc --references "$drv" 2>/dev/null | grep -- "-$name\.drv\$"); do
+            echo "  $dep -> $(grep -o '("out","/gnu/store/[^"]*"' "$dep" | head -n1 | cut -d'"' -f4)"
+        done
+        producer=$(grep -l -F "(\"out\",\"$named\"" /gnu/store/*-"$name".drv 2>/dev/null | head -n1)
+        if [ -z "$producer" ]; then
+            echo "No derivation in the store produces $named: the builder's"
+            echo "$name was worked out, but its derivation never written."
+        else
+            echo "The derivation that would produce $named: $producer"
+            for dep in $(guix gc --references "$drv" 2>/dev/null | grep -- "-$name\.drv\$"); do
+                echo "How its inputs differ from $dep's (< the named one, > the one depended on):"
+                guix gc --references "$producer" 2>/dev/null | sort > "$tmp/a"
+                guix gc --references "$dep" 2>/dev/null | sort > "$tmp/b"
+                diff "$tmp/a" "$tmp/b" | grep '^[<>]' || echo "  (no difference in inputs)"
+            done
+        fi
+    } > "$tmp/diagnosis" 2>&1
+    cat "$tmp/diagnosis" >&2
+    if cp "$tmp/diagnosis" "$out.diagnosis" 2>/dev/null; then
+        echo "(kept in $out.diagnosis: please report it; a rerun usually builds)" >&2
+    fi
+}
+
 case $iso in
     /gnu/store/*.iso) ;;
     *)
@@ -267,6 +315,7 @@ or build without it (--no-server)."
 branch ('$branch' at $url) predates the ISO support. Push the commit that adds
 qubes/installer.scm, then rerun (-b BRANCH for another branch)."
         fi
+        diagnose_dangling
         die "the build failed (see above)";;
 esac
 cp "$iso" "$out"

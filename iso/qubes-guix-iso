@@ -256,6 +256,39 @@ fi
 # system's etc had been worked out twice, differently, within one build.
 # Compare the two derivations now, while they're still in the store (the
 # next garbage collection takes them), and keep that in OUT.diagnosis.
+# drv_diff A B INDENT DEPTH: why derivations A and B differ, followed down:
+# the inputs only one has; inputs of the same name on both sides compared
+# in turn (derivations recursively, small files by content), down to the
+# first that differ in something other than their own inputs.
+drv_diff() (
+    guix gc --references "$1" 2>/dev/null | sort > "$tmp/ra.$4"
+    guix gc --references "$2" 2>/dev/null | sort > "$tmp/rb.$4"
+    comm -23 "$tmp/ra.$4" "$tmp/rb.$4" > "$tmp/oa.$4"
+    comm -13 "$tmp/ra.$4" "$tmp/rb.$4" > "$tmp/ob.$4"
+    if [ ! -s "$tmp/oa.$4" ] && [ ! -s "$tmp/ob.$4" ]; then
+        echo "$3(same inputs: they differ in their own build script or environment)"
+        return 0
+    fi
+    sed "s|^|$3< |" "$tmp/oa.$4"
+    sed "s|^|$3> |" "$tmp/ob.$4"
+    [ "$4" -lt 10 ] || { echo "$3(deeper: stopping)"; return 0; }
+    while read -r x; do
+        n=${x#/gnu/store/????????????????????????????????-}
+        y=$(grep -- "^/gnu/store/[a-z0-9]\{32\}-$n\$" "$tmp/ob.$4" | head -n1)
+        [ -n "$y" ] || continue
+        case $n in
+            *.drv)
+                echo "$3  $n: why the two differ"
+                drv_diff "$x" "$y" "$3    " $(( $4 + 1 ));;
+            *)
+                if [ -f "$x" ] && [ -f "$y" ] && [ "$(wc -c < "$x")" -lt 65536 ]; then
+                    echo "$3  $n: how the two differ"
+                    diff "$x" "$y" | head -n 30 | sed "s|^|$3    |"
+                fi;;
+        esac
+    done < "$tmp/oa.$4"
+)
+
 diagnose_dangling() {
     drv=$(sed -n "s|^builder for \`\(/gnu/store/[^']*\.drv\)' failed.*|\1|p" "$tmp/err" | head -n1)
     log=$(sed -n "s|^View build log at '\(.*\)'\.\$|\1|p" "$tmp/err" | head -n1)
@@ -284,10 +317,8 @@ diagnose_dangling() {
         else
             echo "The derivation that would produce $named: $producer"
             for dep in $(guix gc --references "$drv" 2>/dev/null | grep -- "-$name\.drv\$"); do
-                echo "How its inputs differ from $dep's (< the named one, > the one depended on):"
-                guix gc --references "$producer" 2>/dev/null | sort > "$tmp/a"
-                guix gc --references "$dep" 2>/dev/null | sort > "$tmp/b"
-                diff "$tmp/a" "$tmp/b" | grep '^[<>]' || echo "  (no difference in inputs)"
+                echo "How it differs from $dep, followed down (< the named one, > the one depended on):"
+                drv_diff "$producer" "$dep" "  " 0
             done
         fi
     } > "$tmp/diagnosis" 2>&1

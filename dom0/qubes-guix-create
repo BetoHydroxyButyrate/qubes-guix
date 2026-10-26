@@ -46,6 +46,7 @@ channels_file=
 subs_file=
 guix_commit=
 first_update=1
+store_gc=1
 run_test=0
 appvm_template=
 split_ssh=0
@@ -198,6 +199,13 @@ Options:
                         qubes-guix-test (next to this script) on NAME: a
                         throwaway AppVM for a template, else NAME itself.
                         Its failures make this exit non-zero.
+      --no-gc           with --unattended: after the first update, don't
+                        clean the store. Normally the old system
+                        generations (and their GRUB entries), every
+                        profile's old generations and what nothing uses
+                        then go, and identical files are shared (guix gc
+                        --optimise): a template, and so every AppVM's root,
+                        about half the size
       --no-update       with --unattended: skip the first update. Normally,
                         once installed (built with the installer's own Guix,
                         for speed), NAME is started and 'qubes-guix-update
@@ -405,6 +413,7 @@ while [ $# -gt 0 ]; do
         --substitutes) [ $# -ge 2 ] || die "$1 needs a value"; subs_file=$2; shift 2;;
         --guix-commit) [ $# -ge 2 ] || die "$1 needs a value"; guix_commit=$2; shift 2;;
         --no-update) first_update=0; shift;;
+        --no-gc)    store_gc=0; shift;;
         --test)     run_test=1; shift;;
         --appvm)    [ $# -ge 2 ] || die "$1 needs a TEMPLATE"; appvm_template=$2; shift 2;;
         --split-ssh) split_ssh=1; shift;;
@@ -836,6 +845,7 @@ install_plan() {
     [ "$template" = 1 ] && [ "$wait_start" = 1 ] && then="remove its netvm, $then"
     if [ "$wait_start" = 1 ] && [ "$first_update" = 1 ]; then
         then="$then, qubes-guix-update -r in it"
+        [ "$store_gc" = 1 ] && then="$then, clean its store"
         [ "$template" = 1 ] && then="$then, shut it down"
         [ "$run_test" = 1 ] && then="$then, qubes-guix-test"
     fi
@@ -1248,6 +1258,7 @@ It's installed: once it starts, update it from dom0 with
             # dom0's policy refused that.
             as_desktop qvm-sync-appmenus "$name" >/dev/null 2>&1 ||
                 echo "$prog: note: qvm-sync-appmenus $name failed; refresh its applications in its Settings" >&2
+            [ "$store_gc" = 1 ] && clean_store
             if [ "$template" = 1 ]; then
                 qvm-shutdown --wait "$name"
                 echo "$name is ready: shut down, updated. Base AppVMs on it."
@@ -1263,6 +1274,32 @@ It's installed: once it starts, update it from dom0 with
         fi
     else
         echo "Started. Check from dom0:  qvm-run -u root --pass-io $name 'herd status qrexec-agent'"
+    fi
+}
+
+# After the first update: what the install and the update left behind.
+# The installer's build of the system and what the update replaced are
+# generations nothing needs in a new qube; with them gone, guix gc frees
+# about half the store (a template's root is every AppVM's). 'guix system
+# delete-generations' first, which also takes their GRUB menu entries (a
+# plain 'guix gc -d' would leave entries for generations that are gone),
+# then every other profile's (root's pulls), the garbage, and identical
+# files shared. Not fatal: the qube works either way.
+clean_store() {
+    local out
+    echo "Cleaning $name's store: old generations, garbage, identical files shared."
+    if out=$(qvm-run -q -u root --pass-io --no-gui "$name" '
+set -e
+used() { df -B1M --output=used / | tail -n1 | tr -d " "; }
+before=$(used)
+guix system delete-generations >/dev/null 2>&1
+guix gc --delete-generations >/dev/null 2>&1
+guix gc --optimise >/dev/null 2>&1
+echo "$before $(used)"' </dev/null); then
+        set -- $out
+        echo "$name's root: $1 MiB used before, $2 MiB after."
+    else
+        echo "$prog: note: cleaning $name's store failed; it works anyway (by hand, in it: sudo guix system delete-generations; sudo guix gc -d; sudo guix gc --optimise)" >&2
     fi
 }
 

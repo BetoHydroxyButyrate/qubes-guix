@@ -430,7 +430,7 @@ if [ "$gc" = 1 ]; then
     echo "$prog: cleaning the store: old generations, garbage, identical files shared"
     "$current" system delete-generations || echo "$prog: note: guix system delete-generations failed" >&2
     "$current" gc --delete-generations || echo "$prog: note: guix gc -d failed" >&2
-    "$current" gc --optimise >/dev/null || echo "$prog: note: guix gc --optimise failed" >&2
+    "$current" gc --optimize >/dev/null || echo "$prog: note: guix gc --optimize failed" >&2
     "$(command -v fstrim || echo /run/current-system/profile/sbin/fstrim)" -a >/dev/null 2>&1 || echo "$prog: note: fstrim failed (freed blocks stay allocated in dom0)" >&2
     echo "$prog: the root uses ${before} MiB before, $(used) MiB after; freed blocks returned to dom0"
 fi

@@ -204,7 +204,7 @@ Options:
                         generations (and their GRUB entries), every
                         profile's old generations and what nothing uses
                         then go, and identical files are shared (guix gc
-                        --optimise), and the freed blocks returned to dom0
+                        --optimize), and the freed blocks returned to dom0
                         (fstrim): a template, and so every AppVM's root,
                         about half the size
       --no-update       with --unattended: skip the first update. Normally,
@@ -1290,19 +1290,23 @@ It's installed: once it starts, update it from dom0 with
 clean_store() {
     local out
     echo "Cleaning $name's store: old generations, garbage, identical files shared."
+    # Each step regardless of the others; the ones that failed are named.
     if out=$(qvm-run -q -u root --pass-io --no-gui "$name" '
-set -e
 used() { df -B1M --output=used / | tail -n1 | tr -d " "; }
-before=$(used)
-guix system delete-generations >/dev/null 2>&1
-guix gc --delete-generations >/dev/null 2>&1
-guix gc --optimise >/dev/null 2>&1
-$(command -v fstrim || echo /run/current-system/profile/sbin/fstrim) -a >/dev/null 2>&1 || true
-echo "$before $(used)"' </dev/null); then
+before=$(used) failed=
+guix system delete-generations >/dev/null 2>&1 || failed="$failed delete-generations"
+guix gc --delete-generations >/dev/null 2>&1 || failed="$failed gc-d"
+guix gc --optimize >/dev/null 2>&1 || failed="$failed optimize"
+$(command -v fstrim || echo /run/current-system/profile/sbin/fstrim) -a >/dev/null 2>&1 ||
+    failed="$failed fstrim"
+echo "$before $(used) $failed"' </dev/null) && [ -n "$out" ]; then
         set -- $out
         echo "$name's root: $1 MiB used before, $2 MiB after (freed blocks returned to dom0: fstrim)."
+        shift 2
+        [ $# -eq 0 ] ||
+            echo "$prog: note: in $name, these steps failed: $* (by hand, in it: sudo guix system delete-generations; sudo guix gc -d; sudo guix gc --optimize; sudo fstrim -a)" >&2
     else
-        echo "$prog: note: cleaning $name's store failed; it works anyway (by hand, in it: sudo guix system delete-generations; sudo guix gc -d; sudo guix gc --optimise; sudo fstrim -a)" >&2
+        echo "$prog: note: cleaning $name's store failed; it works anyway (by hand, in it: sudo guix system delete-generations; sudo guix gc -d; sudo guix gc --optimize; sudo fstrim -a)" >&2
     fi
 }
 

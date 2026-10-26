@@ -22,6 +22,11 @@
 #                    Builds of the others still match the server's; mixing
 #                    commits the server never built together can mean
 #                    building here (a nonguix newer than its Guix, say)
+#   --gc             after the reconfigure: old system generations (and their
+#                    GRUB entries) and every profile's old ones deleted, the
+#                    garbage collected, identical files shared, and the freed
+#                    blocks returned to dom0 (fstrim). E.g. in a template
+#                    before shutting it down: its root is every AppVM's
 #   --allow-downgrades  for the pull AND the reconfigure: needed once after a
 #                    channel's history was rewritten
 #   --no-monitor     from a terminal, it runs under a monitor (tmux: this
@@ -70,6 +75,7 @@ reconfigure=0
 pin=
 chans=
 heads=
+gc=0
 downgrades=
 while [ $# -gt 0 ]; do
     case $1 in
@@ -82,6 +88,7 @@ while [ $# -gt 0 ]; do
                    chans="$chans $2"; reconfigure=1; shift 2;;
         --channel=*) chans="$chans ${1#*=}"; reconfigure=1; shift;;
         --allow-downgrades) downgrades=--allow-downgrades; shift;;
+        --gc) gc=1; reconfigure=1; shift;;
         --no-monitor) shift;;
         -h|--help) sed -n '2,/^# Installed by/p' "$0"; exit 0;;
         *) break;;
@@ -412,4 +419,18 @@ if [ "$reconfigure" = 1 ]; then
         echo "$prog: note: couldn't send dom0 the applications for the Qubes
 menu (policy?); in dom0: qvm-sync-appmenus <this qube>" >&2
     fi
+fi
+
+# --gc: what this and earlier updates left behind. 'guix system
+# delete-generations' first, which also drops their GRUB entries (a plain
+# 'guix gc -d' would leave entries pointing at nothing).
+if [ "$gc" = 1 ]; then
+    used() { df -B1M --output=used / | tail -n1 | tr -d ' '; }
+    before=$(used)
+    echo "$prog: cleaning the store: old generations, garbage, identical files shared"
+    "$current" system delete-generations || echo "$prog: note: guix system delete-generations failed" >&2
+    "$current" gc --delete-generations || echo "$prog: note: guix gc -d failed" >&2
+    "$current" gc --optimise >/dev/null || echo "$prog: note: guix gc --optimise failed" >&2
+    "$(command -v fstrim || echo /run/current-system/profile/sbin/fstrim)" -a >/dev/null 2>&1 || echo "$prog: note: fstrim failed (freed blocks stay allocated in dom0)" >&2
+    echo "$prog: the root uses ${before} MiB before, $(used) MiB after; freed blocks returned to dom0"
 fi

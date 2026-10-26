@@ -21,6 +21,7 @@ Moving between them:
 qubes-guix-update --guix-commit C   # lock at C (or move the lock): edits config.scm, pulls C, reconfigures
 qubes-guix-update --guix-commit server  # lock every channel at your server's last build
 qubes-guix-update --head            # unlock: every channel back to following the head
+qubes-guix-update -r --gc           # update, then clean the store (and return freed blocks to dom0)
 qubes-guix-update --channel nonguix=server   # move ONE channel: to the server's last build of it
 qubes-guix-update --channel qubes=C          # ... to commit C (a full hash)
 qubes-guix-update --channel qubes=head       # ... or unlock it: it follows its branch

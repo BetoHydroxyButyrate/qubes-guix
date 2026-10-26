@@ -83,6 +83,7 @@
   #:use-module (gnu services)
   #:use-module (gnu services base)          ; guix-service-type
   #:use-module (gnu services shepherd)
+  #:use-module ((gnu services linux) #:select (fstrim-service-type))
   #:use-module (guix channels)
   #:use-module ((guix describe) #:select (current-channels))
   #:use-module (guix gexp)
@@ -484,6 +485,7 @@ servers only for what it lacks."
                                  (extra-authorized-keys '())
                                  (template? #f)
                                  (pvh? #t)
+                                 (fstrim? #t)
                                  (extra-packages '()))
   "Return OS, with the Qubes guest agents added and CONFIG for them.
 Unless DISPLAY-MANAGER? is true, also remove the graphical login.  With
@@ -562,6 +564,15 @@ with a warning."
                              kept0)
                         kept0)))
          (append
+          ;; A weekly fstrim (mcron), unless there's one: blocks freed in
+          ;; the qube's volumes go back to dom0's pool, as the weekly
+          ;; fstrim.timer does in Debian and Fedora qubes.
+          (if (and fstrim?
+                   (not (any (lambda (s)
+                               (eq? (service-kind s) fstrim-service-type))
+                             kept)))
+              (list (service fstrim-service-type))
+              '())
           ;; The extra servers, one per line, for qubes-guix-update
           ;; --guix-commit server (the first one's /guix-commit).
           (if (pair? extra-substitute-urls)

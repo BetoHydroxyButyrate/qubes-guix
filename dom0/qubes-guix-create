@@ -204,7 +204,8 @@ Options:
                         generations (and their GRUB entries), every
                         profile's old generations and what nothing uses
                         then go, and identical files are shared (guix gc
-                        --optimise): a template, and so every AppVM's root,
+                        --optimise), and the freed blocks returned to dom0
+                        (fstrim): a template, and so every AppVM's root,
                         about half the size
       --no-update       with --unattended: skip the first update. Normally,
                         once installed (built with the installer's own Guix,
@@ -1284,7 +1285,8 @@ It's installed: once it starts, update it from dom0 with
 # delete-generations' first, which also takes their GRUB menu entries (a
 # plain 'guix gc -d' would leave entries for generations that are gone),
 # then every other profile's (root's pulls), the garbage, and identical
-# files shared. Not fatal: the qube works either way.
+# files shared. Then fstrim: the freed blocks go back to dom0's pool (the
+# volume would otherwise keep them). Not fatal: the qube works either way.
 clean_store() {
     local out
     echo "Cleaning $name's store: old generations, garbage, identical files shared."
@@ -1295,11 +1297,12 @@ before=$(used)
 guix system delete-generations >/dev/null 2>&1
 guix gc --delete-generations >/dev/null 2>&1
 guix gc --optimise >/dev/null 2>&1
+$(command -v fstrim || echo /run/current-system/profile/sbin/fstrim) -a >/dev/null 2>&1 || true
 echo "$before $(used)"' </dev/null); then
         set -- $out
-        echo "$name's root: $1 MiB used before, $2 MiB after."
+        echo "$name's root: $1 MiB used before, $2 MiB after (freed blocks returned to dom0: fstrim)."
     else
-        echo "$prog: note: cleaning $name's store failed; it works anyway (by hand, in it: sudo guix system delete-generations; sudo guix gc -d; sudo guix gc --optimise)" >&2
+        echo "$prog: note: cleaning $name's store failed; it works anyway (by hand, in it: sudo guix system delete-generations; sudo guix gc -d; sudo guix gc --optimise; sudo fstrim -a)" >&2
     fi
 }
 

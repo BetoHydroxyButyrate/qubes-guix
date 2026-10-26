@@ -29,7 +29,7 @@ The first release candidate of qubes-guix: a Guix channel that makes Guix System
 
 - **No prebuilt ISO.** At 2.8 GiB (with the channels' checkouts, for installs with no network) it's over GitHub's 2 GiB limit for a release file. Build it with `qg-build-iso` from dom0, `iso/qubes-guix-iso` (or `iso/qubes-guix-iso-remote` on your substitute server), or install from Guix's own ISO.
 - **The Qubes Update tool** doesn't update Guix qubes: it knows only apt, dnf and pacman. `qubes-guix-create` sets `skip-update`; use `qubes-guix-update`.
-- **PVH is new:** tested on AppVMs. An install switches the qube to PVH and starts it in HVM instead if that fails; `--hvm` keeps it HVM.
+- **PVH is new:** CI tests templates, AppVMs and StandaloneVMs in it (and in HVM) at every push, but it has seen less daily use than HVM. An install switches the qube to PVH and starts it in HVM instead if that fails; `--hvm` keeps it HVM.
 - **AppVMs** work, and pass `qubes-guix-test`, but have seen less daily use than StandaloneVMs and templates.
 - **The installer boots from an emulated CD,** which has returned bad data for large ISOs. An unattended install from a qubes-guix ISO built from this release, given as `NAME ISO_VM:ISO_PATH`, reads the store through a second, PV, disk instead.
 - **A PVH qube's console** is Xen's (`sudo xl console NAME` in dom0, or `qvm-console-dispvm NAME`): it has no emulated VGA for `qvm-start-daemon --force-stubdomain` to show.

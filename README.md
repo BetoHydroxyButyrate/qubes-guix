@@ -2,7 +2,7 @@
 
 A [Guix](https://guix.gnu.org) channel that turns **Guix System** into a properly integrated [Qubes OS](https://www.qubes-os.org) qube. It packages the Qubes R4.3 guest agents and wires them into Guix System as one service, `qubes-guest-service-type`. dom0 scripts create the qube and install it, unattended.
 
-Status: release candidate, [v0.1.0-rc1](NEWS.md). Daily-driven on Qubes R4.3, as StandaloneVMs, templates and AppVMs (AppVMs have seen less use so far). PVH, the new default for installs, has been tested on AppVMs. Everything below has been verified unless it says otherwise.
+Status: release candidate, [v0.1.0-rc1](NEWS.md). Daily-driven on Qubes R4.3, as StandaloneVMs, templates and AppVMs (AppVMs have seen less use so far). PVH, the new default for installs, is tested by CI for templates, AppVMs and StandaloneVMs alike. Everything below has been verified unless it says otherwise.
 
 | Feature                                                                                      | Status                                                  |
 |----------------------------------------------------------------------------------------------|---------------------------------------------------------|

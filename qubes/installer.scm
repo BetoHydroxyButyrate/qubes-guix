@@ -48,6 +48,7 @@
   #:autoload   (guix git) (url-cache-directory %repository-cache-directory)
   #:use-module ((guix utils) #:select (cache-directory))
   #:use-module (guix gexp)
+  #:use-module ((guix grafts) #:select (%graft?))
   #:use-module (qubes system)
   #:use-module (qubes services agent)
   #:use-module ((qubes packages gui) #:select (qubes-gui-agent))
@@ -316,8 +317,15 @@ installed system (and locks it to the ISO's commits)."
                                            "qubes-guix-substitutes")))))
             '())
         (if offline?
+            ;; Grafted, as 'guix system init' builds it at install, and
+            ;; all of it grafted: lowered inside the image's own build, the
+            ;; reference system came out half grafted (its etc's udev rules
+            ;; from an ungrafted alsa-utils in its builder, from the grafted
+            ;; one in its inputs), and the build failed ("etc points to
+            ;; inexistent file or dangling symlink").
             (list (simple-service 'qubes-reference-system gc-root-service-type
-                                  (list (qubes-reference-os branch)))
+                                  (list (with-parameters ((%graft? #t))
+                                          (qubes-reference-os branch))))
                   (cache-directory-service
                    (append (channel-checkouts) (authentication-cache))))
             '())

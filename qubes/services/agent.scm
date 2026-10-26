@@ -820,9 +820,44 @@ exit $rc
                      (copy-file #$%qubes-block-text #$output)
                      (chmod #$output #o555))))
 
+;; /etc/profile.d/qubes-guix.sh: what other qubes set in /etc/profile.d
+;; (the GUI agent's qubes-gui.sh, qt_x11_no_mitshm.sh,
+;; zqubes_disable_lesspipe.sh). Guix's /etc/profile reads profile.d in login
+;; shells, and qubes-session reads this file too, so applications from the
+;; Qubes menu have it. (It also gives profile.d a file: zsh, sourcing
+;; /etc/profile as zsh, stops at a glob that matches nothing.)
+(define (qubes-profile-d config)
+  (mixed-text-file "qubes-guix.sh" "\
+# Qubes settings, as other qubes have them in /etc/profile.d (qubes-gui.sh,
+# qt_x11_no_mitshm.sh, zqubes_disable_lesspipe.sh). Read by login shells,
+# and by the Qubes GUI session, so applications from the Qubes menu have
+# them too. From qubes-guix (qubes-guest-service-type).
+"
+   (if (qubes-guest-gui? config)
+       "
+# The Qubes GUI agent's X display (:1, beside a local desktop's :0).
+[ -n \"${DISPLAY:-}\" ] || export DISPLAY=:1
+"
+       "")
+   "
+# Java's toolkit: windows here aren't reparented by a window manager (dom0
+# draws the frames); without this, Java windows can come out blank.
+export _JAVA_AWT_WM_NONREPARENTING=1
+# Qt: no MIT-SHM (X shared memory), which can't work through the Qubes GUI.
+export QT_X11_NO_MITSHM=1
+# qvm-service NAME software-rendering on: no GPU rendering (GTK, GL).
+if [ \"$(" (qubesdb-read-path config) " /qubes-service/software-rendering 2>/dev/null)\" = 1 ]; then
+    export GSK_RENDERER=cairo GDK_DISABLE=\"gl vulkan\" \\
+           GDK_DEBUG=\"gl-disable vulkan-disable\" LIBGL_ALWAYS_SOFTWARE=1
+fi
+# less: no input preprocessor (lesspipe) on files that may be hostile.
+unset LESSOPEN LESSCLOSE
+"))
+
 (define (qubes-etc-files config)
   (let ((core (qubes-guest-core-agent config)))
     `(("qubes-rpc" ,(file-append core "/etc/qubes-rpc"))
+      ("profile.d/qubes-guix.sh" ,(qubes-profile-d config))
       ("qubes"     ,(file-append core "/etc/qubes"))
       ;; For xl devd: the hotplug script dom0 asks for by this path, and an
       ;; xl.conf so it doesn't complain (a driver domain needs no settings).

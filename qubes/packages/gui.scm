@@ -342,6 +342,9 @@ XTerm*faceSize: 11
 " port))))
                 (write-script "qubes-session"
                   (string-append "
+# Qubes settings for every program of the session (as login shells get them
+# from /etc/profile.d): _JAVA_AWT_WM_NONREPARENTING, QT_X11_NO_MITSHM, ...
+[ -r /etc/profile.d/qubes-guix.sh ] && . /etc/profile.d/qubes-guix.sh
 " xsetroot " -solid white || true
 # X resources (see qubes-Xresources). xrdb runs cpp for #include and
 # #define; without one, read the files as they are.

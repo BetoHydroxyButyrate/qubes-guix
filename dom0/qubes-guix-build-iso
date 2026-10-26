@@ -25,7 +25,9 @@
 #                       template's, so each build fetches or builds again
 #   -b, --branch B      qubes-guix branch       (default main)
 #   --qubes-commit C    the qubes channel at commit C (default: the branch
-#                       head, or your server's build)
+#                       head, or your server's build). 'head': the branch
+#                       head, even when your server last built an older
+#                       commit (the other channels stay at its commits)
 #   --offline           put what a default install needs in the ISO, and
 #                       the channels' checkouts: installs from it need no
 #                       network (an ISO bigger by ~1 GiB)
@@ -66,8 +68,11 @@ done
 extra=("$@")
 [[ $name =~ ^[a-zA-Z][a-zA-Z0-9_.-]{0,30}$ ]] || die "bad qube name '$name'"
 [[ $branch =~ ^[A-Za-z0-9._/-]+$ ]] || die "bad branch name '$branch'"
-[ -z "$qubes_commit" ] || [[ $qubes_commit =~ ^[0-9a-f]{40}$ ]] ||
-    die "--qubes-commit: a full commit hash"
+[ -z "$qubes_commit" ] || [ "$qubes_commit" = head ] || [[ $qubes_commit =~ ^[0-9a-f]{40}$ ]] ||
+    die "--qubes-commit: a full commit hash, or head"
+# The checkout: that commit, or (none, or head) the branch's head.
+checkout=$qubes_commit
+[ "$checkout" = head ] && checkout=''
 case $out in /home/user/*) ;; *) die "-o: a path under /home/user (the builder's private volume)";; esac
 
 inq() { qvm-run -q --pass-io --no-gui "$name" "$1" </dev/null; }        # as user
@@ -118,7 +123,7 @@ else
     git clone -q -b $(printf %q "$branch") $(printf %q "$repo_url") ~/qubes-guix
 fi
 cd ~/qubes-guix
-git checkout -q --detach ${qubes_commit:-FETCH_HEAD} 2>/dev/null || git checkout -q --detach origin/$(printf %q "$branch")
+git checkout -q --detach ${checkout:-FETCH_HEAD} 2>/dev/null || git checkout -q --detach origin/$(printf %q "$branch")
 git log -1 --format='   %h %s'" || die "couldn't get qubes-guix in $name"
 
 # --- 2. your substitute servers -------------------------------------------------

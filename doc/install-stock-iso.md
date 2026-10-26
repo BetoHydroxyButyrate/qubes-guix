@@ -16,7 +16,7 @@ Add `--template` throughout for a template ([templates and AppVMs](templates.md)
 
 ## Creating the qube (dom0)
 
-`dom0/qubes-guix-create` creates the qube and boots it from an installer ISO: the qubes-guix one ([its own page](install-qubes-iso.md)), or the stock Guix System installer ISO, which this section is about. Download the ISO from [guix.gnu.org](https://guix.gnu.org/en/download/) into any qube, then get the dom0 scripts into dom0. Read them first: anything you copy into dom0 runs with full control of the machine, and whoever controls the qube with your checkout controls these scripts.
+`dom0/qubes-guix-create` creates the qube and boots it from an installer ISO: the qubes-guix one ([its own page](install-qubes-iso.md)), or the stock Guix System installer ISO, which this section is about. Download the ISO from [guix.gnu.org](https://guix.gnu.org/en/download/) into any qube (or, once the dom0 scripts are there, `qg-get-iso QUBE` does it and checks its signature), then get the dom0 scripts into dom0. Read them first: anything you copy into dom0 runs with full control of the machine, and whoever controls the qube with your checkout controls these scripts.
 
 The first time, copy `dom0/` by hand and run its `qubes-guix-refresh`, giving it your checkout as QUBE:PATH:
 

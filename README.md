@@ -45,7 +45,18 @@ There are three ways in. Each ends with the same kind of qube; they differ in wh
 
 *The installer's monitor (its console, tty1) during an automatic install from the ISO, `qubes-guix-create --unattended`: htop above, the traffic per remote address below. The ISO was built from guix-subs (`--server`): 2.2 GiB came from it, over the LAN, and a few MiB from anywhere else.*
 
-Each way starts the same in dom0: `qubes-guix-refresh` gets the dom0 scripts from your checkout in a qube (and names them `qg-create`, `qg-config`, `qg-build-iso`, `qg-test`), and `qg-config` sets up what new qubes get. And each ends with a qube with no desktop environment of its own, since its windows are drawn in dom0's: `xterm` to start with, and what you add (`--desktop xfce` for Xfce).
+### The suggested path
+
+No Guix machine needed, and every qube after the first comes from the qubes-guix ISO:
+
+1. `qg-get-iso untrusted`: Guix's own ISO, downloaded into a qube and its signature checked there.
+2. `qg-create --template --unattended guix-tmpl untrusted:/home/user/Downloads/guix-system-install-…iso`: a first Guix template from it (one GRUB edit by hand).
+3. `qg-build-iso --template guix-tmpl`: the qubes-guix ISO, built in a builder StandaloneVM made from that template.
+4. `qg-create --unattended NAME qg-iso-builder:/home/user/qubes-guix-installer.iso`: every qube after that, nothing by hand.
+
+Step by step, with what comes before (getting the dom0 scripts) and after: [the suggested path](doc/suggested-path.md).
+
+Each way starts the same in dom0: `qubes-guix-refresh` gets the dom0 scripts from your checkout in a qube (and names them `qg-create`, `qg-get-iso`, `qg-config`, `qg-build-iso`, `qg-test`), and `qg-config` sets up what new qubes get. And each ends with a qube with no desktop environment of its own, since its windows are drawn in dom0's: `xterm` to start with, and what you add (`--desktop xfce` for Xfce).
 
 ## Software in AppVMs
 
@@ -54,6 +65,7 @@ An AppVM's root, `/gnu/store` included, is its template's again at every start: 
 ## Documentation
 
 - [Getting the dom0 scripts](doc/install-stock-iso.md#creating-the-qube-dom0): `qubes-guix-refresh`, the `qg-` names, `qg-config` and `~/.config/qubes-guix`.
+- [The suggested path](doc/suggested-path.md): from Guix's own ISO to a template, the qubes-guix ISO built from it, and every qube after.
 - [Configuring the system](doc/configuration.md): the channel, `qubes-operating-system` and its options, extra packages and channels, the desktop, X resources, the agent's dialogs.
 - [Templates and AppVMs](doc/templates.md): a Guix template, and AppVMs based on it.
 - [Features](doc/features.md): U2F/FIDO2, split-gpg2, split-ssh, USB devices.

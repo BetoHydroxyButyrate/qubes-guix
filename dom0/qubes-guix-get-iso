@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# qubes-guix-get-iso — in dom0: download Guix's own installer ISO into a
+# qube with network, and check its signature there.
+#
+#   qubes-guix-get-iso [options] QUBE
+#
+# dom0 has no network, so it all happens in QUBE (e.g. untrusted), as its
+# user: the ISO and its .sig from GNU's servers (a download that stopped
+# resumes), Guix's release signing keys (into a throwaway keyring, not
+# yours), then 'gpg --verify'. The ISO counts as good only if the signature
+# is valid AND made by one of the keys pinned below, by fingerprint: where
+# the keys came from doesn't matter. Then its SHA-256, kept next to it, and
+# the command that installs from it.
+#
+#   -V, --version V     the Guix release   (default 1.5.0)
+#   -d, --dir DIR       where in QUBE      (default ~/Downloads)
+#   --mirror URL        where the ISO comes from (default
+#                       https://ftpmirror.gnu.org/gnu/guix, which picks a
+#                       mirror near you; the .sig always comes from
+#                       https://ftp.gnu.org/gnu/guix)
+#   -n, --dry-run       say what would be done
+#
+# The check runs in QUBE and dom0 only shows its outcome, so it's as
+# trustworthy as QUBE. That's also where the ISO stays (dom0 has no room
+# for it), and what QUBE could do to it later, it could do to the check:
+# use a qube you'd install from anyway. Parsing the download (keys,
+# signature, ISO) in dom0 would expose dom0 for little gain.
+#
+# Then, for a template to build the qubes-guix ISO with (see the README):
+#   qg-create --template --unattended NAME QUBE:/home/user/Downloads/guix-system-install-V.x86_64-linux.iso
+
+set -euo pipefail
+prog=${0##*/}
+die() { echo "$prog: $*" >&2; exit 1; }
+usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Guix's release signing keys, from https://guix.gnu.org/en/security/ (a
+# release is signed by one of them; 1.5.0 by Efraim Flashner's), each with
+# where to get it: its owner's published key, and keys.openpgp.org.
+keys=(
+    "3CE464558A84FDC69DB40CFB090B11993D9AEBB5 https://sv.gnu.org/people/viewgpg.php?user_id=15145"   # Ludovic Courtès
+    "27D586A4F8900854329FF09F1260E46482E63562 https://sv.gnu.org/people/viewgpg.php?user_id=127547"  # Maxim Cournoyer
+    "A28BF40C3E551372662D14F741AAE7DCCA3D8351 https://codeberg.org/efraim.gpg"                        # Efraim Flashner
+)
+
+# shellcheck disable=SC2088  # ~ is the qube's home, expanded there
+version=1.5.0 dir='~/Downloads' mirror=https://ftpmirror.gnu.org/gnu/guix dry_run=0 qube=''
+while [ $# -gt 0 ]; do
+    case $1 in
+        -V|--version) [ $# -ge 2 ] || die "$1 needs a value"; version=$2; shift 2;;
+        -d|--dir) [ $# -ge 2 ] || die "$1 needs a value"; dir=$2; shift 2;;
+        --mirror) [ $# -ge 2 ] || die "$1 needs a value"; mirror=${2%/}; shift 2;;
+        -n|--dry-run) dry_run=1; shift;;
+        -h|--help) usage; exit 0;;
+        -*) die "unknown option $1 (see --help)";;
+        *) [ -z "$qube" ] || die "one QUBE only"; qube=$1; shift;;
+    esac
+done
+[ -n "$qube" ] || { usage >&2; exit 2; }
+[[ $version =~ ^[0-9]+(\.[0-9]+)+$ ]] || die "--version: like 1.5.0"
+[[ $mirror =~ ^https://[A-Za-z0-9./_~-]+$ ]] || die "--mirror: an https:// URL"
+[[ $dir =~ ^(~|/)[A-Za-z0-9./_~-]*$ ]] || die "--dir: a path (~/... or /...)"
+command -v qvm-run >/dev/null 2>&1 || die "run this in dom0"
+qvm-check -q "$qube" 2>/dev/null || die "no qube '$qube'"
+[ -n "$(qvm-prefs "$qube" netvm 2>/dev/null)" ] ||
+    die "$qube has no netvm: it can't download anything"
+
+iso=guix-system-install-$version.x86_64-linux.iso
+echo "Getting $iso into $qube:$dir, from $mirror (the .sig from ftp.gnu.org),"
+echo "and checking it there against Guix's release keys."
+if [ "$dry_run" = 1 ]; then
+    echo "(dry run: nothing done)"
+    exit 0
+fi
+
+key_lines=$(printf '%s\n' "${keys[@]}")
+# shellcheck disable=SC2016  # expanded in the qube
+script='set -eu
+iso=$1 mirror=$2 dir=$3 keys=$4
+case $dir in "~"*) dir=$HOME${dir#"~"};; esac
+for t in gpg sha256sum; do
+    command -v $t >/dev/null || { echo "no $t in this qube" >&2; exit 1; }
+done
+if command -v curl >/dev/null; then
+    get() { curl -fL --retry 3 -C - -o "$2" "$1"; }
+    fetch() { curl -fsSL --retry 3 "$1"; }
+elif command -v wget >/dev/null; then
+    get() { wget -c -O "$2" "$1"; }
+    fetch() { wget -qO- "$1"; }
+else
+    echo "no curl or wget in this qube" >&2; exit 1
+fi
+mkdir -p "$dir"
+cd "$dir"
+echo "== downloading into $dir"
+get "$mirror/$iso" "$iso"
+rm -f "$iso.sig"
+get "https://ftp.gnu.org/gnu/guix/$iso.sig" "$iso.sig"
+
+echo "== Guix release keys (a throwaway keyring)"
+g=$(mktemp -d)
+trap '"'"'rm -rf "$g"'"'"' EXIT
+printf "%s\n" "$keys" | while read -r fpr url; do
+    [ -n "$fpr" ] || continue
+    { fetch "$url" 2>/dev/null || true
+      fetch "https://keys.openpgp.org/vks/v1/by-fingerprint/$fpr" 2>/dev/null || true; } |
+        gpg --homedir "$g" --batch --quiet --import 2>/dev/null || true
+    if gpg --homedir "$g" --batch --with-colons --list-keys "$fpr" >/dev/null 2>&1; then
+        echo "   $fpr"
+    else
+        echo "   $fpr: not found (the signature may not need it)"
+    fi
+done
+
+echo "== checking the signature"
+status=$(gpg --homedir "$g" --batch --status-fd 1 --verify "$iso.sig" "$iso" 2>/dev/null) || true
+signer=$(printf "%s\n" "$status" | awk '"'"'$2 == "VALIDSIG" {print $NF; exit}'"'"')
+[ -n "$signer" ] || { echo "BAD: no valid signature on $iso from a Guix release key" >&2; exit 3; }
+printf "%s\n" "$keys" | awk -v s="$signer" '"'"'$1 == s {f = 1} END {exit !f}'"'"' ||
+    { echo "BAD: signed by $signer, which is not a Guix release key" >&2; exit 3; }
+who=$(printf "%s\n" "$status" | sed -n "s/^\[GNUPG:\] GOODSIG [0-9A-F]* //p" | head -n1)
+echo "   good signature, by $signer${who:+ ($who)}"
+sha256sum "$iso" | tee "$iso.sha256"
+echo "OK $dir/$iso"'
+
+out=$(qvm-run -q --pass-io --no-gui "$qube" \
+        "bash -c $(printf '%q' "$script") qg-get-iso $(printf '%q ' "$iso" "$mirror" "$dir" "$key_lines")" \
+        </dev/null | tee /dev/stderr) ||
+    die "the download or the check failed in $qube (above). Nothing is installed from it."
+path=$(printf '%s\n' "$out" | sed -n 's/^OK //p' | tail -n1)
+[ -n "$path" ] || die "no result from $qube"
+case $path in /*) ;; *) die "odd path from $qube: $path";; esac
+[[ $path =~ ^[A-Za-z0-9./_~-]+$ ]] || die "odd path from $qube: $path"
+
+cat <<EOF
+
+$qube:$path is Guix $version's installer ISO, signed by a Guix release key
+(checked in $qube). To install a Guix template from it, e.g. for building
+the qubes-guix ISO (see the README):
+  qg-create --template --unattended NAME $qube:$path
+EOF

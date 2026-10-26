@@ -21,6 +21,7 @@ qubes/installer.scm             qubes-installation-os — the qubes-guix install
 iso/qubes-guix-iso              build that ISO (on any x86_64 Guix)
 iso/qubes-guix-iso-remote       build it on another machine, from this checkout's HEAD
 dom0/qubes-guix-create          dom0: create the qube and boot the installer
+dom0/qubes-guix-get-iso         dom0: Guix's own ISO into a qube, its signature checked there
 guest/qubes-guix-install        installer shell: unattended install (disk, config.scm, then finish-install)
 guest/qubes-guix-netacct        network traffic per remote address (nftables): start, report, watch
 guest/qubes-guix-monitor        stock ISO: an install in tmux, with htop and the traffic per address

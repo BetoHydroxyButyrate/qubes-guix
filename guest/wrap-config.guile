@@ -20,7 +20,9 @@
 ;;; With QUBES_PRINT=follow-head, print the channel names of #:follow-head
 ;;; (space-separated; "all" for #t; nothing if none), change nothing, and
 ;;; need no QUBES_OUT. With QUBES_PRINT=channel-commits, likewise print
-;;; #:channel-commits, one "NAME COMMIT" line per channel.
+;;; #:channel-commits, one "NAME COMMIT" line per channel; with
+;;; QUBES_PRINT=extra-channels, #:extra-channels' value as an expression
+;;; (e.g. (list (channel ...) ...)), or nothing.
 ;;; With QUBES_CHANNELS_FILE=F, a file of (channel ...) forms, #:extra-channels
 ;;; (list <F's text>) (likewise; an existing one is left alone).
 ;;; With QUBES_SUBSTITUTE_URLS="URL ..." (and QUBES_SUBSTITUTE_KEYS, the
@@ -236,6 +238,13 @@
          (_ #t)))
       (_ #t))
     (newline))
+   ((string=? print-request "extra-channels")
+    (match last-form
+      (('qubes-operating-system . rest)
+       (match (memq #:extra-channels rest)
+         ((_ value . _) (write value) (newline))
+         (_ #t)))
+      (_ #t)))
    ((string=? print-request "channel-commits")
     (match last-form
       (('qubes-operating-system . rest)
@@ -244,7 +253,8 @@
          (_ #t)))
       (_ #t)))
    (else
-    (fail "QUBES_PRINT: follow-head or channel-commits, not ~s" print-request)))
+    (fail "QUBES_PRINT: follow-head, channel-commits or extra-channels, not ~s"
+          print-request)))
   (exit 0))
 
 ;; The elements of the form that starts (with its "(") at START: a list of

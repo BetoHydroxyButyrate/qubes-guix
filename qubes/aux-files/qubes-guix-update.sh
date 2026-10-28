@@ -375,10 +375,25 @@ if [ -n "$commits" ]; then
     pins=$(printf '%s\n' "$commits" | awk '{printf "(%s . \"%s\") ", $1, $2}')
 elif [ -n "$pin" ] && [ "$pin" != head ]; then
     pins="(guix . $value)"
+elif [ "$pin" != head ]; then
+    # The config's own locks, so channels new to it (below: not yet in
+    # /etc/guix/channels.scm) are pulled at their locked commits too. Not
+    # guix's when #:guix-commit is there: that wins, and the file has it.
+    pins=$(QUBES_IN=$config QUBES_PRINT=channel-commits "$guix" repl -- @WRAP_CONFIG@ |
+           if grep -q '#:guix-commit[[:space:]]*"' "$config"; then awk '$1 != "guix"'; else cat; fi |
+           awk 'NF == 2 {printf "(%s . \"%s\") ", $1, $2}') ||
+        die "couldn't read #:channel-commits from $config"
 else
     pins=
 fi
-if [ -z "$pins" ] && [ -z "$follow" ]; then
+# The config's #:extra-channels, also in this pull: /etc/guix/channels.scm
+# only has them from the reconfigure on, so a channel just added to the
+# config would otherwise be pulled only by the next update, and this
+# reconfigure built without it (its packages skipped, the system's guix
+# without the channel).
+extra=$(QUBES_IN=$config QUBES_PRINT=extra-channels "$guix" repl -- @WRAP_CONFIG@) ||
+    die "couldn't read #:extra-channels from $config"
+if [ -z "$pins" ] && [ -z "$follow" ] && [ -z "$extra" ]; then
     "$guix" pull -C /etc/guix/channels.scm ${downgrades:+"$downgrades"} "$@" ||
         failed $? "guix pull"
 else
@@ -387,16 +402,26 @@ else
         all) follow_scm="'all";;
         *)   follow_scm="'($follow)";;
     esac
-    { printf '%s\n' "(let ((pins '($pins))" \
-          "      (follow $follow_scm))" \
+    [ -n "$follow" ] || follow_scm="'()"
+    { printf '%s\n' "(let* ((pins '($pins))" \
+          "       (follow $follow_scm)" \
+          "       (extra ${extra:-(list)})" \
+          "       (base"
+      cat /etc/guix/channels.scm
+      printf '%s\n' "        )" \
+          "       ;; The config's extra channels that channels.scm hasn't yet." \
+          "       (all (append base" \
+          "                    (filter (lambda (c)" \
+          "                              (not (memq (channel-name c)" \
+          "                                         (map channel-name base))))" \
+          "                            extra))))" \
           "  (map (lambda (c)" \
           "         (let ((pin (assq-ref pins (channel-name c))))" \
           "           (cond ((or (eq? follow 'all) (memq (channel-name c) follow))" \
           "                  (channel (inherit c) (commit #f)))" \
           "                 (pin (channel (inherit c) (commit pin)))" \
-          "                 (else c))))"
-      cat /etc/guix/channels.scm
-      printf '%s\n' "))"
+          "                 (else c))))" \
+          "       all))"
     } > "$tmp/channels.scm"
     "$guix" pull -C "$tmp/channels.scm" ${downgrades:+"$downgrades"} "$@" ||
         failed $? "guix pull"

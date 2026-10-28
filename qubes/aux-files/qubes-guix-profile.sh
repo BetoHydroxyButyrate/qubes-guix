@@ -4,6 +4,8 @@
 #   qubes-guix-profile            restore them now, if they need it
 #   qubes-guix-profile --check    say what a restore would download or build
 #   qubes-guix-profile --force    restore even if they look current
+#   qubes-guix-profile --wait     wait for a restore that's running (e.g. the
+#                                 one at login) to finish
 #
 # An AppVM's root, /gnu/store and /var/guix included, is a fresh copy of its
 # template's at every start; only your home is kept. So what 'guix install'
@@ -17,7 +19,9 @@
 # Each is restored when its profile points at nothing (after a restart) or
 # is older than the file. qubes-session runs this at login (in the
 # background, logging to ~/.cache/qubes-guix-profile.log, with a desktop
-# notification when it's done). Open a new terminal afterwards.
+# notification when it's done). Open a new terminal afterwards. That takes
+# a while (firefox-esr is hundreds of MB): run by hand meanwhile, this says
+# when the restore started and waits for it, rather than starting another.
 #
 # It uses the system's guix: the template's, locked like it (to your
 # substitute server's commits, with one). Then what the server built comes
@@ -39,8 +43,9 @@ case ${1:-} in
     --check) mode=check;;
     --force) mode=force;;
     --session) session=1;;
+    --wait) mode='wait';;
     -h|--help) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0;;
-    *) echo "$prog: unknown argument $1 (--check, --force)" >&2; exit 2;;
+    *) echo "$prog: unknown argument $1 (--check, --force, --wait)" >&2; exit 2;;
 esac
 
 if [ "$session" = 1 ]; then
@@ -48,6 +53,27 @@ if [ "$session" = 1 ]; then
     exec >>"$HOME/.cache/qubes-guix-profile.log" 2>&1
     echo "== $(date)"
 fi
+
+# One at a time: the restore at login, one run by hand, a --check. A run
+# that finds another under way says so, waits for it, then goes on (and
+# then usually finds the profile current).
+lock=$HOME/.cache/qubes-guix-profile.lock
+mkdir -p "$HOME/.cache"
+exec 9>>"$lock"
+if ! flock -n 9; then
+    echo "$prog: a restore started at $(cat "$lock.started" 2>/dev/null || echo '?') is still running;"
+    echo "waiting for it (its log: ~/.cache/qubes-guix-profile.log)..."
+    flock 9
+    echo "$prog: that restore has finished."
+    waited=1
+else
+    waited=0
+fi
+if [ "$mode" = wait ]; then
+    [ "$waited" = 1 ] || echo "$prog: no restore is running."
+    exit 0
+fi
+date '+%H:%M:%S' > "$lock.started"
 
 notify() {
     [ "$session" = 1 ] && command -v notify-send >/dev/null 2>&1 &&

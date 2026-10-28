@@ -60,7 +60,12 @@ needs() {
     [ -f "$1" ] || return 1
     [ "$mode" = force ] && return 0
     [ -e "$2" ] || return 0                     # points at nothing
-    [ "$1" -nt "$(readlink -f "$2")" ]          # FILE changed since
+    # FILE changed since the profile last switched: compared with the
+    # profile's own link (/var/guix/profiles/per-user/USER/guix-profile),
+    # replaced at each switch. Not with what it points to: store items all
+    # date from 1970.
+    link=$(readlink "$2") || return 0
+    [ "$(stat -c %Y "$1")" -gt "$(stat -c %Y "$link")" ]
 }
 
 # What a build of these would download, and what it would build here:
@@ -84,12 +89,32 @@ warn_built() {   # warn_built WHAT GUIX-ARGS...: say what would be built here
     fi
 }
 
+# --check: for each file there, whether a restore is due, and what it would
+# build here rather than download.
+check_one() {   # check_one FILE LINK GUIX-ARGS...
+    f=$1 l=$2
+    shift 2
+    [ -f "$f" ] || return 0
+    if needs "$f" "$l"; then state="a restore is due"; else state="the profile is current"; fi
+    b=$(built_here "$@")
+    if [ -n "$b" ]; then
+        echo "$f: $state; a restore would BUILD here:"
+        printf '%s\n' "$b" | sed 's/^/  /'
+    else
+        echo "$f: $state; a restore builds nothing here (substitutes, or already here)."
+    fi
+}
+if [ "$mode" = check ]; then
+    [ -f "$manifest" ] || [ -f "$home_scm" ] ||
+        echo "Neither $manifest nor $home_scm: nothing to restore."
+    check_one "$manifest" "$HOME/.guix-profile" build -m "$manifest"
+    check_one "$home_scm" "$HOME/.guix-home" home build "$home_scm"
+    exit 0
+fi
+
 status=0 did=
 if needs "$manifest" "$HOME/.guix-profile"; then
-    if [ "$mode" = check ]; then
-        echo "$manifest: a restore would build here:"
-        built_here build -m "$manifest" | sed 's/^/  /'
-    else
+    {
         echo "Restoring ~/.guix-profile from $manifest"
         notify "Restoring your Guix packages" "from ${manifest#"$HOME"/}"
         warn_built "$manifest" build -m "$manifest"
@@ -99,13 +124,10 @@ if needs "$manifest" "$HOME/.guix-profile"; then
             echo "$prog: guix package -m $manifest failed"
             status=1
         fi
-    fi
+    }
 fi
 if needs "$home_scm" "$HOME/.guix-home"; then
-    if [ "$mode" = check ]; then
-        echo "$home_scm: a restore would build here:"
-        built_here home build "$home_scm" | sed 's/^/  /'
-    else
+    {
         echo "Restoring ~/.guix-home from $home_scm"
         notify "Restoring your Guix Home" "from ${home_scm#"$HOME"/}"
         warn_built "$home_scm" home build "$home_scm"
@@ -115,7 +137,7 @@ if needs "$home_scm" "$HOME/.guix-home"; then
             echo "$prog: guix home reconfigure $home_scm failed"
             status=1
         fi
-    fi
+    }
 fi
 
 if [ "$status" != 0 ]; then

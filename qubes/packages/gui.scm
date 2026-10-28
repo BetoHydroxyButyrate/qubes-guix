@@ -342,9 +342,13 @@ XTerm*faceSize: 11
 " port))))
                 (write-script "qubes-session"
                   (string-append "
-# Qubes settings for every program of the session (as login shells get them
-# from /etc/profile.d): _JAVA_AWT_WM_NONREPARENTING, QT_X11_NO_MITSHM, ...
-[ -r /etc/profile.d/qubes-guix.sh ] && . /etc/profile.d/qubes-guix.sh
+# The session's environment, as a login's: Guix's /etc/profile. It puts the
+# system and user profiles on PATH (~/.guix-profile/bin too, even before the
+# profile exists, so what qubes-guix-profile restores at login is found) and
+# reads /etc/profile.d (qubes-guix.sh: _JAVA_AWT_WM_NONREPARENTING,
+# QT_X11_NO_MITSHM, ...). Terminals and the Qubes menu's applications
+# inherit the session's environment; they aren't login shells.
+[ -r /etc/profile ] && . /etc/profile
 " xsetroot " -solid white || true
 # X resources (see qubes-Xresources). xrdb runs cpp for #include and
 # #define; without one, read the files as they are.

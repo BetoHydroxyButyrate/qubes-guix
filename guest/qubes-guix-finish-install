@@ -21,8 +21,9 @@
 #             "latest" the current master. Only for this build. Default:
 #             the --guix-commit lock if given (so the first update has
 #             nothing to rebuild; with --substitutes, the commit your
-#             server built), else "installer", or "latest" with --channels
-#             (other channels track current Guix).
+#             server built), else "installer". The channels are resolved
+#             once, so the whole install builds at the same commits (a
+#             new commit at a head mid-install doesn't start it over).
 # --guix-commit C: lock the installed system's Guix at C (#:guix-commit:
 #             its /etc/guix/channels.scm pins C). Default: follow the head.
 #             "server": EVERY channel at the commits the first
@@ -36,8 +37,13 @@
 #             server's, as "server". For an ISO built from a qubes commit
 #             the server hasn't built yet (iso/qubes-guix-iso-remote).
 # --packages: extra packages, as #:extra-packages (missing ones are skipped).
-# --channels F: extra channels, F holding (channel ...) forms: built with,
-#             and recorded as #:extra-channels.
+# --channels F: extra channels, F holding (channel ...) forms: recorded
+#             as #:extra-channels. Built with too when Guix is locked (the
+#             lock pins them as well) or --build-commit is given; otherwise
+#             the install builds with the installer's Guix and the qubes
+#             channel only, and the first update (qubes-guix-update -r,
+#             which pulls the config's channels) brings them in, with the
+#             packages from them (#:extra-packages skips them until then).
 # --substitutes F: extra substitute servers (e.g. a local guix publish or
 #             cache), F holding "url URL" and "key (public-key ...)" lines:
 #             used, before the default servers, for this build (the keys
@@ -151,9 +157,12 @@ sed "s/(branch \"main\")/(branch \"$branch\")/" "$here/channels.scm.txt" > "$cha
 # channel's packages are built here. (/etc/guix/channels.scm, what later
 # pulls follow, stays unpinned.)
 # Default: the installer's own Guix, which is fast (substitutes for nearly
-# everything). But other channels track current Guix: nonguix, built against
+# everything). Other channels track current Guix: nonguix, built against
 # the 1.5.0 installer's Guix, needs packages (linux-libre-7.2) that Guix
-# didn't have yet. So with extra channels, the default is the latest Guix.
+# didn't have yet. Building with the latest Guix instead meant building
+# Guix and much else, for hours, from whatever was at the head. So with
+# extra channels and no lock, the install leaves them out of the build (they
+# are still recorded in config.scm), and the first update brings them in.
 # --guix-commit server: ask the first substitute server which commits it
 # last built: every channel's (its /channel-commits, "NAME COMMIT" lines),
 # or Guix's alone (/guix-commit, from servers that publish only that).
@@ -253,14 +262,17 @@ if [ "$build_commit" = default ] && [ -n "$guix_lock" ]; then
     build_commit=$guix_lock
     say "Building with Guix at the commit it's locked to ($build_commit)"
 fi
-if [ "$build_commit" = default ]; then
-    if [ -n "${QUBES_CHANNELS_FILE:-}" ]; then
-        build_commit=latest
-        say "Extra channels: building with the latest Guix, which they track (slower)"
+# Build with the extra channels too? Not by default without a lock (above).
+with_extra=0
+if [ -n "${QUBES_CHANNELS_FILE:-}" ]; then
+    if [ "$build_commit" = default ]; then
+        say "Extra channels: recorded in config.scm, but built with from the first
+update on (qubes-guix-update -r); this install uses the installer's Guix"
     else
-        build_commit=installer
+        with_extra=1
     fi
 fi
+[ "$build_commit" = default ] && build_commit=installer
 # A field (branch, commit) of channel $1 in the running Guix ('guix
 # describe'); empty if it doesn't have that channel.
 described() {
@@ -285,7 +297,7 @@ iso_qubes=$(described qubes commit)
 if [ -n "$iso_qubes" ] && [ -n "$build_commit" ] &&
    [ "$build_commit" = "$installer_commit" ] &&
    [ "$(described qubes branch)" = "$branch" ] &&
-   [ -z "${QUBES_CHANNELS_FILE:-}" ]; then
+   [ "$with_extra" = 0 ]; then
     server_qubes=$(printf '%s\n' "$server_commits" | awk '$1 == "qubes" {print $2; exit}')
     if [ -z "$server_qubes" ] || [ "$server_qubes" = "$iso_qubes" ]; then
         iso_guix=1
@@ -313,7 +325,7 @@ fi
 # Extra channels: built with now (so #:extra-packages can name their
 # packages, and the system's guix includes them) and recorded in the config
 # as #:extra-channels (QUBES_CHANNELS_FILE, read by wrap-config.guile).
-if [ -n "${QUBES_CHANNELS_FILE:-}" ]; then
+if [ "$with_extra" = 1 ]; then
     say "Extra channels from $QUBES_CHANNELS_FILE"
     { echo '(append'; cat "$channels"; echo; echo '(list'
       cat "$QUBES_CHANNELS_FILE"; echo; echo '))'; } > "$channels.extra"
@@ -378,6 +390,23 @@ if [ "$iso_guix" != 1 ] && [ ! -e "$guix_config/trusted-channels.scm" ]; then
     cp "$channels" "$guix_config/trusted-channels.scm"
 fi
 
+# Resolve the channels once: each 'guix time-machine' below would otherwise
+# look up the head of every unpinned channel again, and a commit pushed
+# in between meant another Guix, and the system, built over. Pinned at the
+# commits found now (introductions kept), every step builds the same.
+if [ "$iso_guix" != 1 ]; then
+    say "Resolving the channels (the first time-machine run builds a Guix: slow)"
+    guix time-machine ${subs:+"--substitute-urls=$subs"} -C "$channels" -- \
+        describe -f channels > "$channels.resolved" ||
+        die "couldn't resolve the channels in $channels"
+    grep -q '(commit' "$channels.resolved" || die "no commits in the resolved channels"
+    mv "$channels.resolved" "$channels"
+    say "Building with these channels:
+$(awk '/[(]name /   { n = $0; sub(/.*[(]name +.?/, "", n); sub(/[)].*/, "", n) }
+       /[(]commit/  { c = 1 }
+       c && match($0, /"[0-9a-f]+"/) { print "  " n " " substr($0, RSTART + 1, RLENGTH - 2); c = 0 }' "$channels")"
+fi
+
 # guix, with the qubes channel: the installer's, or one time-machine builds.
 qguix() {
     if [ "$iso_guix" = 1 ]; then
@@ -390,7 +419,7 @@ qguix() {
 if [ "$iso_guix" = 1 ]; then
     say "Checking it with the qubes channel ($branch)"
 else
-    say "Checking it with the qubes channel ($branch). The first run builds a Guix: slow."
+    say "Checking it with the qubes channel ($branch)"
 fi
 if ! qguix system build ${subs:+"--substitute-urls=$subs"} --dry-run "$new" >/dev/null; then
     cp "$new" /root/config.scm.qubes-failed
@@ -409,10 +438,11 @@ say "Rebuilding $target as a qube (guix system init; builds the Qubes agents)"
 # "Input/output error", and the copy stops. An uncompressed one would be
 # copied wrong without a word (nothing here would notice: the target's
 # database gets each item's hash from this installer's, not from the copy).
-# So: after a failure, drop the page cache and run it again (it copies
-# what's still missing, redoing a partial item). qubes-guix-create avoids
-# the CD altogether: it attaches the ISO as a PV disk too, which
-# qubes-guix-pv-store reads the store from instead.
+# qubes-guix-create avoids the CD: it attaches the ISO as a PV disk too,
+# which qubes-guix-pv-store reads the store from instead. (This used to run
+# it again after a failure, with the page cache dropped. A failed build
+# then started over too, for hours, so a failure now stops here: rerun the
+# install to resume, which copies what's still missing.)
 #
 # And the copy itself, one Guile process at 100% of one CPU, at a few MB/s
 # (28 minutes for 3.4 GB): for every file, 'guix system init' reads it
@@ -449,14 +479,8 @@ INIT
 init() {
     qguix repl -- "$tmp/init.scm" init "$@"
 }
-attempt=1
-until init ${subs:+"--substitute-urls=$subs"} "$config" "$target"; do
-    [ "$attempt" -lt 3 ] || die "guix system init failed $attempt times; see the errors above"
-    attempt=$((attempt + 1))
-    say "guix system init failed; dropping the page cache and trying again ($attempt of 3)"
-    sync
-    echo 3 > /proc/sys/vm/drop_caches
-done
+init ${subs:+"--substitute-urls=$subs"} "$config" "$target" ||
+    die "guix system init failed; see the errors above"
 
 # Root's Guix cache on the installed system: the channels' git checkouts,
 # now holding the commits this system was built from, and the authentication

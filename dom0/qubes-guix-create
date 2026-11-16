@@ -226,9 +226,11 @@ Options:
                         (default: qubes-guix-channels in the current
                         directory, ~/.config/qubes-guix or next to this
                         script, the first found). They go into config.scm as
-                        #:extra-channels; an install and --finish-install
-                        also build with them, so --packages can name their
-                        packages.
+                        #:extra-channels, so --packages can name their
+                        packages. Locked (--guix-commit), an install builds
+                        with them; else it builds with the installer's Guix
+                        and the qubes channel, and the first update pulls
+                        them and adds their packages.
       --substitutes FILE
                         installing, --finish-install: extra
                         substitute servers, e.g. your own 'guix publish' or

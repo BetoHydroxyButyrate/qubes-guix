@@ -12,7 +12,7 @@ You don't need a Guix machine to start, and you'll want the qubes-guix ISO for e
    downloads it into `untrusted` (any qube with network will do) and checks its OpenPGP signature against Guix's release keys, pinned by fingerprint in the script: a valid signature from another key is refused too. The check runs in that qube, which also keeps the ISO.
 3. **A first Guix template, from it.**
    ```
-   qg-create --template --unattended guix-tmpl untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
+   qg-create --template guix-tmpl untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
    ```
    One command, with one thing by hand: the GRUB edit, which it explains before the qube starts. This install builds the Qubes agents from source (without a substitute server that has them), so it's the slow one; [details](install-stock-iso.md).
 4. **The qubes-guix ISO, built in a qube made from that template.**
@@ -22,7 +22,7 @@ You don't need a Guix machine to start, and you'll want the qubes-guix ISO for e
    makes `qg-iso-builder`, a StandaloneVM (its Guix store kept, so later builds are quicker), and builds the ISO there with your settings. The ISO stays in it; [details](install-qubes-iso.md#building-it-from-dom0).
 5. **Every qube after that, from the qubes-guix ISO,** with nothing by hand:
    ```
-   qg-create --template --unattended guix-work-tmpl qg-iso-builder:/home/user/qubes-guix-installer.iso
+   qg-create --template guix-work-tmpl qg-iso-builder:/home/user/qubes-guix-installer.iso
    qg-create --appvm guix-work-tmpl work
    qg-test work
    ```

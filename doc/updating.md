@@ -31,7 +31,7 @@ qubes-guix-update --channel qubes=head       # ... or unlock it: it follows its 
 
 **Working on a channel while locked:** `#:follow-head '(qubes)` makes the channels it names follow their branch even though `#:channel-commits` pins them (`#t`: all of them). Set it and run `qubes-guix-update -r`: that pull and the reconfigure already use the head. The lock stays recorded; remove the name, and the next `qubes-guix-update -r` goes back to it.
 
-`qubes-guix-create --unattended --guix-commit C` records the lock at install time. The install itself always builds with the installer's own Guix, which is fast because nearly everything comes from substitutes. Then `--unattended` starts the qube and runs `qubes-guix-update -r` once, which takes it to the head or to C. A template is then shut down, ready. `--no-update` skips that step.
+`qubes-guix-create --guix-commit C NAME ISO` records the lock at install time. The install itself always builds with the installer's own Guix, which is fast because nearly everything comes from substitutes. Then it starts the qube and runs `qubes-guix-update -r` once, which takes it to the head or to C. A template is then shut down, ready. `--no-update` skips that step.
 
 With `#:guix-commit` alone, the qubes channel isn't locked: it follows its branch. For a one-off build at another commit, without moving the lock, there's `guix time-machine --commit=C -- …`.
 

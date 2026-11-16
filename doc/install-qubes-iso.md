@@ -8,7 +8,7 @@ In short:
 
 1. Get the dom0 scripts into dom0: `qubes-guix-refresh` ([how](install-stock-iso.md#creating-the-qube-dom0)).
 2. Build the ISO. From dom0, with a Guix template you have: `qg-build-iso --template TEMPLATE` ([below](#building-it-from-dom0)). Or on any Guix machine: `qubes-guix/iso/qubes-guix-iso`, which writes `qubes-guix-installer.iso`.
-3. In dom0: `qg-create --unattended guix QUBE:/path/to/qubes-guix-installer.iso` (add `--template` for a template).
+3. In dom0: `qg-create guix QUBE:/path/to/qubes-guix-installer.iso` (add `--template` for a template).
 
 ## Building it from dom0
 
@@ -24,7 +24,7 @@ In short:
 
 The guest scripts are on the ISO, in `/root/qubes-guix/guest`, and so is git. The installer's console window (tty1) shows a monitor while it works: tmux with `htop` above and the network traffic per remote address below (`qubes-guix-netacct watch`). Ctrl-b d leaves it for a notice, where `monitor` goes back and `install` starts the installer's own dialogs for a manual install. At the end of an unattended install, or when it stops early, the traffic per address is reported in dom0's terminal; with the stock ISO too (it fetches `nftables` first).
 
-The installer boots from the ISO as an emulated CD (QEMU's IDE, in the qube's stub domain), and reads its store through it. Installing from a 3.3 GiB ISO, stretches of that CD came back wrong, whether the ISO was in another qube or in dom0, and the copy to the new system failed or would have been corrupt. So `qubes-guix-create --unattended NAME ISO_VM:ISO_PATH` also attaches the same ISO, read-only, as a Xen PV disk, and the install (`qubes-guix-pv-store`) reads the store from that instead, bound over `/gnu/store` before anything is copied. `--unattended NAME` alone doesn't know where the ISO is, so it keeps the CD.
+The installer boots from the ISO as an emulated CD (QEMU's IDE, in the qube's stub domain), and reads its store through it. Installing from a 3.3 GiB ISO, stretches of that CD came back wrong, whether the ISO was in another qube or in dom0, and the copy to the new system failed or would have been corrupt. So `qubes-guix-create NAME ISO_VM:ISO_PATH` also attaches the same ISO, read-only, as a Xen PV disk, and the install (`qubes-guix-pv-store`) reads the store from that instead, bound over `/gnu/store` before anything is copied. `--unattended NAME` alone doesn't know where the ISO is, so it keeps the CD.
 
 Build it on an x86_64 Guix, such as a Guix qube or your substitute server:
 
@@ -47,13 +47,13 @@ iso/qubes-guix-iso-remote -- --offline -o qgi-offline.iso
 Then, in dom0, one command creates the qube and installs it:
 
 ```
-./qubes-guix-create --unattended guix work:/home/user/qubes-guix-installer.iso     # add --template for a template
+./qubes-guix-create guix work:/home/user/qubes-guix-installer.iso     # add --template for a template
 ```
 
 It first lists what it will do: the qube, its packages, channels, substitute servers and lock, and the vault clients. Nothing changes until you answer `y` (`--yes` skips the question, for scripts). Then it asks for the password, creates the qube, and boots the ISO. dom0 waits for the installer's qrexec agent (the `qrexec` feature is set first). Then it runs `guest/qubes-guix-install` in it, detached, and follows the log; Ctrl+C stops following, not the install. When the install powers the qube off, it starts the qube from its disk, runs the first `qubes-guix-update -r`, and shuts a template down. Without `-b`, the install uses the ISO's own scripts and its channel branch, which is what its prebuilt packages match. `-b BRANCH` clones that branch instead. The packages, channels and substitutes files work as for the stock ISO: see [Extra packages and channels](configuration.md#extra-packages-and-channels) and [Installing with your server](full-setup.md#installing-with-your-server).
 
-Without `--unattended`, it creates the qube, boots the ISO and prints the two ways on: `--unattended NAME`, or the installer's dialogs followed by `--finish-install NAME`. Over qrexec, `--finish-install` runs straight away and then restarts the qube from its disk, because a reboot inside the qube would boot the ISO again. The installer's network step may find no device to configure (connman is gone, since the agent provides `networking`): continue, the network is up.
+With `--manual`, it only creates the qube, boots the ISO and prints the two ways on: `--unattended NAME`, or the installer's dialogs followed by `--finish-install NAME`. Over qrexec, `--finish-install` runs straight away and then restarts the qube from its disk, because a reboot inside the qube would boot the ISO again. The installer's network step may find no device to configure (connman is gone, since the agent provides `networking`): continue, the network is up.
 
-dom0 recognises the ISO by a file name containing `qubes-guix`, or from `--unattended`. Otherwise pass `--qubes-iso` (or `--stock-iso`). It matters because dom0 waits up to `qrexec_timeout` for the agent of a qube with the `qrexec` feature, then kills it. The stock ISO has no agent.
+dom0 recognises the ISO by its file name: `qubes-guix` in it, or `guix-system-install` at its start for the stock ISO; any other name is taken for the qubes-guix ISO, except with `--manual`. Otherwise pass `--qubes-iso` (or `--stock-iso`). It matters because dom0 waits up to `qrexec_timeout` for the agent of a qube with the `qrexec` feature, then kills it. The stock ISO has no agent.
 
 The installer never sends its features to dom0 (`features-request? #f` in `qubes-guest-configuration`). dom0 keeps the first `qrexec` and `gui` values a qube gives, and the installer's `gui=0` would have stuck to the installed system.

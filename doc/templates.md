@@ -6,12 +6,18 @@
 - **Root is the template's.** An AppVM's root (with `/gnu/store` and `/var/guix`) is a fresh copy of the template's at every start. `guix install` in an AppVM lasts until shutdown, like `apt install`. Software that should stay goes in the template's `config.scm`, or in a manifest in your home that's put back at each start: see [Software in AppVMs](#software-in-appvms).
 - **`/home` is per qube,** on the private volume (`/rw/home`). On a qube's first start it's seeded from the template's `/home`.
 
-Create it with `--template`, then set it up with `--template`:
+Create and install it with `--template`:
 
 ```
 ./qubes-guix-create --template guix-tmpl untrusted:/path/to/guix-system-install.iso   # dom0
-./qubes-guix-create --finish-install --template --run guix-tmpl                        # dom0, at "Installation complete"
-qubes-guix/guest/qubes-guix-setup --template                                           # or: in the template, after its first boot
+```
+
+Or by hand, with `--template` throughout:
+
+```
+./qubes-guix-create --manual --template guix-tmpl untrusted:/path/to/guix-system-install.iso   # dom0
+./qubes-guix-create --finish-install --template --run guix-tmpl                                 # dom0, at "Installation complete"
+qubes-guix/guest/qubes-guix-setup --template                                                    # or: in the template, after its first boot
 ```
 
 Install with a single root partition: no separate `/home`, because the template mounts its own `/home`. `qubes-guix-setup --template` also prints the dom0 steps that follow. After a `sudo shutdown` and one test start:
@@ -59,7 +65,7 @@ A template's root is every AppVM's, so its size matters. An unattended install c
 A Guix qube can boot in PVH instead of HVM: no emulated PC, so no QEMU and no stub domain for it (Qubes' default for its own qubes, for that reason), and faster boots, also with memory balancing (HVM's populate-on-demand makes those slow). dom0 boots it with `pvgrub2-pvh`, a GRUB that runs in the qube and boots the qube's own kernel and initrd from its own disk, so reconfigures and rollbacks work as before, and dom0 reads nothing from the qube. It needs dom0's `grub2-xen-pvh` package (`sudo qubes-dom0-update grub2-xen-pvh` if `/var/lib/qubes/vm-kernels/pvgrub2-pvh` is missing).
 
 - **The guest** is ready by default: `qubes-operating-system` puts the system console on the Xen console, `hvc0` (`console=tty0 console=hvc0`; the getty there serves `xl console` and `qvm-console-dispvm`, the way into a PVH qube when its GUI or network is down: it has no emulated VGA, so `qvm-start-daemon --force-stubdomain` shows nothing), and GRUB in text mode, which pvgrub2-pvh needs. Under HVM both still work. `#:pvh? #f` leaves both out. Guix's kernel already has PVH and the Xen frontends built in.
-- **New qubes are PVH:** `qubes-guix-create --unattended …` installs (the installer boots in HVM) and switches the qube to PVH before its first start; if it doesn't boot in PVH (a system from an older ISO's channel), it's started in HVM instead. `--hvm` keeps it HVM. Without `pvgrub2-pvh` in dom0 it stays HVM, with a note. `--appvm` makes a PVH AppVM when its template is PVH (`--pvh`/`--hvm` to choose), and `qubes-guix-test`'s throwaway AppVM follows its template too.
+- **New qubes are PVH:** `qubes-guix-create NAME ISO` installs (the installer boots in HVM) and switches the qube to PVH before its first start; if it doesn't boot in PVH (a system from an older ISO's channel), it's started in HVM instead. `--hvm` keeps it HVM. Without `pvgrub2-pvh` in dom0 it stays HVM, with a note. `--appvm` makes a PVH AppVM when its template is PVH (`--pvh`/`--hvm` to choose), and `qubes-guix-test`'s throwaway AppVM follows its template too.
 - **Measured** (time to the agent): PVH 18 s with memory balancing (1000/4000 MiB); HVM 24 s without (8000/8000), 83 s with (8000/32542).
 - **An existing qube:** reconfigure it with this channel (for the console and GRUB), shut it down, then in dom0 `qvm-prefs NAME virt_mode pvh; qvm-prefs NAME kernel pvgrub2-pvh`. Back: `virt_mode hvm`, `kernel ''`.
 - **The boot** shows in `/var/log/xen/console/guest-NAME.log`: GRUB, the kernel, the initrd, Shepherd. There's no console window.

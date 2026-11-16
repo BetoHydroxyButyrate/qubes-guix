@@ -6,11 +6,11 @@ For trying qubes-guix with nothing to build first. It installs from Guix's own i
 
 In short, in dom0:
 
-1. Get the dom0 scripts into dom0 ([how](#creating-the-qube-dom0)), and create the qube from the ISO: `qg-create guix QUBE:/path/to/guix-system-install.iso`.
-2. At the installer's GRUB menu, add `nomodeset` to the kernel line ([how](#creating-the-qube-dom0)).
-3. Then either `qg-create --unattended guix` for an install with no dialogs, or the installer's dialogs followed by `qg-create --finish-install --run guix` ([before the first reboot](#before-the-first-reboot-recommended)).
+1. Get the dom0 scripts into dom0 ([how](#creating-the-qube-dom0)).
+2. Create the qube and install it, in one command: `qg-create guix QUBE:/path/to/guix-system-install.iso` (with whatever options the install takes). It lists what it will do and asks, explains the GRUB step, and starts the qube when you press Enter.
+3. At the installer's GRUB menu, add `nomodeset` to the kernel line ([how](#the-installers-manual-steps)), then press Enter in the dom0 terminal once the installer's first screen is up. The rest is typed into the installer, and the qube is started from its disk and updated.
 
-Or all of it in one command: `qg-create --unattended guix QUBE:/path/to/guix-system-install.iso` (with whatever options the install takes). It lists what it will do and asks, explains the GRUB step, and starts the qube when you press Enter. You do the GRUB edit in its console, then press Enter in the dom0 terminal once the installer's first screen is up; the rest is typed into the installer, and the qube is started, updated and tested as with `--unattended guix`.
+Or by hand: `qg-create --manual guix QUBE:/path/to/guix-system-install.iso` only creates the qube and boots the ISO. After the GRUB step, either `qg-create --unattended guix` installs it with no dialogs, or use the installer's dialogs, followed by `qg-create --finish-install --run guix` ([before the first reboot](#before-the-first-reboot-recommended)).
 
 Add `--template` throughout for a template ([templates and AppVMs](templates.md)).
 
@@ -34,13 +34,16 @@ qg-create guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-l
 ```
 qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
   defaults: 2 vCPUs, 4000 MiB, MAXMEM = MEMORY (no balancing); -s root size (60g), -l label, -n netvm, --dry-run
+  --manual: create the qube and boot the ISO only, and print the steps
 ```
 
-It checks everything before changing anything, and removes the qube again if a step fails. It creates a StandaloneVM in HVM mode that boots its own kernel, grows the root volume, sets `skip-update` (the Qubes Update tool runs `/usr/bin/python3` in the qube and knows only apt, dnf and pacman: Guix updates with [`qubes-guix-update`](updating.md)), raises `qrexec_timeout` to 300 s, and turns on memory balancing when MAXMEM > MEMORY. Then it boots the installer and prints the qube's network settings. Qubes networking is static, so you may need these in the installer and in your first `config.scm`. Until the agent runs, the qube has exactly MEMORY, which is why the default is 4000 MiB: `guix system init` needs it.
+It checks everything before changing anything, and removes the qube again if a step fails. It creates a StandaloneVM in HVM mode that boots its own kernel, grows the root volume, sets `skip-update` (the Qubes Update tool runs `/usr/bin/python3` in the qube and knows only apt, dnf and pacman: Guix updates with [`qubes-guix-update`](updating.md)), raises `qrexec_timeout` to 300 s, and turns on memory balancing when MAXMEM > MEMORY. Then it boots the installer and installs, as in [Unattended install](#unattended-install-instead-of-the-installers-dialogs), from the GRUB step on. With `--manual`, it stops there and prints the steps below, with the qube's network settings. Qubes networking is static, so you may need these in the installer and in your first `config.scm`. Until the agent runs, the qube has exactly MEMORY, which is why the default is 4000 MiB: `guix system init` needs it.
 
 **Under HVM, memory balancing makes every boot slower.** (An unattended install switches the qube to [PVH](templates.md#pvh) afterwards, where it doesn't: 18 s at 1000/4000. The installer itself boots in HVM.) An HVM whose MAXMEM is above MEMORY boots in Xen's populate-on-demand mode, and a Guix boot then takes much longer to reach the qrexec agent. Measured: 24 s at 8000/8000, 83 s at 8000/32542. Past the default 60 s `qrexec_timeout`, `qvm-start` gives up and kills the qube, uncleanly. So the script leaves balancing off by default and sets the timeout to 300 s either way. If you want balancing, keep the gap between MEMORY and MAXMEM small. You can change it later in the qube's settings ("Include in memory balancing"); it takes effect when the qube next starts.
 
-The installer needs three manual steps under Qubes, and the script prints them with this qube's values:
+### The installer's manual steps
+
+The installer needs three manual steps under Qubes (an install does all but the first for you), and with `--manual` the script prints them with this qube's values:
 1. **In GRUB:** with **GNU Guix installation** highlighted, press `e`:
 
    ![The installer's GRUB menu, one entry: GNU Guix installation 1.5.0](grub-menu.png)
@@ -61,7 +64,7 @@ Then install as usual, up to the **Installation complete** screen, and **don't r
 
 ### Unattended install (instead of the installer's dialogs)
 
-After the GRUB step, at the installer's first screen, run in dom0:
+This is what `qubes-guix-create NAME ISO` does after the GRUB step. After `--manual`, run it yourself at the installer's first screen, in dom0:
 
 ```
 ./qubes-guix-create --unattended guix          # add --template for a template, -b BRANCH to test a branch
@@ -131,7 +134,7 @@ sudo reboot
 
 If any step fails it stops, and `/etc/config.scm` is left as it was. Running it again is safe, since steps already done are skipped.
 
-After the reboot the network comes from QubesDB, and dom0 hides the emulated VGA window once the Qubes GUI agent connects. If you need the console back while the qube is HVM, run `qvm-start-daemon --force-stubdomain guix`. A PVH qube, as `--unattended` leaves it, has no emulated VGA, so that does nothing: its console is Xen's, `sudo xl console guix` in dom0 (Ctrl+] leaves), or `qvm-console-dispvm guix` for a terminal in a disposable qube. Check from dom0:
+After the reboot the network comes from QubesDB, and dom0 hides the emulated VGA window once the Qubes GUI agent connects. If you need the console back while the qube is HVM, run `qvm-start-daemon --force-stubdomain guix`. A PVH qube, as an install leaves it, has no emulated VGA, so that does nothing: its console is Xen's, `sudo xl console guix` in dom0 (Ctrl+] leaves), or `qvm-console-dispvm guix` for a terminal in a disposable qube. Check from dom0:
 
 ```
 qvm-run --pass-io guix 'ip -br addr'

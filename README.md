@@ -43,16 +43,16 @@ There are three ways in. Each ends with the same kind of qube; they differ in wh
 
 ![The installer's monitor during an unattended install: 2.2 GiB received from the substitute server on the LAN, a few MiB from everything else](doc/install-traffic.png)
 
-*The installer's monitor (its console, tty1) during an automatic install from the ISO, `qubes-guix-create --unattended`: htop above, the traffic per remote address below. The ISO was built from guix-subs (`--server`): 2.2 GiB came from it, over the LAN, and a few MiB from anywhere else.*
+*The installer's monitor (its console, tty1) during an automatic install from the ISO, `qubes-guix-create NAME ISO`: htop above, the traffic per remote address below. The ISO was built from guix-subs (`--server`): 2.2 GiB came from it, over the LAN, and a few MiB from anywhere else.*
 
 ### The suggested path
 
 No Guix machine needed, and every qube after the first comes from the qubes-guix ISO:
 
 1. `qg-get-iso untrusted`: Guix's own ISO, downloaded into a qube and its signature checked there.
-2. `qg-create --template --unattended guix-tmpl untrusted:/home/user/Downloads/guix-system-install-…iso`: a first Guix template from it (one GRUB edit by hand).
+2. `qg-create --template guix-tmpl untrusted:/home/user/Downloads/guix-system-install-…iso`: a first Guix template from it (one GRUB edit by hand).
 3. `qg-build-iso --template guix-tmpl`: the qubes-guix ISO, built in a builder StandaloneVM made from that template.
-4. `qg-create --unattended NAME qg-iso-builder:/home/user/qubes-guix-installer.iso`: every qube after that, nothing by hand.
+4. `qg-create NAME qg-iso-builder:/home/user/qubes-guix-installer.iso`: every qube after that, nothing by hand.
 
 Step by step, with what comes before (getting the dom0 scripts) and after: [the suggested path](doc/suggested-path.md).
 

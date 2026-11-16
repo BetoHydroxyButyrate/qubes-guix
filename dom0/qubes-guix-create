@@ -4,8 +4,9 @@
 # drives over qrexec, or the stock Guix one.
 #
 #   qubes-guix-create [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
-#   qubes-guix-create --unattended [options] NAME ISO_VM:ISO_PATH ...
 #                                   # create and install, in one go
+#   qubes-guix-create --manual [options] NAME ISO_VM:ISO_PATH ...
+#                                   # create, boot the ISO, print the steps
 #   qubes-guix-create --appvm TEMPLATE [options] NAME [MEMORY [MAXMEM]]
 #                                   # an AppVM on a Guix template
 #
@@ -36,6 +37,7 @@ vt=
 bootstrap=0
 finish_install=0
 install=0
+manual=0
 force=0
 no_password=0
 locale=en_US.utf8
@@ -64,7 +66,7 @@ virt=
 usage() {
     cat <<EOF
 Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
-       $prog --unattended [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
+       $prog --manual [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
        $prog --type-network NAME
        $prog --vt N NAME
        $prog --appvm TEMPLATE [-l COLOUR] [-n NETVM] [--pvh|--hvm] [--split-ssh]
@@ -78,14 +80,13 @@ Usage: $prog [options] NAME ISO_VM:ISO_PATH [VCPUS [MEMORY [MAXMEM]]]
                           [--guix-commit C] [--substitutes FILE]
                           [--no-update] [--test] [--no-wait] NAME
 
-Create the StandaloneVM HVM qube NAME and boot it from the installer ISO
-at ISO_PATH in the qube ISO_VM (or dom0:/path). With the qubes-guix
-installer ISO (iso/qubes-guix-iso), the installer has its network and the
-qrexec agent, and dom0 drives it with qvm-run: no GRUB edit, no typing into
-its console. With the stock Guix ISO, the steps are printed. Given an ISO,
---unattended creates the qube and installs it in one go: with the stock ISO,
-you do the GRUB step in its console, then press Enter here, and the rest is
-typed for you.
+Create the StandaloneVM qube NAME, boot it from the installer ISO at
+ISO_PATH in the qube ISO_VM (or dom0:/path), and install it, unattended, in
+one go. With the qubes-guix installer ISO (iso/qubes-guix-iso), the
+installer has its network and the qrexec agent, and dom0 drives it with
+qvm-run: nothing by hand. With the stock Guix ISO, you do the GRUB step in
+its console, then press Enter here, and the rest is typed for you.
+--manual only creates the qube and boots the ISO, and prints the steps.
 
   VCPUS    virtual CPUs                         (default $vcpus)
   MEMORY   initial memory, MiB                  (default $memory)
@@ -121,21 +122,22 @@ Options:
       --pvh             boot NAME in PVH (no QEMU, no stub domain; faster,
                         also with memory balancing): virt_mode pvh, kernel
                         pvgrub2-pvh (GRUB in the qube boots its own kernel;
-                        dom0 needs grub2-xen-pvh). The default for
-                        --unattended: NAME is switched after the install
-                        (the installer itself is HVM), and back to HVM if
-                        it doesn't boot in PVH. With --appvm: the default
-                        when TEMPLATE is PVH.
-      --hvm             stay HVM: with --unattended, after the install; with
-                        --appvm, even when TEMPLATE is PVH
+                        dom0 needs grub2-xen-pvh). The default for an
+                        install: NAME is switched after it (the installer
+                        itself is HVM), and back to HVM if it doesn't boot
+                        in PVH. With --appvm: the default when TEMPLATE is
+                        PVH.
+      --hvm             stay HVM: after an install; with --appvm, even when
+                        TEMPLATE is PVH
       --qubes-iso       ISO_PATH is the qubes-guix installer ISO: dom0 waits
-                        for its qrexec agent (assumed with --unattended, or
-                        when the file name contains 'qubes-guix')
+                        for its qrexec agent (assumed when the file name
+                        contains 'qubes-guix', or, without --manual, isn't
+                        guix-system-install*)
       --stock-iso       ISO_PATH is the stock Guix installer ISO
       --dry-run         print the dom0 commands, change nothing; with the
                         typing modes below, print what would be typed
   -y, --yes             don't ask. Otherwise, creating a qube (with or
-                        without --unattended), --appvm, --unattended NAME
+                        without --manual), --appvm, --unattended NAME
                         and --finish-install first list what they will do
                         (the qube, its packages, channels, substitute
                         servers, lock, vault clients) and change nothing
@@ -163,12 +165,19 @@ Options:
                         installer's network (--type-network) still up.
       --run             with --finish-install: run that command too, rather
                         than leaving it for you to review and type
+      --manual          with an ISO: only create NAME and boot the ISO,
+                        then print the steps (the installer's dialogs and
+                        --finish-install, or --unattended NAME), rather
+                        than installing
       --unattended      the whole install, unattended, instead of the
-                        installer's dialogs. On the qubes-guix ISO, over
-                        qrexec, its output shown here (with an ISO given,
-                        right after creating NAME). On the stock ISO, run it
-                        at the installer's first screen (after the GRUB
-                        'nomodeset' step), and it types. Asks here
+                        installer's dialogs: the default given an ISO
+                        (--unattended NAME ISO is the same as NAME ISO).
+                        Alone, --unattended NAME installs a NAME already
+                        running an installer (after --manual): on the
+                        qubes-guix ISO, over qrexec, its output shown here;
+                        on the stock ISO, run it at the installer's first
+                        screen (after the GRUB 'nomodeset' step), and it
+                        types. Asks here
                         for a password for the user and root (stored as a
                         hash; --no-password: none), then types into VT3 the
                         network setup, a clone of this repository and
@@ -180,7 +189,7 @@ Options:
                         already has partitions. --locale: default en_US.utf8
                         A template is left without a netvm afterwards: it
                         updates through the Qubes updates proxy.
-      --guix-commit C   with --unattended: lock the qube's Guix at commit C
+      --guix-commit C   installing: lock the qube's Guix at commit C
                         (#:guix-commit in its config.scm; move it later with
                         qubes-guix-update --guix-commit C, or --head).
                         Default: 'iso' from the qubes-guix ISO, else 'server'
@@ -195,11 +204,11 @@ Options:
                         #:channel-commits; Guix alone from /guix-commit if
                         that's all it publishes), so the install and
                         updates match its builds.
-      --test            with --unattended: after the first update, run
+      --test            installing: after the first update, run
                         qubes-guix-test (next to this script) on NAME: a
                         throwaway AppVM for a template, else NAME itself.
                         Its failures make this exit non-zero.
-      --no-gc           with --unattended: after the first update, don't
+      --no-gc           installing: after the first update, don't
                         clean the store. Normally the old system
                         generations (and their GRUB entries), every
                         profile's old generations and what nothing uses
@@ -207,21 +216,21 @@ Options:
                         --optimize), and the freed blocks returned to dom0
                         (fstrim): a template, and so every AppVM's root,
                         about half the size
-      --no-update       with --unattended: skip the first update. Normally,
+      --no-update       installing: skip the first update. Normally,
                         once installed (built with the installer's own Guix,
                         for speed), NAME is started and 'qubes-guix-update
                         -r' run in it: to the head, or to the --guix-commit
                         lock. A template is then shut down, ready.
-      --channels FILE   with --unattended, --finish-install, --bootstrap:
+      --channels FILE   installing, --finish-install, --bootstrap:
                         extra channels, FILE holding (channel ...) forms
                         (default: qubes-guix-channels in the current
                         directory, ~/.config/qubes-guix or next to this
                         script, the first found). They go into config.scm as
-                        #:extra-channels; --unattended and --finish-install
+                        #:extra-channels; an install and --finish-install
                         also build with them, so --packages can name their
                         packages.
       --substitutes FILE
-                        with --unattended, --finish-install: extra
+                        installing, --finish-install: extra
                         substitute servers, e.g. your own 'guix publish' or
                         cache (default: qubes-guix-substitutes in the current
                         directory, ~/.config/qubes-guix or next to this
@@ -234,29 +243,29 @@ Options:
                         for later updates. With --guix-commit, the install
                         also builds at that commit: lock to the commit your
                         server built, and nearly everything comes from it.
-      --packages FILE   with --unattended, --finish-install, --bootstrap:
+      --packages FILE   installing, --finish-install, --bootstrap:
                         extra packages for config.scm (#:extra-packages),
                         one or more per line, # starts a comment (default:
                         qubes-guix-packages in the current directory,
                         ~/.config/qubes-guix or next to this script, the
                         first found; else just git). Names Guix doesn't have are skipped
                         with a warning, not an error.
-      --desktop D       with --unattended: none (the default: xterm, no
+      --desktop D       installing: none (the default: xterm, no
                         desktop environment; under Qubes each window is
                         drawn in dom0's desktop) or xfce (Xfce, as before;
                         not on the qubes-guix ISO, so downloaded). Default:
                         the first word of qubes-guix-desktop, found as the
                         files above, else none.
   -b, --branch B        the qubes-guix branch that --bootstrap,
-                        --finish-install and --unattended clone and build
+                        --finish-install and an install clone and build
                         from (default main; on the qubes-guix ISO, its own
                         scripts and branch, without cloning)
   -h, --help            this help
 
 Examples:
-  $prog --unattended guix work:/home/user/qubes-guix-installer.iso
-  $prog guix untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
-  $prog guix untrusted:/home/user/guix.iso 4 4000 16000
+  $prog guix work:/home/user/qubes-guix-installer.iso
+  $prog --template guix-tmpl untrusted:/home/user/Downloads/guix-system-install-1.5.0.x86_64-linux.iso
+  $prog --manual guix untrusted:/home/user/guix.iso 4 4000 16000
 EOF
 }
 
@@ -404,6 +413,7 @@ while [ $# -gt 0 ]; do
         --finish-install) finish_install=1; shift;;
         --run)      run_now=1; shift;;
         --unattended|--install) install=1; shift;;
+        --manual)   manual=1; shift;;
         --force)    force=1; shift;;
         --no-password) no_password=1; shift;;
         --locale)   [ $# -ge 2 ] || die "$1 needs a value"; locale=$2; shift 2;;
@@ -1525,6 +1535,13 @@ fi
 
 [ ${#args[@]} -ge 2 ] && [ ${#args[@]} -le 5 ] || { usage >&2; exit 2; }
 
+# Given an ISO, install: the default, unless --manual.
+if [ "$manual" = 1 ]; then
+    [ "$install" = 0 ] || die "--manual and --unattended: choose one"
+else
+    install=1
+fi
+
 name=${args[0]}
 iso=${args[1]}
 [ ${#args[@]} -ge 3 ] && vcpus=${args[2]}
@@ -1560,16 +1577,16 @@ if [ "$qubes_iso" = auto ]; then
 fi
 # The stock ISO, unattended: you do the GRUB step, and say when it's done.
 if [ "$install" = 1 ] && [ "$qubes_iso" = 0 ] && [ "$dry_run" = 0 ] && ! [ -t 0 ]; then
-    die "--unattended with the stock Guix ISO needs you at the GRUB menu, and a
-terminal here to say when the installer is up: run it from a terminal"
+    die "installing from the stock Guix ISO needs you at the GRUB menu, and a
+terminal here to say when the installer is up: run it from a terminal (or
+--manual: create the qube and boot the ISO only)"
 fi
 
 if [ "$install" = 1 ]; then
     default_virt
 elif [ "$virt" = pvh ]; then
-    die "--pvh: with --unattended (the installer boots in HVM; NAME is switched
-after the install), or --appvm. Otherwise, after installing: qvm-prefs NAME
-virt_mode pvh; qvm-prefs NAME kernel pvgrub2-pvh"
+    die "--pvh with --manual: the installer boots in HVM. After installing:
+qvm-prefs NAME virt_mode pvh; qvm-prefs NAME kernel pvgrub2-pvh"
 fi
 is_uint "$vcpus"  && [ "$vcpus" -ge 1 ]     || die "VCPUS must be a positive integer"
 is_uint "$memory" && [ "$memory" -ge 1024 ] || die "MEMORY must be at least 1024 (MiB)"
@@ -1823,7 +1840,7 @@ cat <<EOF
 
    If the console window goes away once the Qubes GUI agent runs, get it
    back, while $name is HVM, with:  qvm-start-daemon --force-stubdomain $name
-   A PVH qube (as --unattended leaves one) has no emulated VGA to show: its
+   A PVH qube (as an install leaves one) has no emulated VGA to show: its
    console is Xen's, in dom0:  sudo xl console $name  (Ctrl+] leaves), or
    in a disposable qube:  qvm-console-dispvm $name
 EOF

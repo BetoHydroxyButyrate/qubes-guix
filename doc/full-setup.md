@@ -6,14 +6,14 @@
 
 ![The installer's monitor during an unattended install: 2.2 GiB received from the substitute server on the LAN, a few MiB from everything else](install-traffic.png)
 
-*The installer's monitor (its console, tty1) near the end of an automatic install from the ISO, `qubes-guix-create --unattended`. The ISO was built with `--server`: 2.2 GiB came from guix-subs on the LAN (192.168.3.113), and under 4 MiB from everywhere else. `10.139.1.1` is the Qubes DNS.*
+*The installer's monitor (its console, tty1) near the end of an automatic install from the ISO, `qubes-guix-create NAME ISO`. The ISO was built with `--server`: 2.2 GiB came from guix-subs on the LAN (192.168.3.113), and under 4 MiB from everywhere else. `10.139.1.1` is the Qubes DNS.*
 
 In short:
 
 1. Set up [guix-subs](https://github.com/BetoHydroxyButyrate/guix-subs) (its README). The server must build this channel at a commit with ISO support.
 2. In the checkout you build the ISO from, put the server's `url` and `key` in `dom0/qubes-guix-substitutes`. Its key must be authorized on the build machine.
 3. Build the ISO on the server, at its own commits: `iso/qubes-guix-iso --server https://guix-subs.example` there, or `iso/qubes-guix-iso-remote` from your working checkout ([building it](install-qubes-iso.md#the-iso)).
-4. In dom0: `./qubes-guix-create --unattended guix QUBE:/path/to/qubes-guix-installer.iso` (add `--template` for a template). dom0 needs no substitutes file: the ISO carries it.
+4. In dom0: `./qubes-guix-create guix QUBE:/path/to/qubes-guix-installer.iso` (add `--template` for a template). dom0 needs no substitutes file: the ISO carries it.
 5. Later, `qubes-guix-update --guix-commit server` in a qube (or its template) moves it to the server's latest build.
 
 ## Building the ISO from your server
@@ -26,7 +26,7 @@ qubes-guix/iso/qubes-guix-iso --server https://guix-subs.example   # at the comm
 
 ## Installing with your server
 
-With the stock ISO, or a server the ISO doesn't carry, put `url` and `key` lines in `dom0/qubes-guix-substitutes`, copied to `~/.config/qubes-guix/` in dom0, or pass a file with `--substitutes FILE`. The template file has everything commented out. A server can be your own `guix publish`, or a cache of bordeaux and ci. The install tries these servers before the default ones, with its keys authorized in the installer. They also go into `config.scm` as `#:extra-substitute-urls` and `#:extra-authorized-keys`, so updates use them too. With a server, `--unattended` locks the qube to it (`--guix-commit server`) unless you say otherwise: `--guix-commit C` for a Guix commit, or `--guix-commit head` to follow the head. `--guix-commit server` needs a server that publishes its commits ([guix-subs](https://github.com/BetoHydroxyButyrate/guix-subs) does): every channel the qube shares with the server, qubes and nonguix included, is then locked at the server's commit (`/channel-commits`, recorded as `#:channel-commits`), so nearly everything comes from your server. A server that publishes only `/guix-commit` locks Guix alone. Later, `qubes-guix-update --guix-commit server` moves the qube to the server's latest build. The installer's netvm must reach the server, and so must a template's UpdateVM.
+With the stock ISO, or a server the ISO doesn't carry, put `url` and `key` lines in `dom0/qubes-guix-substitutes`, copied to `~/.config/qubes-guix/` in dom0, or pass a file with `--substitutes FILE`. The template file has everything commented out. A server can be your own `guix publish`, or a cache of bordeaux and ci. The install tries these servers before the default ones, with its keys authorized in the installer. They also go into `config.scm` as `#:extra-substitute-urls` and `#:extra-authorized-keys`, so updates use them too. With a server, an install locks the qube to it (`--guix-commit server`) unless you say otherwise: `--guix-commit C` for a Guix commit, or `--guix-commit head` to follow the head. `--guix-commit server` needs a server that publishes its commits ([guix-subs](https://github.com/BetoHydroxyButyrate/guix-subs) does): every channel the qube shares with the server, qubes and nonguix included, is then locked at the server's commit (`/channel-commits`, recorded as `#:channel-commits`), so nearly everything comes from your server. A server that publishes only `/guix-commit` locks Guix alone. Later, `qubes-guix-update --guix-commit server` moves the qube to the server's latest build. The installer's netvm must reach the server, and so must a template's UpdateVM.
 
 ## Keeping qubes in step with the server
 

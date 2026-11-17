@@ -1,6 +1,7 @@
 #!@SH@
 # qubes-guix-update [-r|--reconfigure] [--guix-commit C | --head |
-#                   --channel NAME=C ...] [--allow-downgrades] [GUIX-PULL-ARGS...]
+#                   --channel NAME=C ...] [--allow-downgrades] [--fallback]
+#                   [GUIX-PULL-ARGS...]
 #   As root (it uses sudo if needed): guix pull, through the Qubes updates
 #   proxy when this qube has one (a template with updates-proxy-setup);
 #   with -r, then guix system reconfigure ${QUBES_GUIX_CONFIG:-/etc/config.scm}
@@ -29,6 +30,10 @@
 #                    before shutting it down: its root is every AppVM's
 #   --allow-downgrades  for the pull AND the reconfigure: needed once after a
 #                    channel's history was rewritten
+#   --fallback       for the pull AND the reconfigure: when a substitute
+#                    can't be had, build it here instead of failing (one
+#                    whose download doesn't match its hash, say: a server's
+#                    bad copy). qubes-guix-create's first update uses it
 #   --no-monitor     from a terminal, it runs under a monitor (tmux: this
 #                    update above, htop and what's being built or fetched
 #                    below; its output also in /var/log/qubes-guix-update.log):
@@ -77,6 +82,7 @@ chans=
 heads=
 gc=0
 downgrades=
+fallback=
 while [ $# -gt 0 ]; do
     case $1 in
         -r|--reconfigure) reconfigure=1; shift;;
@@ -88,6 +94,7 @@ while [ $# -gt 0 ]; do
                    chans="$chans $2"; reconfigure=1; shift 2;;
         --channel=*) chans="$chans ${1#*=}"; reconfigure=1; shift;;
         --allow-downgrades) downgrades=--allow-downgrades; shift;;
+        --fallback) fallback=--fallback; shift;;
         --gc) gc=1; reconfigure=1; shift;;
         --no-monitor) shift;;
         -h|--help) sed -n '2,/^# Installed by/p' "$0"; exit 0;;
@@ -394,7 +401,7 @@ fi
 extra=$(QUBES_IN=$config QUBES_PRINT=extra-channels "$guix" repl -- @WRAP_CONFIG@) ||
     die "couldn't read #:extra-channels from $config"
 if [ -z "$pins" ] && [ -z "$follow" ] && [ -z "$extra" ]; then
-    "$guix" pull -C /etc/guix/channels.scm ${downgrades:+"$downgrades"} "$@" ||
+    "$guix" pull -C /etc/guix/channels.scm ${downgrades:+"$downgrades"} ${fallback:+"$fallback"} "$@" ||
         failed $? "guix pull"
 else
     [ -n "$follow" ] && echo "$prog: following the branch head: $follow"
@@ -423,12 +430,12 @@ else
           "                 (else c))))" \
           "       all))"
     } > "$tmp/channels.scm"
-    "$guix" pull -C "$tmp/channels.scm" ${downgrades:+"$downgrades"} "$@" ||
+    "$guix" pull -C "$tmp/channels.scm" ${downgrades:+"$downgrades"} ${fallback:+"$fallback"} "$@" ||
         failed $? "guix pull"
 fi
 
 if [ "$reconfigure" = 1 ]; then
-    "$current" system reconfigure ${downgrades:+"$downgrades"} "$config" ||
+    "$current" system reconfigure ${downgrades:+"$downgrades"} ${fallback:+"$fallback"} "$config" ||
         failed $? "guix system reconfigure"
 
     # The Qubes menu, as other templates' package managers do after an

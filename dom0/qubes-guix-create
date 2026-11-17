@@ -1253,7 +1253,7 @@ start_installed() {
             qvm-prefs "$name" qrexec_timeout "$tmo"
             die "$name didn't start again: see /var/log/xen/console/guest-$name.log.
 It's installed: once it starts, update it from dom0 with
-  qvm-run -u root --pass-io --no-gui $name 'qubes-guix-update -r' </dev/null"
+  qvm-run -u root --pass-io --no-gui $name 'qubes-guix-update -r --fallback' </dev/null"
         fi
     fi
     qvm-prefs "$name" qrexec_timeout "$tmo"
@@ -1261,10 +1261,13 @@ It's installed: once it starts, update it from dom0 with
     if [ "$first_update" = 1 ]; then
         # The install built with the installer's Guix (fast: substitutes).
         # Now bring the system to the Guix it follows: the head, or the
-        # --guix-commit lock recorded in its config.scm.
+        # --guix-commit lock recorded in its config.scm. --fallback: a
+        # substitute that can't be had (a server's copy that doesn't match
+        # its hash, as ci's guix-core once didn't) is built here instead of
+        # failing the update.
         echo "Updating $name: qubes-guix-update -r (pull to $( [ -n "$guix_commit" ] && echo "the locked commit" || echo 'the head'), then reconfigure)."
         echo "This is long: it builds the Qubes packages against that Guix. Output follows."
-        if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r' </dev/null; then
+        if qvm-run -q -u root --pass-io --no-gui "$name" 'qubes-guix-update -r --fallback' </dev/null; then
             echo "Updated in $(elapsed) in all."
             # The Qubes menu: dom0 reads the updated system's applications.
             # The update sends them too (qubes.SyncAppMenus); this is for when
@@ -1282,7 +1285,7 @@ It's installed: once it starts, update it from dom0 with
         else
             echo "$prog: the update in $name failed; it's running, at the installer's Guix." >&2
             echo "Look at the output above. To rerun it, from dom0:" >&2
-            echo "  qvm-run -u root --pass-io --no-gui $name 'qubes-guix-update -r' </dev/null" >&2
+            echo "  qvm-run -u root --pass-io --no-gui $name 'qubes-guix-update -r --fallback' </dev/null" >&2
             exit 1
         fi
     else
